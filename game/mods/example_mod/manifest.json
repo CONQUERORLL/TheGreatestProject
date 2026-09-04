@@ -1,0 +1,50 @@
+{
+  "id": "example-mod",
+  "name": "官方示例模组",
+  "version": "1.0.0",
+  "author": "TheGreatestProject",
+  "desc": "演示创意工坊 JSON 格式：新增 1 把武器 + 1 个道具 + 1 个敌人。复制此目录到 user://mods/ 即可生效。",
+  "content": {
+    "weapons": [
+      {
+        "id": "laser",
+        "name": "激光枪",
+        "ico": "✨",
+        "cd": 0.32,
+        "dmg": 9.0,
+        "bspeed": 720.0,
+        "spread": 0.04,
+        "rarity": "epic",
+        "desc": "示例：高射速激光（字段同内置武器，全数据驱动）",
+        "price": 45,
+        "shop_weight": 1.2
+      }
+    ],
+    "items": [
+      {
+        "id": "i-example",
+        "ico": "🧊",
+        "name": "冰晶",
+        "desc": "示例：移速 +6%、闪避 +4%",
+        "price": 28,
+        "rarity": "common",
+        "effects": { "speed_mult": 0.06, "dodge": 0.04 }
+      }
+    ],
+    "enemies": [
+      {
+        "id": "ghost",
+        "name": "幽灵",
+        "hp": 10.0,
+        "speed": 120.0,
+        "dmg": 7.0,
+        "xp": 2,
+        "mat": 2,
+        "r": 13.0,
+        "color": "#a8c8e8",
+        "shape": "circle",
+        "desc": "示例：追击型小怪（未加入波次组合，暂由调试/后续波次组合 mod 化使用）"
+      }
+    ]
+  }
+}

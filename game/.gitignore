@@ -1,0 +1,9 @@
+# Godot 4
+.godot/
+*.uid.invocation
+export/
+export_presets.cfg
+
+# System
+*.tmp
+.DS_Store

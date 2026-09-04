@@ -1,0 +1,93 @@
+[gd_scene format=3 uid="uid://du1ck6xwmycwa"]
+
+[ext_resource type="Script" uid="uid://cfg7ihdpqrcob" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://scenes/characters/player.tscn" id="2_player"]
+[ext_resource type="Script" uid="uid://bl8ukybhaircr" path="res://scripts/systems/wave_manager.gd" id="3_wave"]
+[ext_resource type="PackedScene" path="res://scenes/ui/level_up_ui.tscn" id="4_levelup"]
+[ext_resource type="PackedScene" path="res://scenes/ui/shop_ui.tscn" id="5_shop"]
+[ext_resource type="PackedScene" path="res://scenes/ui/hud.tscn" id="6_hud"]
+
+[node name="Main" type="Node2D" unique_id=1372956391]
+script = ExtResource("1_main")
+
+[node name="WaveManager" type="Node" parent="." unique_id=1296073400]
+script = ExtResource("3_wave")
+
+[node name="Player" parent="." unique_id=1038812603 instance=ExtResource("2_player")]
+position = Vector2(800, 800)
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=489399845]
+
+[node name="HUD" parent="UI" unique_id=449207311 instance=ExtResource("6_hud")]
+
+[node name="LevelUp" parent="UI" unique_id=998648936 instance=ExtResource("4_levelup")]
+
+[node name="Shop" parent="UI" unique_id=1878315423 instance=ExtResource("5_shop")]
+
+[node name="Hint" type="Label" parent="UI" unique_id=236850186]
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 14.0
+offset_top = -44.0
+offset_right = -14.0
+offset_bottom = -12.0
+theme_override_colors/font_color = Color(0.42, 0.455, 0.517, 1)
+theme_override_font_sizes/font_size = 13
+text = "WASD / 方向键 / 左摇杆 移动　·　Esc / P / Start 暂停　·　1-5 换武器 / 6 射手 / 7 BOSS（测试）"
+
+[node name="DeadLabel" type="Label" parent="UI" unique_id=1481434088]
+visible = false
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -220.0
+offset_top = -40.0
+offset_right = 220.0
+offset_bottom = 40.0
+theme_override_colors/font_color = Color(0.878, 0.353, 0.31, 1)
+theme_override_font_sizes/font_size = 26
+text = "你倒下了　·　按 R 重来"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="VictoryLabel" type="Label" parent="UI" unique_id=1643361245]
+visible = false
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -220.0
+offset_top = -40.0
+offset_right = 220.0
+offset_bottom = 40.0
+theme_override_colors/font_color = Color(0.494, 0.784, 0.31, 1)
+theme_override_font_sizes/font_size = 26
+text = "通关！　·　按 R 再来一局"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="BannerTitle" type="Label" parent="UI" unique_id=296429582]
+visible = false
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 48.0
+offset_bottom = 90.0
+theme_override_colors/font_color = Color(0.949, 0.906, 0.78, 1)
+theme_override_font_sizes/font_size = 26
+text = "第 1 波"
+horizontal_alignment = 1
+
+[node name="BannerSub" type="Label" parent="UI" unique_id=664422998]
+visible = false
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 92.0
+offset_bottom = 118.0
+theme_override_colors/font_color = Color(0.604, 0.639, 0.698, 1)
+theme_override_font_sizes/font_size = 14
+horizontal_alignment = 1
