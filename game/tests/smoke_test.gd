@@ -357,11 +357,15 @@ func _check_items() -> void:
 		_fail("touch_move 未驱动玩家移动")
 		return
 	print("SMOKE: items track/sell + pause panel + touch layer OK")
-	# ---- 存档验证：自动存档存在 → 主动保存 → 篡改 → 恢复一致 → 清档 + 损档容错 ----
-	if not SaveRun.exists():
-		_fail("商店阶段未自动生成存档")
+	# ---- 三槽存档验证：自动档入槽1 → 槽间隔离 → 篡改恢复一致 → 清档 + 损档容错 ----
+	for i: int in [2, 3]:   # 清其他槽残留，不动槽 1 的自动存档
+		GameState.slot_id = i
+		SaveRun.clear()
+	GameState.slot_id = 1
+	if not SaveRun.exists(1):
+		_fail("商店阶段未自动生成存档（槽 1）")
 		return
-	SaveRun.save(99, p2)   # 主动存档（wave=99 便于断言往返）
+	SaveRun.save(99, p2)   # 主动覆盖保存（wave=99 便于断言往返）
 	var s_mats := GameState.materials
 	var s_lv := GameState.level
 	var s_xp := GameState.xp
@@ -369,15 +373,25 @@ func _check_items() -> void:
 	var s_stats: Dictionary = p2.stats.duplicate()
 	var s_wcnt: int = p2.weapons.size()
 	var s_items: Dictionary = p2.items_owned.duplicate()
-	# 篡改现场后恢复
+	# 空槽隔离：槽 2 无档，restore 必须返回 0 且不动现场
+	GameState.slot_id = 2
+	GameState.materials = 555
+	if SaveRun.restore(p2) != 0:
+		_fail("空槽 2 不应恢复出进度")
+		return
+	if GameState.materials != 555:
+		_fail("空槽 restore 不应改动现场")
+		return
+	# 篡改现场后从槽 1 恢复
 	GameState.materials = 7
 	GameState.level = 1
 	GameState.xp = 5
 	p2.hp = 1.0
 	p2.weapons = []
 	p2.items_owned = {}
+	GameState.slot_id = 1
 	var nw: int = SaveRun.restore(p2)
-	print("SMOKE: save wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
+	print("SMOKE: save slot1 wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
 		[nw, GameState.materials, GameState.level, GameState.xp,
 		p2.hp, p2.weapons.size(), p2.items_owned.size()])
 	if nw != 99:
@@ -406,17 +420,30 @@ func _check_items() -> void:
 		_fail("存档恢复后 items_owned 不一致")
 		return
 	SaveRun.clear()
-	if SaveRun.exists():
-		_fail("存档清除失败")
+	if SaveRun.exists(1):
+		_fail("槽 1 清档失败")
 		return
-	var fj := FileAccess.open("user://save_run.json", FileAccess.WRITE)
+	# 槽 2 独立读写
+	GameState.slot_id = 2
+	SaveRun.save(88, p2)
+	if not SaveRun.exists(2):
+		_fail("槽 2 保存失败")
+		return
+	if SaveRun.exists(1):
+		_fail("槽间隔离失败：槽 1 不应有档")
+		return
+	SaveRun.clear()
+	# 损档容错：垃圾内容应判定无效
+	GameState.slot_id = 3
+	var fj := FileAccess.open("user://save_slot_3.json", FileAccess.WRITE)
 	fj.store_string("corrupted{{{")
 	fj.close()
 	if SaveRun.restore(p2) != 0:
 		_fail("损坏存档未被判定为无效")
 		return
 	SaveRun.clear()
-	print("SMOKE: save/restore/clear + 损档容错 OK")
+	GameState.slot_id = 1
+	print("SMOKE: 3-slot save/restore/clear + 隔离 + 损档容错 OK")
 	print("SMOKE: PASS")
 	get_tree().quit(0)
 

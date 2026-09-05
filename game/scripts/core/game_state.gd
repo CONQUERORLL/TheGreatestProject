@@ -16,6 +16,9 @@ var level_queue := 0   # 待处理升级次数（连升；升级 UI 接入后逐
 ## 主菜单"继续游戏"→ main 场景一次性消费标志（消费后恢复 false）
 var continue_pending := false
 
+## 当前局绑定的存档槽（1~3；主菜单选槽后设置，SaveRun 全部操作作用于该槽）
+var slot_id := 1
+
 ## 局外 run 配置（主菜单选择；Registry 注册表 id）
 var difficulty_id := "normal"
 var character_id := "potato"
