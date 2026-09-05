@@ -21,6 +21,8 @@ var _options: GridContainer
 var _back_btn: Button
 var _next_btn: Button
 var _step := 0
+var _back_press_ms := 0   # 首页返回键上次按下时刻（双击退出防误触）
+var _back_hint: Label
 
 const TOTAL_STEPS := 4
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度"]
@@ -32,6 +34,21 @@ func _ready() -> void:
 	add_child(bg)
 	_build_home()
 	_build_wizard()
+	_build_back_hint()
+
+## 底部居中提示（返回键双击退出用）
+func _build_back_hint() -> void:
+	_back_hint = Label.new()
+	_back_hint.text = "再按一次返回键退出"
+	_back_hint.add_theme_font_size_override("font_size", 16)
+	_back_hint.add_theme_color_override("font_color", Color("e8b84b"))
+	_back_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_back_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_back_hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_back_hint.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_back_hint.offset_bottom = -22.0
+	_back_hint.visible = false
+	add_child(_back_hint)
 
 # ---------------- 首页 ----------------
 
@@ -289,6 +306,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			focus.button_pressed = true   # 触发 toggled 回调 → 缓存 id + 自动进下一步
 			get_viewport().set_input_as_handled()
 		return
+	# 首页：返回键 / Esc 两秒内按两次退出（Android 返回键防误触）
+	if not _wizard.visible and event.is_action_pressed("ui_cancel"):
+		var now := Time.get_ticks_msec()
+		if now - _back_press_ms < 2000:
+			get_tree().quit()
+		else:
+			_back_press_ms = now
+			_back_hint.visible = true
+			var t := get_tree().create_timer(2.0)
+			t.timeout.connect(func() -> void: _back_hint.visible = false)
+		get_viewport().set_input_as_handled()
 
 func _start() -> void:
 	GameState.difficulty_id = _sel_diff

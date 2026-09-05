@@ -30,17 +30,28 @@ func _on_phase_changed(p: int) -> void:
 func _build_pause_btn() -> void:
 	_pause_btn = Button.new()
 	_pause_btn.text = "⏸"
-	_pause_btn.flat = true
 	_pause_btn.focus_mode = Control.FOCUS_NONE   # 不参与手柄焦点链
-	_pause_btn.add_theme_font_size_override("font_size", 24)
-	_pause_btn.add_theme_color_override("font_color", Color(0.95, 0.91, 0.78, 0.7))
+	_pause_btn.add_theme_font_size_override("font_size", 34)
+	_pause_btn.add_theme_color_override("font_color", Color(0.95, 0.91, 0.78, 0.95))
 	_pause_btn.add_theme_color_override("font_pressed_color", Color("e8b84b"))
+	# 圆形半透明底：提高可见性，72x72 设计像素（1.5x 缩放下物理约 108dp）满足触屏目标尺寸
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.09, 0.12, 0.55)
+	sb.border_color = Color(0.91, 0.72, 0.29, 0.6)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(40)
+	_pause_btn.add_theme_stylebox_override("normal", sb)
+	var sb_p: StyleBoxFlat = sb.duplicate()
+	sb_p.bg_color = Color(0.91, 0.72, 0.29, 0.35)
+	_pause_btn.add_theme_stylebox_override("pressed", sb_p)
+	_pause_btn.add_theme_stylebox_override("hover", sb)
+	_pause_btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	_pause_btn.anchor_left = 1.0
 	_pause_btn.anchor_right = 1.0
-	_pause_btn.offset_left = -66.0
-	_pause_btn.offset_top = 8.0
-	_pause_btn.offset_right = -10.0
-	_pause_btn.offset_bottom = 62.0
+	_pause_btn.offset_left = -88.0
+	_pause_btn.offset_top = 12.0
+	_pause_btn.offset_right = -16.0
+	_pause_btn.offset_bottom = 84.0
 	_pause_btn.pressed.connect(func() -> void: pause_requested.emit())
 	add_child(_pause_btn)
 

@@ -78,6 +78,10 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause"):
 		toggle_pause()
+	elif event.is_action_pressed("ui_cancel"):
+		# Android 返回键（Godot 4 默认映射 ui_cancel）/ 手柄 B：战斗中暂停、暂停中恢复
+		# PC 的 Esc 同时命中 pause 与 ui_cancel，只走上面的 pause 分支不会重复触发
+		toggle_pause()
 	elif event.is_action_pressed("toggle_mute"):
 		pass  # 音频系统接入后实现
 	# ---- 升级 UI 期间：根节点直接处理输入（最可靠，不依赖子节点 _unhandled_input 触发） ----
