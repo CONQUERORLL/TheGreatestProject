@@ -4,6 +4,10 @@ extends Node
 
 const CFG_PATH := "user://settings.cfg"
 
+## 手机端 UI 整体放大倍率：canvas_items 拉伸下 content_scale_factor
+## 对全部控件/字体/虚拟摇杆等比生效；PC 端保持 1.0 完全不变
+const MOBILE_UI_SCALE := 1.5
+
 const MODE_WINDOWED := 0     # 窗口
 const MODE_BORDERLESS := 1   # 无边框窗口
 const MODE_FULLSCREEN := 2   # 全屏
@@ -64,8 +68,15 @@ var master_vol := 1.0
 var _binds := {}   # action -> Array[描述符 Dictionary]
 
 func _ready() -> void:
+	_apply_mobile_scale()
 	load_config()
 	apply_all()
+
+## 手机端 UI 全局放大（Android/iOS 导出模板自带 "mobile" feature 标签，
+## 桌面触屏笔记本不会误触发；须在 autoload 阶段设置以覆盖所有场景）
+func _apply_mobile_scale() -> void:
+	if OS.has_feature("mobile"):
+		get_tree().root.content_scale_factor = MOBILE_UI_SCALE
 
 # ---------------- 持久化 ----------------
 
