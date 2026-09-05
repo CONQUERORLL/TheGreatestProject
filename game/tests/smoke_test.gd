@@ -341,7 +341,82 @@ func _check_items() -> void:
 		_fail("暂停面板属性/道具行未构建")
 		return
 	_main.toggle_pause()
-	print("SMOKE: items track/sell + pause panel OK")
+	# 移动端触控层：节点存在、桌面（无触屏）隐藏、touch_move 可驱动玩家
+	var tc: Control = _main.get_node("UI/TouchControls")
+	if tc == null:
+		_fail("缺少 TouchControls 触控层")
+		return
+	if tc.visible:
+		_fail("桌面端 TouchControls 应隐藏")
+		return
+	GameState.touch_move = Vector2.RIGHT
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	GameState.touch_move = Vector2.ZERO
+	if p2.velocity.x <= 10.0:
+		_fail("touch_move 未驱动玩家移动")
+		return
+	print("SMOKE: items track/sell + pause panel + touch layer OK")
+	# ---- 存档验证：自动存档存在 → 主动保存 → 篡改 → 恢复一致 → 清档 + 损档容错 ----
+	if not SaveRun.exists():
+		_fail("商店阶段未自动生成存档")
+		return
+	SaveRun.save(99, p2)   # 主动存档（wave=99 便于断言往返）
+	var s_mats := GameState.materials
+	var s_lv := GameState.level
+	var s_xp := GameState.xp
+	var s_hp: float = p2.hp
+	var s_stats: Dictionary = p2.stats.duplicate()
+	var s_wcnt: int = p2.weapons.size()
+	var s_items: Dictionary = p2.items_owned.duplicate()
+	# 篡改现场后恢复
+	GameState.materials = 7
+	GameState.level = 1
+	GameState.xp = 5
+	p2.hp = 1.0
+	p2.weapons = []
+	p2.items_owned = {}
+	var nw: int = SaveRun.restore(p2)
+	print("SMOKE: save wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
+		[nw, GameState.materials, GameState.level, GameState.xp,
+		p2.hp, p2.weapons.size(), p2.items_owned.size()])
+	if nw != 99:
+		_fail("存档波次往返失败（wave=%d）" % nw)
+		return
+	if GameState.materials != s_mats or GameState.level != s_lv or GameState.xp != s_xp \
+			or not is_equal_approx(p2.hp, s_hp) or p2.weapons.size() != s_wcnt:
+		_fail("存档恢复后 run/player 基础字段不一致")
+		return
+	var stats_ok: bool = p2.stats.size() == s_stats.size()
+	if stats_ok:
+		for k in s_stats:
+			if not is_equal_approx(float(s_stats[k]), float(p2.stats[k])):
+				stats_ok = false
+				break
+	if not stats_ok:
+		_fail("存档恢复后 stats 不一致")
+		return
+	var items_ok: bool = p2.items_owned.size() == s_items.size()
+	if items_ok:
+		for k in s_items:
+			if int(p2.items_owned.get(k, -1)) != int(s_items[k]):
+				items_ok = false
+				break
+	if not items_ok:
+		_fail("存档恢复后 items_owned 不一致")
+		return
+	SaveRun.clear()
+	if SaveRun.exists():
+		_fail("存档清除失败")
+		return
+	var fj := FileAccess.open("user://save_run.json", FileAccess.WRITE)
+	fj.store_string("corrupted{{{")
+	fj.close()
+	if SaveRun.restore(p2) != 0:
+		_fail("损坏存档未被判定为无效")
+		return
+	SaveRun.clear()
+	print("SMOKE: save/restore/clear + 损档容错 OK")
 	print("SMOKE: PASS")
 	get_tree().quit(0)
 

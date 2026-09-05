@@ -56,19 +56,39 @@ func _build_home() -> void:
 	sub.add_theme_color_override("font_color", Color("9aa3b2"))
 	box.add_child(sub)
 	box.add_child(Control.new())   # 间隔
-	for spec in [
-		["开 始 游 戏", 220.0, _open_wizard],
-		["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")],
-		["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")],
-		["退　　出", 220.0, func() -> void: get_tree().quit()],
-	]:
+	var start_btn: Button = null
+	for spec in _home_specs():
 		var b := Button.new()
 		b.text = spec[0]
 		b.custom_minimum_size = Vector2(spec[1], 52.0)
 		b.add_theme_font_size_override("font_size", 19)
 		b.pressed.connect(spec[2])
 		box.add_child(b)
-	box.get_child(3).grab_focus()   # “开始游戏”默认焦点（手柄直达）
+		if spec[0] == "开 始 游 戏":
+			start_btn = b
+	start_btn.grab_focus()   # “开始游戏”默认焦点（手柄直达）
+
+## 首页按钮清单：有存档时头部插入"继续游戏"（附波次与角色名）
+func _home_specs() -> Array:
+	var specs: Array = []
+	var sum := SaveRun.summary()
+	if not sum.is_empty():
+		var ch: Dictionary = Registry.get_character(String(sum.get("character_id", "potato")))
+		if ch.is_empty():
+			ch = Registry.get_character("potato")
+		var label := "继 续 游 戏 · 第 %d 波 %s" % [int(sum.get("wave", 1)), String(ch.get("name", ""))]
+		specs.append([label, 220.0, _continue_run])
+	specs.append(["开 始 游 戏", 220.0, _open_wizard])
+	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
+	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
+	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
+	return specs
+
+## 继续上次的一局：置标志 → main._ready 消费并恢复存档
+func _continue_run() -> void:
+	GameState.continue_pending = true
+	Haptics.rumble(0.3, 0.0, 0.1)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 # ---------------- 开局向导 ----------------
 
@@ -123,7 +143,10 @@ func _open_wizard() -> void:
 func _close_wizard() -> void:
 	_wizard.visible = false
 	_home.visible = true
-	_home.get_child(0).get_child(3).grab_focus()
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 回首页聚焦第一个按钮（继续/开始游戏）
+			break
 
 func _build_step() -> void:
 	for c in _options.get_children():

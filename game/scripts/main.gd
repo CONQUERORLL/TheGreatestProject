@@ -23,7 +23,11 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seed="):
 			GameRng.seed_from(int(arg.trim_prefix("--seed=")) & 0xFFFFFFFF)
-	GameState.start_run()
+	# 主菜单"继续游戏"：消费标志并恢复存档（档无效自动回退正常开局）
+	var restored_wave := 0
+	if GameState.continue_pending:
+		GameState.continue_pending = false
+		restored_wave = SaveRun.restore(player)
 	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.player_died.connect(_on_player_died)
 	EventBus.enemy_killed.connect(_on_enemy_killed)
@@ -42,10 +46,19 @@ func _ready() -> void:
 	$UI.add_child(dev)
 	dev.player = player
 	dev.wave_manager = wave_manager
-	# 主菜单选定的开局道具（角色属性/初始武器已在 player._ready 应用）
-	if GameState.loadout_item != "":
-		player.apply_item(GameState.loadout_item)
-	wave_manager.start_wave(1)
+	# 移动端虚拟摇杆（触屏设备自动显示）
+	var touch := preload("res://scripts/ui/touch_controls.gd").new()
+	touch.name = "TouchControls"
+	$UI.add_child(touch)
+	touch.pause_requested.connect(toggle_pause)
+	if restored_wave > 0:
+		shop_ui.open(restored_wave - 1)   # 商店阶段恢复：材料/属性/道具完整，货架重摇
+	else:
+		GameState.start_run()
+		# 主菜单选定的开局道具（角色属性/初始武器已在 player._ready 应用）
+		if GameState.loadout_item != "":
+			player.apply_item(GameState.loadout_item)
+		wave_manager.start_wave(1)
 	_build_pause_menu()
 	_build_end_menus()
 	queue_redraw()
@@ -112,8 +125,10 @@ func _on_enemy_killed(_type: String) -> void:
 ## 普通波清场后进入商店（BOSS 波击杀直接结算，不走这里）
 func _on_wave_ended(w: int) -> void:
 	shop_ui.open(w)
+	SaveRun.save(w + 1, player)   # 波次间安全点自动存档（wave = 接下来要打的波）
 
 func _on_player_died() -> void:
+	SaveRun.clear()   # 死亡清档
 	GameState.set_phase(GameState.Phase.GAME_OVER)
 	dead_label.visible = true
 	_dead_menu.visible = true
@@ -126,6 +141,7 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 		"手柄 P%d 已%s" % [device + 1, "连接" if connected else "断开"], 1.5)
 
 func _on_boss_killed() -> void:
+	SaveRun.clear()   # 胜利清档
 	GameState.set_phase(GameState.Phase.VICTORY)
 	victory_label.visible = true
 	Sfx.play("victory")
@@ -412,4 +428,11 @@ func _build_end_menus() -> void:
 
 func _goto_main_menu() -> void:
 	Haptics.rumble(0.3, 0.0, 0.1)
+	# 本局进行中返回主菜单：保留进度（恢复后重打当前波）；死亡/胜利已清档
+	if GameState.phase in [GameState.Phase.PLAYING, GameState.Phase.INTRO,
+			GameState.Phase.PAUSED, GameState.Phase.SHOP, GameState.Phase.LEVEL_UP]:
+		var nw: int = wave_manager.wave
+		if GameState.phase == GameState.Phase.SHOP:
+			nw += 1   # 商店阶段 wave_manager.wave 停在刚结束的波
+		SaveRun.save(nw, player)
 	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")

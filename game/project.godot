@@ -26,12 +26,15 @@ Registry="*res://scripts/core/registry.gd"
 Haptics="*res://scripts/core/haptics.gd"
 Sfx="*res://scripts/core/sfx.gd"
 Settings="*res://scripts/core/settings.gd"
+SaveRun="*res://scripts/core/save_run.gd"
 
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+window/handheld/orientation=0
 
 [input]
 

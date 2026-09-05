@@ -247,6 +247,7 @@ func _sell(id: String) -> void:
 		Haptics.rumble(0.2, 0.0, 0.06)
 		Sfx.play("ui_select")
 		_refresh()
+		SaveRun.save(_wave + 1, player)   # 出售后即时重存
 
 # ---------------- 开关与商品 ----------------
 
@@ -461,6 +462,7 @@ func buy(i: int) -> void:
 	else:
 		player.apply_item(g.id)
 	_refresh()
+	SaveRun.save(_wave + 1, player)   # 商店内即时重存，退出不丢购物
 
 ## 刷新：费用 ×1.4 递增；已售格与锁定格原位保留，其余重 roll
 func reroll() -> void:
@@ -479,6 +481,7 @@ func reroll() -> void:
 		else:
 			goods.append(_roll_one(weapon_full))
 	_refresh()
+	SaveRun.save(_wave + 1, player)   # 刷新扣费后即时重存
 
 ## 回血：15 ◆ 回复 50% 最大生命（原型 btnHeal）
 func heal() -> void:
@@ -489,11 +492,13 @@ func heal() -> void:
 	Haptics.rumble(0.25, 0.0, 0.08)
 	Sfx.play("heal")
 	_refresh()
+	SaveRun.save(_wave + 1, player)   # 回血扣费后即时重存
 
 ## 下一波：关商店 → 下一波 intro（原型 btnNextWave）；隐藏自动释放手柄焦点
 func next_wave() -> void:
 	visible = false
 	goods = []
+	SaveRun.save(_wave + 1, player)   # 新波开始前存档
 	wave_manager.start_wave(_wave + 1)
 
 func _grab_first_focus() -> void:

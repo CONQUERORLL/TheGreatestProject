@@ -13,11 +13,16 @@ var level := 1
 var xp := 0
 var level_queue := 0   # 待处理升级次数（连升；升级 UI 接入后逐次消耗）
 
+## 主菜单"继续游戏"→ main 场景一次性消费标志（消费后恢复 false）
+var continue_pending := false
+
 ## 局外 run 配置（主菜单选择；Registry 注册表 id）
 var difficulty_id := "normal"
 var character_id := "potato"
 var loadout_weapon := "pistol"   # 初始武器（"" = 用角色默认）
 var loadout_item := ""           # 开局道具（"" = 无）
+
+var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，TouchControls 写入）
 
 ## 加经验并处理连升（原型 settlePickup 的 while 循环）
 func gain_xp(v: int) -> void:
@@ -45,6 +50,7 @@ func reset_run() -> void:
 	level = 1
 	xp = 0
 	level_queue = 0
+	touch_move = Vector2.ZERO
 
 func start_run() -> void:
 	reset_run()

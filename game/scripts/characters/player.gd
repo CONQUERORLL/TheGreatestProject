@@ -39,6 +39,8 @@ func _physics_process(delta: float) -> void:
 	var c: Dictionary = Config.PLAYER
 	# ---- 移动：加速度 + 指数阻尼（与原型手感一致） ----
 	var input_dir := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	if GameState.touch_move != Vector2.ZERO:
+		input_dir = GameState.touch_move   # 移动端虚拟摇杆（模拟量：轻推慢走）
 	var max_speed: float = stats.base_speed * stats.speed_mult
 	velocity += input_dir * c.accel * delta
 	velocity *= exp(-9.0 * delta)

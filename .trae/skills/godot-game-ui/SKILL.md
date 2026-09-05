@@ -79,3 +79,4 @@ var picked: String = group.get_pressed_button().get_meta("id")
 - 赋值号后不能直接换行起表达式（`x =\n "..."` Parse Error "Expected an expression after ="），多行字符串拼接用行尾 `\` 续行或首行同行起。
 - mod/数据校验失败用 `push_warning(...)` 跳过该条目，不能中断其他内容加载。
 - **手柄 UI 确认**：project.godot 显式绑定 `ui_accept`（Enter/Space/手柄按钮 0=A）与 `ui_cancel`（Esc/按钮 1=B），不要依赖引擎默认；InputMap 重绑定系统参考 `scripts/core/settings.gd`（事件序列化为 {t:key/jbtn/jmot} 描述符存 ConfigFile，同类设备事件替换、手柄绑定快照保留）。
+- **移动端触控**：虚拟摇杆参考 `scripts/ui/touch_controls.gd`——`DisplayServer.is_touchscreen_available()` 检测 + `phase_changed` 控制显隐；`_input` 处理 ScreenTouch/ScreenDrag（多点触控用 index 独占手指）；输出写 `GameState.touch_move` 模拟量，player 优先读取；Control 全程 `MOUSE_FILTER_IGNORE`，暂停钮 `FOCUS_NONE` 不抢手柄焦点；`.godot` 缓存丢失后先跑 `--import` 重建 class_name 缓存再 headless 测试。
