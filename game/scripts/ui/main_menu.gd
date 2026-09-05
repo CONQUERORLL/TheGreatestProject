@@ -21,6 +21,11 @@ var _options: GridContainer
 var _back_btn: Button
 var _next_btn: Button
 var _step := 0
+var _slots_panel: Control     # 选槽弹窗（开始新局 / 继续共用）
+var _slots_title: Label
+var _slot_btns: Array = []    # 3 个槽位 Button（下标 0~2 = 槽 1~3）
+var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）| "continue" = 读取
+var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
 
 const TOTAL_STEPS := 4
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度"]
@@ -32,6 +37,134 @@ func _ready() -> void:
 	add_child(bg)
 	_build_home()
 	_build_wizard()
+	_build_slots_panel()
+
+# ---------------- 存档槽选择弹窗 ----------------
+
+func _build_slots_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_slots_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	center.add_child(box)
+	_slots_title = Label.new()
+	_slots_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_slots_title.add_theme_font_size_override("font_size", 24)
+	_slots_title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(_slots_title)
+	var tip := Label.new()
+	tip.name = "Tip"
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tip.add_theme_font_size_override("font_size", 13)
+	tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(tip)
+	for i in range(1, SaveRun.SLOT_COUNT + 1):
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(460, 76)
+		b.add_theme_font_size_override("font_size", 16)
+		b.pressed.connect(_on_slot_pressed.bind(i))
+		box.add_child(b)
+		_slot_btns.append(b)
+	var cancel := Button.new()
+	cancel.text = "取　消"
+	cancel.custom_minimum_size = Vector2(460, 46)
+	cancel.pressed.connect(_close_slots)
+	box.add_child(cancel)
+
+## 打开选槽：mode = "new"（开始新局，有档覆盖需确认）| "continue"（读取有档槽）
+func _open_slots(mode: String) -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_slots_mode = mode
+	_confirm_slot = 0
+	_slots_panel.visible = true
+	_home.visible = false
+	var tip: Label = _slots_panel.get_node("CenterContainer/VBoxContainer/Tip")
+	if mode == "new":
+		_slots_title.text = "选 择 存 档 槽"
+		tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
+	else:
+		_slots_title.text = "继 续 游 戏"
+		tip.text = "选择要继续的存档槽（空槽不可用）"
+	_refresh_slots()
+	# 焦点给第一个可用槽
+	for b in _slot_btns:
+		if not b.disabled:
+			b.grab_focus()
+			break
+
+func _close_slots() -> void:
+	_slots_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 焦点回首页第一个按钮
+			break
+
+func _refresh_slots() -> void:
+	for i in range(1, SaveRun.SLOT_COUNT + 1):
+		var b: Button = _slot_btns[i - 1]
+		var has := SaveRun.exists(i)
+		if _slots_mode == "continue":
+			b.disabled = not has
+			b.text = _slot_label(i) if has else "第 %d 槽 · 空（不可用）" % i
+			continue
+		b.disabled = false
+		if _confirm_slot == i:
+			b.text = "⚠ 覆盖第 %d 槽？再点一次确认" % i
+			b.add_theme_color_override("font_color", Color("e0644f"))
+		else:
+			var info := _slot_label(i)
+			b.text = info + "\n（开始新局将覆盖此进度）" if has else info
+			b.remove_theme_color_override("font_color")
+
+## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间
+func _slot_label(i: int) -> String:
+	var s := SaveRun.summary(i)
+	if s.is_empty():
+		return "第 %d 槽 · 空" % i
+	var ch: Dictionary = Registry.get_character(String(s.get("character_id", "potato")))
+	if ch.is_empty():
+		ch = Registry.get_character("potato")
+	var when := String(s.get("saved_at", ""))
+	if when != "":
+		when = "\n" + when
+	return "第 %d 槽 · 第 %d 波 %s%s" % [i, int(s.get("wave", 1)), String(ch.get("name", "")), when]
+
+func _on_slot_pressed(i: int) -> void:
+	if _slots_mode == "continue":
+		_do_continue(i)
+		return
+	# 开始新局：已有进度的槽需要一次覆盖确认（再点一次）
+	if SaveRun.exists(i) and _confirm_slot != i:
+		_confirm_slot = i
+		_refresh_slots()
+		return
+	_do_new(i)
+
+## 开新局绑定槽位：覆盖确认后清旧档，防止新局意外恢复旧进度
+func _do_new(slot: int) -> void:
+	GameState.slot_id = slot
+	SaveRun.clear()
+	GameState.continue_pending = false
+	Haptics.rumble(0.3, 0.0, 0.1)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+## 读取指定槽继续：置标志 → main._ready 消费并恢复
+func _do_continue(slot: int) -> void:
+	GameState.slot_id = slot
+	GameState.continue_pending = true
+	Haptics.rumble(0.3, 0.0, 0.1)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 # ---------------- 首页 ----------------
 
@@ -68,27 +201,16 @@ func _build_home() -> void:
 			start_btn = b
 	start_btn.grab_focus()   # “开始游戏”默认焦点（手柄直达）
 
-## 首页按钮清单：有存档时头部插入"继续游戏"（附波次与角色名）
+## 首页按钮清单：任一槽有档时头部插入"继续游戏"（进选槽弹窗）
 func _home_specs() -> Array:
 	var specs: Array = []
-	var sum := SaveRun.summary()
-	if not sum.is_empty():
-		var ch: Dictionary = Registry.get_character(String(sum.get("character_id", "potato")))
-		if ch.is_empty():
-			ch = Registry.get_character("potato")
-		var label := "继 续 游 戏 · 第 %d 波 %s" % [int(sum.get("wave", 1)), String(ch.get("name", ""))]
-		specs.append([label, 220.0, _continue_run])
-	specs.append(["开 始 游 戏", 220.0, _open_wizard])
+	if SaveRun.any_exists():
+		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
+	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
 	return specs
-
-## 继续上次的一局：置标志 → main._ready 消费并恢复存档
-func _continue_run() -> void:
-	GameState.continue_pending = true
-	Haptics.rumble(0.3, 0.0, 0.1)
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
 # ---------------- 开局向导 ----------------
 
@@ -277,6 +399,15 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 选槽弹窗：返回键退出覆盖确认态，再按关闭弹窗
+	if _slots_panel.visible and event.is_action_pressed("ui_cancel"):
+		if _confirm_slot != 0:
+			_confirm_slot = 0
+			_refresh_slots()
+		else:
+			_close_slots()
+		get_viewport().set_input_as_handled()
+		return
 	# Esc / 手柄 B：向导内回上一步
 	if _wizard.visible and event.is_action_pressed("ui_cancel"):
 		_prev()
