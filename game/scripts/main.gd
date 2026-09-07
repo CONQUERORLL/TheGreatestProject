@@ -9,6 +9,7 @@ var banner_t := 0.0
 @onready var dead_label: Label = $UI/DeadLabel
 @onready var victory_label: Label = $UI/VictoryLabel
 var _pause_menu: Control = null
+var _phase_before_pause := GameState.Phase.PLAYING
 var _dead_menu: Control = null
 var _victory_menu: Control = null
 @onready var banner_title: Label = $UI/BannerTitle
@@ -52,13 +53,19 @@ func _ready() -> void:
 	$UI.add_child(touch)
 	touch.pause_requested.connect(toggle_pause)
 	if restored_wave > 0:
-		shop_ui.open(restored_wave - 1)   # 商店阶段恢复：材料/属性/道具完整，货架重摇
+		if SaveRun.restored_checkpoint == SaveRun.CHECKPOINT_WAVE_START:
+			wave_manager.start_wave(restored_wave)
+		else:
+			shop_ui.open(restored_wave - 1)   # 商店档恢复：属性完整，货架重新生成
 	else:
 		GameState.start_run()
 		# 主菜单选定的开局道具（角色属性/初始武器已在 player._ready 应用）
 		if GameState.loadout_item != "":
 			player.apply_item(GameState.loadout_item)
+		var initial_save_ok := SaveRun.save(1, player, SaveRun.CHECKPOINT_WAVE_START)
 		wave_manager.start_wave(1)
+		if not initial_save_ok:
+			EventBus.banner_requested.emit("存档失败", "新局尚未写入存档", 2.0)
 	_build_pause_menu()
 	_build_end_menus()
 	queue_redraw()
@@ -79,7 +86,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("toggle_mute"):
-		pass  # 音频系统接入后实现
+		Settings.toggle_mute()
+		EventBus.banner_requested.emit("声音", "已静音" if Settings.master_vol <= 0.0001 else "已恢复", 1.0)
 	# ---- 升级 UI 期间：根节点直接处理输入（最可靠，不依赖子节点 _unhandled_input 触发） ----
 	elif GameState.phase == GameState.Phase.LEVEL_UP and level_up_ui.visible:
 		if event.is_action_pressed("ui_accept"):
@@ -125,11 +133,14 @@ func _on_enemy_killed(_type: String) -> void:
 ## 普通波清场后进入商店（BOSS 波击杀直接结算，不走这里）
 func _on_wave_ended(w: int) -> void:
 	shop_ui.open(w)
-	SaveRun.save(w + 1, player)   # 波次间安全点自动存档（wave = 接下来要打的波）
+	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
 func _on_player_died() -> void:
-	SaveRun.clear()   # 死亡清档
+	if SaveRun.current_run_owns_slot:
+		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.GAME_OVER)
+	EventBus.run_ended.emit(false)
 	dead_label.visible = true
 	_dead_menu.visible = true
 	_dead_menu.get_child(0).grab_focus()   # 再来一局
@@ -141,8 +152,10 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 		"手柄 P%d 已%s" % [device + 1, "连接" if connected else "断开"], 1.5)
 
 func _on_boss_killed() -> void:
-	SaveRun.clear()   # 胜利清档
+	if SaveRun.current_run_owns_slot:
+		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.VICTORY)
+	EventBus.run_ended.emit(true)
 	victory_label.visible = true
 	Sfx.play("victory")
 	_victory_menu.visible = true
@@ -156,14 +169,14 @@ func _on_banner(title: String, subtitle: String, duration: float) -> void:
 	banner_t = duration
 
 func toggle_pause() -> void:
-	# 原型：intro 中也可暂停，恢复后直接进 playing
 	if GameState.phase == GameState.Phase.PLAYING or GameState.phase == GameState.Phase.INTRO:
+		_phase_before_pause = GameState.phase
 		GameState.set_phase(GameState.Phase.PAUSED)
 		_refresh_pause_content()
 		_pause_overlay.visible = true
 		_pause_resume.grab_focus()   # 继续游戏（手柄直达）
 	elif GameState.phase == GameState.Phase.PAUSED:
-		GameState.set_phase(GameState.Phase.PLAYING)
+		GameState.set_phase(_phase_before_pause)
 		_pause_overlay.visible = false
 
 func _draw() -> void:
@@ -428,11 +441,9 @@ func _build_end_menus() -> void:
 
 func _goto_main_menu() -> void:
 	Haptics.rumble(0.3, 0.0, 0.1)
-	# 本局进行中返回主菜单：保留进度（恢复后重打当前波）；死亡/胜利已清档
-	if GameState.phase in [GameState.Phase.PLAYING, GameState.Phase.INTRO,
-			GameState.Phase.PAUSED, GameState.Phase.SHOP, GameState.Phase.LEVEL_UP]:
-		var nw: int = wave_manager.wave
-		if GameState.phase == GameState.Phase.SHOP:
-			nw += 1   # 商店阶段 wave_manager.wave 停在刚结束的波
-		SaveRun.save(nw, player)
+	# 商店是安全点，离开前保存；战斗/升级中保留波次开始快照，避免重复刷收益。
+	if GameState.phase == GameState.Phase.SHOP:
+		if not SaveRun.save(wave_manager.wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+			EventBus.banner_requested.emit("存档失败", "无法返回主菜单，请检查磁盘空间", 2.0)
+			return
 	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")

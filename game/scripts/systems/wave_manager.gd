@@ -10,6 +10,7 @@ var wave := 0
 var wave_timer := 0.0
 var spawn_t := 0.0
 var intro_t := 0.0
+var ending_started := false
 var boss: Node2D   # 当前 BOSS 引用（HUD 显示血量用；击杀后清空）
 var player: Node2D
 
@@ -20,24 +21,26 @@ func _on_boss_killed() -> void:
 	boss = null
 
 func start_wave(n: int) -> void:
-	wave = n
+	wave = clampi(n, 1, Config.WAVES_TOTAL)
+	ending_started = false
 	spawn_t = 0.6
-	wave_timer = Config.wave_duration(n)
+	wave_timer = Config.wave_duration(wave)
+	_clear_projectiles()
 	# 玩家回到世界中心（原型 startWave 同款）
 	player.global_position = Vector2(Config.WORLD.w, Config.WORLD.h) / 2.0
 	player.velocity = Vector2.ZERO
-	var is_boss_wave := n == Config.BOSS_WAVE
+	var is_boss_wave := wave == Config.BOSS_WAVE
 	intro_t = 2.6 if is_boss_wave else 2.2
 	GameState.set_phase(GameState.Phase.INTRO)
 	if is_boss_wave:
 		var bid := Registry.boss_id()
 		spawn(bid)
-		EventBus.banner_requested.emit("第 %d 波 · BOSS" % n,
+		EventBus.banner_requested.emit("第 %d 波 · BOSS" % wave,
 			Registry.enemies[bid].name + " 出现了！活下去并击败它！", 2.6)
 	else:
-		EventBus.banner_requested.emit("第 %d 波 / 共 %d 波" % [n, Config.WAVES_TOTAL],
+		EventBus.banner_requested.emit("第 %d 波 / 共 %d 波" % [wave, Config.WAVES_TOTAL],
 			"武器会自动攻击，专心走位", 2.2)
-	EventBus.wave_started.emit(n)
+	EventBus.wave_started.emit(wave)
 
 func _physics_process(delta: float) -> void:
 	if GameState.phase == GameState.Phase.INTRO:
@@ -56,14 +59,14 @@ func _physics_process(delta: float) -> void:
 		var cap := int(float(Config.wave_cap(wave)) * float(diff.spawn_mult))
 		if wave_timer > 0.0 and spawn_t <= 0.0 and _alive_count(false) < cap:
 			spawn_t = Config.wave_interval(wave) / float(diff.spawn_mult)
-			spawn(GameRng.weighted_pick(Registry.wave_composition(wave)))
-		if wave_timer <= 0.0:
-			# 时间到：剩余敌人消散、清空敌方子弹；掉落物保留在场上原位（下一波可捡）
+			spawn(String(GameRng.weighted_pick(Registry.wave_composition(wave))))
+		if wave_timer <= 0.0 and not ending_started:
+			ending_started = true
+			# 时间到只执行一次：敌人退场，双方弹丸清空，掉落物跨波保留。
 			for e in get_tree().get_nodes_in_group("enemies"):
 				if e.flee <= 0.0:
 					e.start_flee()
-			for b in get_tree().get_nodes_in_group("enemy_bullets"):
-				b.queue_free()
+			_clear_projectiles()
 	else:
 		# BOSS 波：少量干扰小怪持续刷新，BOSS 不死不休
 		spawn_t -= delta
@@ -76,6 +79,9 @@ func _physics_process(delta: float) -> void:
 
 ## 刷怪：玩家视野外一圈、世界边界内（原型 12 次尝试，距玩家 >420）
 func spawn(type: String) -> void:
+	if not Registry.enemies.has(type):
+		push_warning("WaveManager: 未知敌人 ID，跳过生成：" + type)
+		return
 	var e := EnemyScene.instantiate()
 	e.setup(type, wave)
 	var view := get_viewport().get_visible_rect().size
@@ -93,6 +99,11 @@ func spawn(type: String) -> void:
 	e.player = player
 	if e.is_boss():
 		boss = e
+
+func _clear_projectiles() -> void:
+	for group in ["enemy_bullets", "player_bullets"]:
+		for projectile in get_tree().get_nodes_in_group(group):
+			projectile.queue_free()
 
 ## 存活敌人计数；exclude_boss=true 时不含 BOSS（BOSS 波干扰怪上限用）
 func _alive_count(exclude_boss: bool) -> int:

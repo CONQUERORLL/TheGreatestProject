@@ -18,11 +18,11 @@ const PLAYER := {
 
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
 const WEAPONS := {
-	"pistol": { "name": "手枪", "ico": "🔫", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "desc": "稳定单体远程" },
-	"smg": { "name": "冲锋枪", "ico": "💢", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "desc": "极快射速，轻微散射" },
-	"shotgun": { "name": "霰弹枪", "ico": "💥", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "rarity": "rare", "desc": "一次射出5发扇形弹丸" },
-	"knife": { "name": "砍刀", "ico": "🔪", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "desc": "近战弧形挥砍" },
-	"rocket": { "name": "火箭筒", "ico": "🚀", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "rarity": "epic", "desc": "命中范围爆炸 AOE" },
+	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "desc": "稳定单体远程" },
+	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "desc": "极快射速，轻微散射" },
+	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "desc": "一次射出5发扇形弹丸" },
+	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "desc": "近战弧形挥砍" },
+	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "rarity": "epic", "desc": "命中范围爆炸 AOE" },
 }
 
 const WEAPON_SLOTS := 6

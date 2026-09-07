@@ -52,8 +52,7 @@ func settle() -> void:
 		"xp":
 			GameState.gain_xp(val)
 		"mat":
-			GameState.materials += val
-			EventBus.materials_changed.emit(GameState.materials)
+			GameState.add_materials(val)
 		"heart":
 			if player and is_instance_valid(player):
 				player.hp = minf(player.stats.max_hp, player.hp + float(val))

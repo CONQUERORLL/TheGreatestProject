@@ -28,7 +28,7 @@ func _process(delta: float) -> void:
 		if p.life > 0.0:
 			alive = true
 			p.pos += p.vel * delta
-			p.vel *= 0.9
+			p.vel *= exp(-6.32 * delta)
 	if not alive:
 		queue_free()
 		return

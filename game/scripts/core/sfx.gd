@@ -34,14 +34,12 @@ func _ready() -> void:
 		add_child(p)
 		_players.append(p)
 	# 事件接线
-	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.enemy_killed.connect(_on_enemy_killed)
 	EventBus.boss_killed.connect(_on_boss_killed)
 	EventBus.player_damaged.connect(_on_player_damaged)
 	EventBus.player_died.connect(_on_player_died)
 	EventBus.leveled_up.connect(_on_leveled_up)
 	EventBus.wave_started.connect(_on_wave_started)
-	EventBus.banner_requested.connect(_on_banner)
 
 func play(name: String) -> void:
 	if not _streams.has(name):
@@ -50,10 +48,6 @@ func play(name: String) -> void:
 	_idx = (_idx + 1) % _pool_size
 	p.stream = _streams[name]
 	p.play()
-
-func _on_screen_shake(amount: float) -> void:
-	# 震屏事件 → 按强度选音效（火箭/霰弹/受击各自的枪声在 try_fire 里直接调）
-	pass
 
 func _on_enemy_killed(type: String) -> void:
 	play("enemy_die")
@@ -71,9 +65,6 @@ func _on_leveled_up(_lv: int) -> void:
 	play("level_up")
 
 func _on_wave_started(_w: int) -> void:
-	play("wave_start")
-
-func _on_banner(_t: String, _s: String, _d: float) -> void:
 	play("wave_start")
 
 # ---------------- 程序生成 AudioStreamWAV ----------------

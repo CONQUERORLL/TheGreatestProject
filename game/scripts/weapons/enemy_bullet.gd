@@ -1,12 +1,11 @@
 extends Node2D
-## 敌方子弹：直线飞行，命中玩家造成伤害（对应原型 eBullets）
-## 射手弹：r=6 life=3；BOSS 环形弹：r=7 life=4.5
+## 敌方弹丸使用线段扫掠命中玩家，避免高弹速或低帧率穿透。
 
 var velocity := Vector2.ZERO
 var life := 3.0
 var dmg := 10.0
 var radius := 6.0
-var player  # 由发射者注入（characters/player.gd）
+var player
 
 const COL := Color("ff6b5e")
 
@@ -24,16 +23,19 @@ func setup(pos: Vector2, ang: float, bspeed: float, damage: float, r: float, lif
 func _physics_process(delta: float) -> void:
 	if not GameState.is_running():
 		return
-	global_position += velocity * delta
+	var previous := global_position
+	var next := global_position + velocity * delta
 	life -= delta
+	if player != null and is_instance_valid(player) and Combat.segment_hits_circle(
+			previous, next, player.global_position, radius + float(Config.PLAYER.radius)):
+		global_position = next
+		player.take_damage(dmg)
+		queue_free()
+		return
+	global_position = next
 	var world := Rect2(0.0, 0.0, Config.WORLD.w, Config.WORLD.h)
 	if life <= 0.0 or not world.has_point(global_position):
 		queue_free()
-		return
-	if player != null and is_instance_valid(player):
-		if global_position.distance_to(player.global_position) < radius + float(Config.PLAYER.radius):
-			player.take_damage(dmg)
-			queue_free()
 
 func _draw() -> void:
 	draw_circle(Vector2.ZERO, radius, COL)

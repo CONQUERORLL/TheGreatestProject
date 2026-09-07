@@ -33,7 +33,8 @@ func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
 	cfg = Registry.enemies[type_name]
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
-	var boss_flag := type_name == "boss" or bool(cfg.get("is_boss", false))
+	var boss_flag := type_name == "boss" or bool(cfg.get("is_boss", false)) \
+		or String(cfg.get("ai", "")) == "boss"
 	var hp_s := 1.0 if boss_flag else Config.wave_hp_scale(wave)
 	var dmg_s := (1.0 + 0.18 * (wave - 1)) if boss_flag else Config.wave_dmg_scale(wave)
 	hp = cfg.hp * hp_s * float(diff.hp_mult)
@@ -113,23 +114,35 @@ func _physics_process(delta: float) -> void:
 	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
-	# 接触玩家伤害（每敌人独立 tick，对应原型 touchTick）
-	if d < radius + float(Config.PLAYER.radius) and touch_cd <= 0.0:
+	# 移动后重新计算接触，避免使用上一位置的距离和方向。
+	var contact_vec: Vector2 = player.global_position - global_position
+	var contact_d := contact_vec.length()
+	if contact_d < radius + float(Config.PLAYER.radius) and touch_cd <= 0.0:
 		touch_cd = Config.PLAYER.touch_tick
 		player.take_damage(touch_dmg)
-		# 击退：将敌人推到接触范围外，防止贴身持续掉血
-		var push: float = (radius + float(Config.PLAYER.radius) + 10.0) - d
+		var contact_dir := contact_vec.normalized() if contact_d > 0.001 else Vector2.from_angle(wob)
+		var push: float = (radius + float(Config.PLAYER.radius) + 10.0) - contact_d
 		if push > 0.0:
-			global_position -= ux * push
-	# 敌间分离：对每个重叠者自推半重叠（双方各推一半，与原型成对互推等价）
-	for other in get_tree().get_nodes_in_group("enemies"):
-		if other == self or other.flee > 0.0:
+			global_position -= contact_dir * push
+	Combat.update_enemy_position(self)
+	# 空间索引只查询邻近敌人，并按实例 ID 每对只处理一次。
+	for other in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or is_queued_for_deletion() \
+				or other.is_queued_for_deletion() or get_instance_id() >= other.get_instance_id():
 			continue
-		var diff: Vector2 = other.global_position - global_position
-		var od := diff.length()
+		var separation: Vector2 = other.global_position - global_position
+		var separation_d := separation.length()
 		var min_d: float = radius + other.radius
-		if od > 0.01 and od < min_d:
-			global_position -= diff / od * (min_d - od) * 0.5
+		if separation_d > 0.01 and separation_d < min_d:
+			var shift := separation / separation_d * (min_d - separation_d) * 0.5
+			global_position -= shift
+			other.global_position += shift
+			other.global_position = other.global_position.clamp(
+				Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
+			Combat.update_enemy_position(other)
+	global_position = global_position.clamp(
+		Vector2(radius, radius), world - Vector2(radius, radius))
+	Combat.update_enemy_position(self)
 	queue_redraw()
 
 func _fire_shooter(ang: float) -> void:

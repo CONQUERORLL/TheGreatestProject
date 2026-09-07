@@ -26,7 +26,7 @@ func _process(delta: float) -> void:
 	if not applied:
 		applied = true
 		if GameState.is_running():
-			for e in get_tree().get_nodes_in_group("enemies"):
+			for e in Combat.enemies_near(global_position, max_r + Combat.MAX_ENTITY_RADIUS):
 				if e.flee > 0.0:
 					continue
 				if global_position.distance_to(e.global_position) < max_r + e.radius:
@@ -37,6 +37,8 @@ func _process(delta: float) -> void:
 		queue_redraw()
 	if life <= 0.0:
 		queue_free()
+		return
+	queue_redraw()
 
 func _draw() -> void:
 	var r := max_r * (1.0 - life / max_life)

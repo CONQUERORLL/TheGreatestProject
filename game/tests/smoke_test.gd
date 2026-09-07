@@ -3,12 +3,21 @@ extends Node
 ##   + 升级三选一 + HUD + 手柄焦点 + Registry/mod 加载 + 数值断言 + 粒子/飘字/爆炸特效（fx 组）
 ## 运行：godot --headless --path . res://tests/smoke_test.tscn（退出码 0=通过）
 
+class SegmentEnemy:
+	extends Node2D
+	var flee := 0.0
+	var radius := 1.0
+
 var _main: Node
 var _last_ended := 0
 var _mats_at_end := -1      # 第 1 波收波结算后的材料数
 var _loot_left_at_end := -1 # 第 1 波收波结算后的场上剩余掉落
 
+const TEST_SAVE_ROOT := "user://tests/smoke_run"
+
 func _ready() -> void:
+	SaveRun.set_storage_root_for_tests(TEST_SAVE_ROOT)
+	_cleanup_test_storage(false)
 	_main = preload("res://scenes/main.tscn").instantiate()
 	add_child(_main)
 	EventBus.wave_ended.connect(_on_wave_ended)
@@ -70,9 +79,20 @@ func _check_wave() -> void:
 	if GameState.phase != GameState.Phase.SHOP:
 		_fail("波末未进入商店（phase=%d）" % GameState.phase)
 		return
+	if not get_tree().get_nodes_in_group("player_bullets").is_empty() \
+			or not get_tree().get_nodes_in_group("enemy_bullets").is_empty():
+		_fail("波末未清理双方弹丸")
+		return
 	shop.next_wave()
 	if wm.wave != 2 or GameState.phase != GameState.Phase.INTRO:
 		_fail("商店下一波未生效（wave=%d phase=%d）" % [wm.wave, GameState.phase])
+		return
+	var intro_pos: Vector2 = _main.get_node("Player").global_position
+	GameState.touch_move = Vector2.RIGHT
+	await get_tree().physics_frame
+	GameState.touch_move = Vector2.ZERO
+	if _main.get_node("Player").global_position != intro_pos:
+		_fail("INTRO 阶段玩家仍在移动")
 		return
 	var loot_kept := get_tree().get_nodes_in_group("loot").size()
 	print("SMOKE: loot_kept=%d (at_end=%d)" % [loot_kept, _loot_left_at_end])
@@ -96,6 +116,7 @@ func _check_wave() -> void:
 	# BOSS 弹幕验证（在下一波进行中生成，避开收波清弹窗口）
 	var boss: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
 	boss.setup("boss", 10)
+	boss.ring_cd = 0.2   # INTRO 冻结，进入 PLAYING 后尽快发射供测试观察
 	if not boss.is_boss():
 		_fail("BOSS 判定失败（is_boss）")
 		return
@@ -173,28 +194,27 @@ func _check_levelup() -> void:
 	if player.stats == stats_before and is_equal_approx(player.hp, hp_before):
 		_fail("升级未产生任何属性变化")
 		return
-	# ---- 二次升级验证（修复后：连升/二次升级焦点和输入必须可用） ----
-	GameState.gain_xp(Config.xp_need(GameState.level) + 1)   # 再升 1 级
-	await get_tree().process_frame   # 等一帧让 deferred grab_focus 执行
-	print("SMOKE: lv2_phase=%d queue=%d cards=%d focus=%s" %
-		[GameState.phase, GameState.level_queue, ui.card_count(),
-		str(ui.get_viewport().gui_get_focus_owner())])
-	if GameState.phase != GameState.Phase.LEVEL_UP or ui.card_count() != 3:
-		_fail("二次升级 UI 未打开（phase=%d cards=%d）" % [GameState.phase, ui.card_count()])
+	# ---- 单次跨两级：第一次选择后必须立即重抽三张，第二次选择后恢复战斗 ----
+	var need_two := Config.xp_need(GameState.level) + Config.xp_need(GameState.level + 1)
+	GameState.gain_xp(need_two + 1)
+	await get_tree().process_frame
+	if GameState.phase != GameState.Phase.LEVEL_UP or GameState.level_queue != 2 or ui.card_count() != 3:
+		_fail("单次跨两级未生成首组卡（phase=%d queue=%d cards=%d）" %
+			[GameState.phase, GameState.level_queue, ui.card_count()])
+		return
+	ui._choose(0)
+	await get_tree().process_frame
+	if GameState.phase != GameState.Phase.LEVEL_UP or GameState.level_queue != 1 or ui.card_count() != 3:
+		_fail("连升第二组未重新抽卡（phase=%d queue=%d cards=%d）" %
+			[GameState.phase, GameState.level_queue, ui.card_count()])
 		return
 	var focus2: Control = ui.get_viewport().gui_get_focus_owner()
 	if focus2 == null or focus2.get_parent() != ui.get_node("Center/Box/Cards"):
-		_fail("二次升级卡未获得焦点（grab_focus deferred 失效）")
+		_fail("连升第二组卡未获得焦点")
 		return
-	var stats2: Dictionary = player.stats.duplicate()
-	var hp2: float = player.hp
 	ui._choose(0)
-	print("SMOKE: after_lv2_choose phase=%d queue=%d" % [GameState.phase, GameState.level_queue])
-	if GameState.phase != GameState.Phase.PLAYING:
-		_fail("二次升级选择后未恢复 PLAYING")
-		return
-	if player.stats == stats2 and is_equal_approx(player.hp, hp2):
-		_fail("二次升级未产生属性变化")
+	if GameState.phase != GameState.Phase.PLAYING or GameState.level_queue != 0:
+		_fail("连升完成后未恢复 PLAYING")
 		return
 	# ---- 商店流程验证：压缩第 2 波 → 清场 → 自动进商店 → 购买/刷新/回血/下一波 ----
 	var wm: Node = _main.get_node("WaveManager")
@@ -341,6 +361,7 @@ func _check_items() -> void:
 		_fail("暂停面板属性/道具行未构建")
 		return
 	_main.toggle_pause()
+	GameState.set_phase(GameState.Phase.PLAYING)   # 触控移动测试显式进入战斗阶段
 	# 移动端触控层：节点存在、桌面（无触屏）隐藏、touch_move 可驱动玩家
 	var tc: Control = _main.get_node("UI/TouchControls")
 	if tc == null:
@@ -365,7 +386,9 @@ func _check_items() -> void:
 	if not SaveRun.exists(1):
 		_fail("商店阶段未自动生成存档（槽 1）")
 		return
-	SaveRun.save(99, p2)   # 主动覆盖保存（wave=99 便于断言往返）
+	if not SaveRun.save(9, p2):
+		_fail("合法波次存档写入失败")
+		return
 	var s_mats := GameState.materials
 	var s_lv := GameState.level
 	var s_xp := GameState.xp
@@ -394,7 +417,7 @@ func _check_items() -> void:
 	print("SMOKE: save slot1 wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
 		[nw, GameState.materials, GameState.level, GameState.xp,
 		p2.hp, p2.weapons.size(), p2.items_owned.size()])
-	if nw != 99:
+	if nw != 9:
 		_fail("存档波次往返失败（wave=%d）" % nw)
 		return
 	if GameState.materials != s_mats or GameState.level != s_lv or GameState.xp != s_xp \
@@ -419,13 +442,26 @@ func _check_items() -> void:
 	if not items_ok:
 		_fail("存档恢复后 items_owned 不一致")
 		return
+	# 连续保存应保留上一版；正式文件损坏时从该备份恢复。
+	SaveRun.clear()
+	if not SaveRun.save(8, p2) or not SaveRun.save(9, p2):
+		_fail("无法准备存档备份恢复测试")
+		return
+	var broken_final := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
+	broken_final.store_string("broken")
+	broken_final.close()
+	if SaveRun.restore(p2) != 8:
+		_fail("正式档损坏时未从上一版备份恢复")
+		return
 	SaveRun.clear()
 	if SaveRun.exists(1):
 		_fail("槽 1 清档失败")
 		return
 	# 槽 2 独立读写
 	GameState.slot_id = 2
-	SaveRun.save(88, p2)
+	if not SaveRun.save(8, p2):
+		_fail("槽 2 合法存档写入失败")
+		return
 	if not SaveRun.exists(2):
 		_fail("槽 2 保存失败")
 		return
@@ -435,18 +471,183 @@ func _check_items() -> void:
 	SaveRun.clear()
 	# 损档容错：垃圾内容应判定无效
 	GameState.slot_id = 3
-	var fj := FileAccess.open("user://save_slot_3.json", FileAccess.WRITE)
+	var fj := FileAccess.open(SaveRun.slot_path(3), FileAccess.WRITE)
 	fj.store_string("corrupted{{{")
 	fj.close()
 	if SaveRun.restore(p2) != 0:
 		_fail("损坏存档未被判定为无效")
 		return
 	SaveRun.clear()
+	var malformed := FileAccess.open(SaveRun.slot_path(3), FileAccess.WRITE)
+	malformed.store_string(JSON.stringify({"version": 2, "rng_a": 1,
+		"run": {"wave": 3, "materials": 0, "kills": 0, "run_time": 0,
+			"level": 1, "xp": 0, "level_queue": 0},
+		"player": {"hp": 10, "stats": {}, "weapons": [], "items_owned": {}}}))
+	malformed.close()
+	if SaveRun.restore(p2) != 0:
+		_fail("结构完整但深层字段非法的存档未被拒绝")
+		return
+	SaveRun.clear()
 	GameState.slot_id = 1
-	print("SMOKE: 3-slot save/restore/clear + 隔离 + 损档容错 OK")
+	if SaveRun.save(Config.WAVES_TOTAL + 1, p2) or SaveRun.slot_path(0) != "":
+		_fail("非法波次/槽位未被拒绝")
+		return
+	# 连续碰撞工具：线段跨过圆心必须命中，偏离则不能误判。
+	if not Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 0), 4.0) \
+			or Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 20), 4.0):
+		_fail("连续线段碰撞判定错误")
+		return
+	# 大圆圆心更远但边缘更近时，必须按首次进入点而非圆心投影排序。
+	var small := SegmentEnemy.new()
+	small.radius = 5.0
+	small.position = Vector2(100050.0, 100000.0)
+	add_child(small)
+	small.add_to_group("enemies")
+	var large := SegmentEnemy.new()
+	large.radius = 20.0
+	large.position = Vector2(100060.0, 100000.0)
+	add_child(large)
+	large.add_to_group("enemies")
+	await get_tree().physics_frame
+	var first_hit := Combat.first_enemy_hit_on_segment(Vector2(100000.0, 100000.0),
+		Vector2(100100.0, 100000.0), 0.0)
+	var hit_position: Vector2 = first_hit.get("position", Vector2.ZERO)
+	if first_hit.get("enemy") != large or not is_equal_approx(hit_position.x, 100040.0):
+		_fail("连续碰撞未按圆边界首次进入点选择目标/命中位置")
+		return
+	small.position = Vector2(100010.0, 100000.0)
+	Combat.update_enemy_position(small)
+	if not Combat.enemies_near(small.position, 1.0).has(small):
+		_fail("敌人移动后当前帧空间索引未更新")
+		return
+	if not Combat.enemies_near(Vector2.ZERO, 1.0e12).has(large):
+		_fail("超大空间查询未安全退化为实体扫描")
+		return
+	small.queue_free()
+	large.queue_free()
+	# Registry 合同：未知 AI 拒绝，普通敌人不能覆盖最终 BOSS，坏刷怪引用拒绝。
+	var invalid_enemy := {"id": "smoke_bad_ai", "name": "bad", "hp": 10.0,
+		"speed": 10.0, "dmg": 1.0, "r": 10.0, "ai": "unknown"}
+	if Registry.register_enemy(invalid_enemy):
+		_fail("Registry 接受了未知敌人 AI")
+		return
+	var normal_enemy := {"id": "smoke_normal", "name": "normal", "hp": 10.0,
+		"speed": 10.0, "dmg": 1.0, "r": 10.0, "ai": "chaser"}
+	if not Registry.register_enemy(normal_enemy):
+		_fail("Registry 拒绝了合法普通敌人")
+		return
+	Registry.boss_override = "smoke_normal"
+	if Registry.boss_id() != "boss" or Registry._valid_spawn_entries([{"item": "missing", "w": 1.0}]):
+		_fail("BOSS 覆盖或刷怪表防御校验失效")
+		return
+	var declared_boss := {"id": "smoke_declared_boss", "name": "boss", "hp": 100.0,
+		"speed": 10.0, "dmg": 1.0, "r": 20.0, "ai": "chaser", "is_boss": true}
+	if not Registry.register_enemy(declared_boss) \
+			or Registry.enemies.smoke_declared_boss.ai != "boss" \
+			or not Registry.enemies.smoke_declared_boss.has("ring_count"):
+		_fail("声明为 BOSS 的敌人未规范化完整合同")
+		return
+	Registry.boss_override = "smoke_declared_boss"
+	if Registry.boss_id() != "smoke_declared_boss" \
+			or Registry._valid_spawn_entries([{"item": "smoke_declared_boss", "w": 1.0}]):
+		_fail("规范化 BOSS 无法作为最终 BOSS，或被普通波刷怪表接受")
+		return
+	var reserved_boss: Dictionary = declared_boss.duplicate(true)
+	reserved_boss["id"] = "grunt"
+	if Registry.register_enemy(reserved_boss):
+		_fail("内置普通敌人 ID 被覆盖为 BOSS")
+		return
+	var custom_weapon := {"id": "smoke_single", "name": "single", "attack_type": "projectile",
+		"cd": 0.5, "dmg": 1.0, "bspeed": 300.0, "pellets": 1}
+	if not Registry.register_weapon(custom_weapon):
+		_fail("Registry 拒绝了合法自定义弹丸武器")
+		return
+	var oversized_weapon: Dictionary = custom_weapon.duplicate(true)
+	oversized_weapon["id"] = "smoke_oversized"
+	oversized_weapon["splash"] = 1.0e12
+	if Registry.register_weapon(oversized_weapon):
+		_fail("Registry 接受了可阻塞空间查询的超大武器范围")
+		return
+	var bullets_before := get_tree().get_nodes_in_group("player_bullets").size()
+	p2.try_fire({"type": "smoke_single", "cd": 0.0})
+	var bullets_after := get_tree().get_nodes_in_group("player_bullets").size()
+	if bullets_after != bullets_before + 1:
+		_fail("自定义单发武器未生成恰好一颗弹丸")
+		return
+	Registry.reload_content()
+	# 精确整数校验与 v1 无 checkpoint 旧单槽迁移。
+	if not SaveRun.save(4, p2):
+		_fail("v1 迁移测试准备存档失败")
+		return
+	var source_file := FileAccess.open(SaveRun.slot_path(1), FileAccess.READ)
+	var source_json := JSON.new()
+	if source_file == null or source_json.parse(source_file.get_as_text()) != OK:
+		_fail("无法读取迁移测试源存档")
+		return
+	source_file.close()
+	var legacy_data: Dictionary = source_json.data
+	SaveRun.clear()
+	legacy_data["run"]["wave"] = 4.5
+	var fractional := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
+	fractional.store_string(JSON.stringify(legacy_data))
+	fractional.close()
+	if SaveRun.restore(p2) != 0:
+		_fail("小数波次绕过了精确整数校验")
+		return
+	SaveRun.clear()
+	legacy_data["version"] = 1
+	legacy_data.erase("checkpoint")
+	legacy_data["run"]["wave"] = 4
+	var legacy_path := TEST_SAVE_ROOT.path_join("save_run.json")
+	var legacy_file := FileAccess.open(legacy_path, FileAccess.WRITE)
+	legacy_file.store_string(JSON.stringify(legacy_data))
+	legacy_file.close()
+	SaveRun.migrate_legacy_if_needed(true)
+	if not SaveRun.exists(1) or FileAccess.file_exists(legacy_path) \
+			or SaveRun.restore(p2) != 4 or SaveRun.restored_checkpoint != SaveRun.CHECKPOINT_SHOP:
+		_fail("v1 旧单槽迁移或兼容检查点失败")
+		return
+	SaveRun.clear()
+	# 新局选槽必须进入向导，且最终确认前不能清除已有槽。
+	if not SaveRun.save(2, p2):
+		_fail("主菜单回归测试准备存档失败")
+		return
+	var menu: Control = preload("res://scenes/ui/main_menu.tscn").instantiate()
+	add_child(menu)
+	await get_tree().process_frame
+	menu._open_slots("new")
+	menu._do_new(1)
+	await get_tree().process_frame
+	if not menu._wizard.visible or menu._slots_panel.visible or not SaveRun.exists(1):
+		_fail("新局选槽未进入向导，或提前清除了旧档")
+		return
+	var accept := InputEventAction.new()
+	accept.action = "ui_accept"
+	accept.pressed = true
+	menu._unhandled_input(accept)
+	if menu._step != 1:
+		_fail("手柄确认已选中的默认向导卡未进入下一步")
+		return
+	menu.queue_free()
+	print("SMOKE: save isolation + contracts + menu wizard OK")
+	_cleanup_test_storage(true)
 	print("SMOKE: PASS")
 	get_tree().quit(0)
 
+func _cleanup_test_storage(reset_root: bool) -> void:
+	var previous_slot := GameState.slot_id
+	for slot in range(1, SaveRun.SLOT_COUNT + 1):
+		GameState.slot_id = slot
+		SaveRun.clear()
+	GameState.slot_id = clampi(previous_slot, 1, SaveRun.SLOT_COUNT)
+	var legacy_path := TEST_SAVE_ROOT.path_join("save_run.json")
+	if FileAccess.file_exists(legacy_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(legacy_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_SAVE_ROOT))
+	if reset_root:
+		SaveRun.reset_storage_root_after_tests()
+
 func _fail(reason: String) -> void:
 	print("SMOKE: FAIL - " + reason)
+	_cleanup_test_storage(true)
 	get_tree().quit(1)

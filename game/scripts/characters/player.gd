@@ -26,6 +26,7 @@ func _ready() -> void:
 	var ch: Dictionary = Registry.get_character(GameState.character_id)
 	for k in ch.get("stats", {}):
 		stats[k] = ch.stats[k]
+	_sanitize_stats()
 	hp = stats.max_hp
 	var wt: String = GameState.loadout_weapon
 	if wt == "":
@@ -66,33 +67,29 @@ func _process(_delta: float) -> void:
 
 func try_fire(w: Dictionary) -> void:
 	var c: Dictionary = Registry.weapons[w.type]
-	w.cd = c.cd / stats.as_mult
+	w.cd = float(c.cd) / maxf(0.01, float(stats.as_mult))
 	var target := Combat.nearest_enemy(global_position)
 	var ang := (target.global_position - global_position).angle() if target else facing
-	facing = ang   # 角色+枪朝向射击方向
+	facing = ang
 	queue_redraw()
-	match w.type:
-		"knife":
-			_melee_slash(c, ang)
-			Sfx.play("shoot_knife")
-		"shotgun":
-			for i in int(c.pellets):
-				var a: float = ang - c.arc / 2.0 + c.arc * (float(i) / (float(c.pellets) - 1.0)) \
-					+ GameRng.range_f(-0.03, 0.03)
-				_spawn_bullet(c, a)
-			EventBus.screen_shake.emit(2.0)
-			Sfx.play("shoot_shotgun")
-		_:
-			var spread: float = c.get("spread", 0.0)
-			var a2 := ang + (GameRng.range_f(-spread, spread) if spread > 0.0 else 0.0)
-			_spawn_bullet(c, a2)
-			if w.type == "rocket":
-				EventBus.screen_shake.emit(2.5)
-				Sfx.play("shoot_rocket")
-			elif w.type == "smg":
-				Sfx.play("shoot_smg")
-			else:
-				Sfx.play("shoot_pistol")
+	var attack_type := String(c.get("attack_type", "projectile"))
+	if attack_type == "melee":
+		_melee_slash(c, ang)
+	else:
+		var pellets := maxi(1, int(c.get("pellets", 1)))
+		var arc := maxf(0.0, float(c.get("arc", 0.0)))
+		var spread := maxf(0.0, float(c.get("spread", 0.0)))
+		for i in pellets:
+			var offset := 0.0
+			if pellets > 1:
+				offset = -arc / 2.0 + arc * float(i) / float(pellets - 1)
+			if spread > 0.0:
+				offset += GameRng.range_f(-spread, spread)
+			_spawn_bullet(c, ang + offset)
+	var shake_amount := float(c.get("shake", 0.0))
+	if shake_amount > 0.0:
+		EventBus.screen_shake.emit(shake_amount)
+	Sfx.play(String(c.get("sfx", "shoot_pistol")))
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
 	var b := BulletScene.instantiate()
@@ -104,7 +101,7 @@ func _melee_slash(c: Dictionary, ang: float) -> void:
 	s.setup(global_position, ang, c["range"], c.swing_arc)
 	get_parent().add_child(s)
 	# 一次性命中扇形范围内敌人（原型为 0.13s 持续检测，效果等价）
-	for e in get_tree().get_nodes_in_group("enemies"):
+	for e in Combat.enemies_near(global_position, float(c["range"]) + Combat.MAX_ENTITY_RADIUS):
 		if e.flee > 0.0:
 			continue
 		var d := global_position.distance_to(e.global_position)
@@ -136,6 +133,7 @@ func apply_upgrade(id: String) -> void:
 				hp = minf(stats.max_hp, hp + stats.max_hp * v)
 			_:
 				stats[k] = stats.get(k, 0.0) + v
+	_sanitize_stats()
 	queue_redraw()   # 拾取范围圈等自绘跟随刷新
 
 ## 应用商店道具被动效果（数据驱动：effects 键 = stats 键，可叠加；i-hp 只加上限不回血，与原型一致）
@@ -146,6 +144,7 @@ func apply_item(id: String) -> void:
 	var it: Dictionary = Registry.items[id]
 	for k in it.get("effects", {}):
 		stats[k] = stats.get(k, 0.0) + float(it.effects[k])
+	_sanitize_stats()
 	queue_redraw()
 
 ## 出售道具：返还 50% 购入价并移除效果（heal_flat/heal_pct 为一次性效果，不可逆）
@@ -162,9 +161,25 @@ func sell_item(id: String) -> int:
 		if k == "heal_flat" or k == "heal_pct":
 			continue
 		stats[k] = stats.get(k, 0.0) - float(it.effects[k])
+	_sanitize_stats()
 	hp = minf(hp, stats.max_hp)
 	queue_redraw()
 	return price
+
+func _sanitize_stats() -> void:
+	stats.max_hp = maxf(1.0, float(stats.max_hp))
+	stats.base_speed = maxf(1.0, float(stats.base_speed))
+	stats.dmg_mult = maxf(0.01, float(stats.dmg_mult))
+	stats.as_mult = maxf(0.01, float(stats.as_mult))
+	stats.speed_mult = maxf(0.01, float(stats.speed_mult))
+	stats.crit_ch = clampf(float(stats.crit_ch), 0.0, 1.0)
+	stats.crit_mult = maxf(1.0, float(stats.crit_mult))
+	stats.armor = maxf(-7.9, float(stats.armor))
+	stats.dodge = clampf(float(stats.dodge), 0.0, 0.95)
+	stats.pickup_range = maxf(0.0, float(stats.pickup_range))
+	stats.regen = maxf(0.0, float(stats.regen))
+	stats.harvesting = maxf(-0.99, float(stats.harvesting))
+	stats.lifesteal = maxf(0.0, float(stats.lifesteal))
 
 func take_damage(raw: float) -> void:
 	if iframes > 0.0:

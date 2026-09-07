@@ -61,6 +61,7 @@ var res_h := 720
 var mode := MODE_WINDOWED
 var fps := 60
 var master_vol := 1.0
+var _last_nonzero_master := 1.0
 var _binds := {}   # action -> Array[描述符 Dictionary]
 
 func _ready() -> void:
@@ -78,6 +79,8 @@ func load_config() -> void:
 	mode = int(cfg.get_value("display", "mode", MODE_WINDOWED))
 	fps = int(cfg.get_value("game", "fps", 60))
 	master_vol = clampf(float(cfg.get_value("audio", "master", 1.0)), 0.0, 1.0)
+	if master_vol > 0.0001:
+		_last_nonzero_master = master_vol
 	_binds.clear()
 	if cfg.has_section("input"):
 		for action in ACTION_ORDER:
@@ -163,6 +166,17 @@ func set_fps(value: int) -> void:
 
 func set_master(v: float) -> void:
 	master_vol = clampf(v, 0.0, 1.0)
+	if master_vol > 0.0001:
+		_last_nonzero_master = master_vol
+	save_config()
+	apply_audio()
+
+func toggle_mute() -> void:
+	if master_vol > 0.0001:
+		_last_nonzero_master = master_vol
+		master_vol = 0.0
+	else:
+		master_vol = maxf(0.05, _last_nonzero_master)
 	save_config()
 	apply_audio()
 

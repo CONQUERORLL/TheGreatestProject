@@ -43,11 +43,18 @@ func set_phase(p: Phase) -> void:
 	phase = p
 	phase_changed.emit(p)
 
+func set_materials(value: int) -> void:
+	materials = maxi(0, value)
+	EventBus.materials_changed.emit(materials)
+
+func add_materials(delta: int) -> void:
+	set_materials(materials + delta)
+
 func is_running() -> bool:
-	return phase == Phase.PLAYING or phase == Phase.INTRO
+	return phase == Phase.PLAYING
 
 func reset_run() -> void:
-	materials = 0
+	set_materials(0)
 	kills = 0
 	run_time = 0.0
 	level = 1

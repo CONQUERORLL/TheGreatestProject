@@ -202,7 +202,7 @@ func _resource_row() -> HBoxContainer:
 	var mat_btn := Button.new()
 	mat_btn.text = "设为"
 	mat_btn.pressed.connect(func() -> void:
-		GameState.materials = int(mat_sb.value))
+		GameState.set_materials(int(mat_sb.value)))
 	row.add_child(mat_btn)
 	row.add_child(_label("  经验"))
 	var xp_sb := SpinBox.new()

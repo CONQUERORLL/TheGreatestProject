@@ -113,9 +113,8 @@ func _choose(i: int) -> void:
 	GameState.level_queue = maxi(0, GameState.level_queue - 1)
 	_choices = []
 	if GameState.level_queue > 0:
-		# 连升：不隐藏 UI，直接重建卡片并抓焦
-		_build_cards()
-		_grab_first_card()
+		# 连升：为下一次升级重新抽取三张，避免空卡片锁死
+		open()
 	else:
 		visible = false
 		GameState.set_phase(GameState.Phase.PLAYING)

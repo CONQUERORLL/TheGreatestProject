@@ -23,6 +23,7 @@ var _next_btn: Button
 var _step := 0
 var _slots_panel: Control     # 选槽弹窗（开始新局 / 继续共用）
 var _slots_title: Label
+var _slots_tip: Label
 var _slot_btns: Array = []    # 3 个槽位 Button（下标 0~2 = 槽 1~3）
 var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）| "continue" = 读取
 var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
@@ -31,6 +32,7 @@ const TOTAL_STEPS := 4
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度"]
 
 func _ready() -> void:
+	SaveRun.migrate_legacy_if_needed()
 	var bg := ColorRect.new()
 	bg.color = Color("101218")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -62,12 +64,11 @@ func _build_slots_panel() -> void:
 	_slots_title.add_theme_font_size_override("font_size", 24)
 	_slots_title.add_theme_color_override("font_color", Color("e8b84b"))
 	box.add_child(_slots_title)
-	var tip := Label.new()
-	tip.name = "Tip"
-	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	tip.add_theme_font_size_override("font_size", 13)
-	tip.add_theme_color_override("font_color", Color("9aa3b2"))
-	box.add_child(tip)
+	_slots_tip = Label.new()
+	_slots_tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_slots_tip.add_theme_font_size_override("font_size", 13)
+	_slots_tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(_slots_tip)
 	for i in range(1, SaveRun.SLOT_COUNT + 1):
 		var b := Button.new()
 		b.custom_minimum_size = Vector2(460, 76)
@@ -88,13 +89,12 @@ func _open_slots(mode: String) -> void:
 	_confirm_slot = 0
 	_slots_panel.visible = true
 	_home.visible = false
-	var tip: Label = _slots_panel.get_node("CenterContainer/VBoxContainer/Tip")
 	if mode == "new":
 		_slots_title.text = "选 择 存 档 槽"
-		tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
+		_slots_tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
 	else:
 		_slots_title.text = "继 续 游 戏"
-		tip.text = "选择要继续的存档槽（空槽不可用）"
+		_slots_tip.text = "选择要继续的存档槽（空槽不可用）"
 	_refresh_slots()
 	# 焦点给第一个可用槽
 	for b in _slot_btns:
@@ -151,18 +151,19 @@ func _on_slot_pressed(i: int) -> void:
 		return
 	_do_new(i)
 
-## 开新局绑定槽位：覆盖确认后清旧档，防止新局意外恢复旧进度
+## 开新局先绑定槽位并进入向导；最终确认前不清旧档，允许安全取消
 func _do_new(slot: int) -> void:
 	GameState.slot_id = slot
-	SaveRun.clear()
 	GameState.continue_pending = false
-	Haptics.rumble(0.3, 0.0, 0.1)
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
+	SaveRun.current_run_owns_slot = false
+	_slots_panel.visible = false
+	_open_wizard()
 
 ## 读取指定槽继续：置标志 → main._ready 消费并恢复
 func _do_continue(slot: int) -> void:
 	GameState.slot_id = slot
 	GameState.continue_pending = true
+	SaveRun.current_run_owns_slot = false
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
@@ -368,10 +369,9 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	desc_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	desc_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(desc_l)
-	b.toggled.connect(func(on: bool) -> void:
-		if not on:
-			return
-		# 缓存选中 id（防止跨步骤按钮释放后丢失选择）
+	b.pressed.connect(func() -> void:
+		# pressed 在已选中的单选卡上也会触发，因此默认卡可直接确认。
+		b.button_pressed = true
 		match _step:
 			0: _sel_char = id
 			1: _sel_weapon = id
@@ -417,7 +417,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _wizard.visible and event.is_action_pressed("ui_accept"):
 		var focus := get_viewport().gui_get_focus_owner()
 		if focus is Button and focus.toggle_mode and not focus.disabled:
-			focus.button_pressed = true   # 触发 toggled 回调 → 缓存 id + 自动进下一步
+			focus.pressed.emit()
 			get_viewport().set_input_as_handled()
 		return
 
@@ -426,5 +426,7 @@ func _start() -> void:
 	GameState.character_id = _sel_char
 	GameState.loadout_weapon = _sel_weapon
 	GameState.loadout_item = _sel_item
+	GameState.continue_pending = false
+	# Main 在玩家初始化后原子覆盖该槽；场景加载或写入失败时旧档仍保留。
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")

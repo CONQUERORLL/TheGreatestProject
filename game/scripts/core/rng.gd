@@ -46,15 +46,22 @@ func chance(p: float) -> bool:
 
 ## list 元素形如 { "item": 任意, "w": 权重 }
 func weighted_pick(list: Array) -> Variant:
-	if list.is_empty():
-		push_error("GameRng.weighted_pick: 空列表")
-		return null
+	var valid: Array = []
 	var total := 0.0
 	for e in list:
-		total += float(e.w)
+		if typeof(e) != TYPE_DICTIONARY:
+			continue
+		var weight: Variant = e.get("w")
+		if (typeof(weight) == TYPE_INT or typeof(weight) == TYPE_FLOAT) \
+				and is_finite(float(weight)) and float(weight) > 0.0:
+			valid.append(e)
+			total += float(weight)
+	if valid.is_empty() or total <= 0.0:
+		push_error("GameRng.weighted_pick: 无有效正权重条目")
+		return null
 	var r := next() * total
-	for e in list:
+	for e in valid:
 		r -= float(e.w)
 		if r <= 0.0:
 			return e.item
-	return list[list.size() - 1].item
+	return valid[valid.size() - 1].item
