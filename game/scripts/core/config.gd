@@ -51,6 +51,18 @@ const ENEMIES := {
 	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
 	"chest_guard": { "name": "宝箱守卫", "hp": 90.0, "speed": 60.0, "dmg": 14.0, "xp": 12, "mat": 15, "r": 24.0, "color": "#c9a24a", "shape": "square", "heart_chance": 0.10 },
 	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "heart_chance": 1.0 },
+	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "heart_chance": 1.0 },
+	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "heart_chance": 1.0 },
+}
+
+## BOSS 轮换池：标准第 10 波 / 无尽每 10 波，按种子随机轮换（每日挑战全服同 BOSS）
+const BOSS_POOL := ["boss", "boss_spiral", "boss_summoner"]
+
+## BOSS id → 中文称号（HUD/横幅展示用）
+const BOSS_TITLES := {
+	"boss": "土豆之王 · 弹幕压制",
+	"boss_spiral": "深渊织网者 · 螺旋封锁",
+	"boss_summoner": "腐土孵化者 · 群海战术",
 }
 
 ## 高难度精英替换池（难度 elite_chance 触发时从中抽取，W4+ 生效）
@@ -74,6 +86,27 @@ static func is_event_wave(w: int) -> bool:
 	if w < EVENT_WAVE_FIRST or Config.is_boss_wave(w):
 		return false
 	return (w - EVENT_WAVE_FIRST) % EVENT_WAVE_INTERVAL == 0
+
+## ---- 每日挑战（全服同局）：当日日期决定种子/角色/难度/BOSS ----
+## 日期串（如 "2026-09-08"）→ 稳定哈希（FNV-1a 32 位）
+static func daily_hash(date_str: String) -> int:
+	var h := 0x811C9DC5
+	for i in date_str.length():
+		h = ((h ^ (date_str.unicode_at(i) & 0xFF)) * 0x01000193) & 0xFFFFFFFF
+	return h
+
+## 今日挑战配置：{seed, character_id, difficulty_id, boss_id}（全服一致）
+static func daily_setup(date_str: String) -> Dictionary:
+	var h := daily_hash(date_str)
+	var chars := ["potato", "berserker", "ranger", "gambler", "farmer", "vampire", "guardian"]
+	var diffs := ["normal", "hard", "nightmare"]
+	var pool: Array = BOSS_POOL.duplicate()
+	return {
+		"seed": h,
+		"character_id": chars[h % chars.size()],
+		"difficulty_id": diffs[(h >> 5) % diffs.size()],
+		"boss_id": String(pool[(h >> 11) % pool.size()]),
+	}
 
 ## 升级池（可重复叠加；effects 键 = player.stats 键，创意工坊数据驱动；
 ## 特例：heal_flat = 最大生命+立即回复同值，heal_pct = 立即回复最大生命百分比）

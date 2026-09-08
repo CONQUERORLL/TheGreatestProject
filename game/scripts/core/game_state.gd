@@ -29,6 +29,8 @@ var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，Tou
 
 var endless := false   # 无尽炼狱模式（每 10 波 BOSS，波次无上限，积分排行）
 var score := 0         # 无尽模式积分（击杀 / BOSS 击破 / 清波奖励）
+var daily := false     # 每日挑战（当日日期做种子，全服同局：同角色/难度/商店/BOSS）
+var daily_date := ""   # 每日挑战绑定的日期（YYYY-MM-DD，跨天防护）
 
 func add_score(v: int) -> void:
 	score = maxi(0, score + v)

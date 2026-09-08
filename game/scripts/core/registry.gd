@@ -213,7 +213,9 @@ func register_enemy(data: Dictionary) -> bool:
 		return _reject("敌人", data, "is_boss 必须是布尔值")
 	var ai: String = data.ai
 	var declared_boss: bool = data.id == "boss" or ai == "boss" or bool(data.get("is_boss", false))
-	if declared_boss and Config.ENEMIES.has(data.id) and data.id != "boss":
+	# 仅阻止 mod 把内置普通敌人（追击者等）覆盖为 BOSS；内置 BOSS 池本身允许
+	if declared_boss and Config.ENEMIES.has(data.id) \
+			and not Config.BOSS_POOL.has(data.id):
 		return _reject("敌人", data, "内置普通敌人 ID 不能覆盖为 BOSS")
 	if declared_boss:
 		ai = "boss"
@@ -414,14 +416,14 @@ func _register_builtin() -> void:
 	enemies = {}
 	# AI 行为类型：chaser 追击 / runner 抖动冲刺 / shooter 风筝射击 / boss 环形弹幕
 	var ai_map := { "grunt": "chaser", "runner": "runner", "tank": "chaser",
-		"shooter": "shooter", "boss": "boss",
+		"shooter": "shooter", "boss": "boss", "boss_spiral": "boss", "boss_summoner": "boss",
 		"swarm": "chaser", "bomber": "runner", "wizard": "shooter",
 		"shadow": "runner", "guard": "chaser", "chest_guard": "chaser" }
 	for id2 in Config.ENEMIES:
 		var e: Dictionary = Config.ENEMIES[id2].duplicate()
 		e["id"] = id2
 		e["ai"] = ai_map.get(id2, "chaser")
-		if id2 == "boss":
+		if ai_map.get(id2, "") == "boss":
 			e["is_boss"] = true
 		register_enemy(e)
 	difficulties = {

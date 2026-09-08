@@ -29,8 +29,9 @@ func _ready() -> void:
 	if GameState.continue_pending:
 		GameState.continue_pending = false
 		restored_wave = SaveRun.restore(player)
-	# 局外天赋（MetaProgress）：新局应用；读档局不重复应用（效果已烙进存档 stats）
-	if restored_wave == 0:
+	# 局外天赋（MetaProgress）：新局应用；读档局不重复应用（效果已烙进存档 stats）；
+	# 每日挑战不吃局外天赋（全服同局，天赋会造成个体差异）
+	if restored_wave == 0 and not GameState.daily:
 		MetaProgress.apply_on_run_start(player)
 	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.player_died.connect(_on_player_died)
@@ -131,7 +132,7 @@ func _on_screen_shake(amount: float) -> void:
 
 func _on_enemy_killed(type: String) -> void:
 	GameState.kills += 1
-	if GameState.endless:
+	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.kill_score(Registry.enemies.get(type, {})))
 	Haptics.rumble(0.12, 0.0, 0.06)   # 击杀微震（Haptics 内部节流防叠满）
 
@@ -139,7 +140,7 @@ func _on_enemy_killed(type: String) -> void:
 ## 波末自动回收场上全部掉落：经验/材料/红心直接结算，
 ## 升级选择若在此触发会积压 level_queue，下一波开始时补弹
 func _on_wave_ended(w: int) -> void:
-	if GameState.endless:
+	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
 	shop_ui.open(w)
 	for l in get_tree().get_nodes_in_group("loot"):
@@ -161,15 +162,27 @@ func _on_player_died() -> void:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.GAME_OVER)
 	EventBus.run_ended.emit(false)
-	# 局外成长：结算土豆精华（跨局永久）
-	var earned := MetaProgress.grant_run_essence(GameState.score,
-		wave_manager.wave, GameState.endless)
-	dead_label.text = "你倒下了 · 获得 ✦%d 精华" % earned
-	if GameState.endless:
+	# 局外成长：结算土豆精华（跨局永久；每日挑战不计精华——榜单才是它的奖励）
+	var earned := 0
+	if not GameState.daily:
+		earned = MetaProgress.grant_run_essence(GameState.score,
+			wave_manager.wave, GameState.endless)
+	# 每日挑战：死亡积分入今日榜（通关在 boss_killed 结算）
+	if GameState.daily:
+		var ch_d: Dictionary = Registry.get_character(GameState.character_id)
+		var rank_d := Leaderboard.record(GameState.score, wave_manager.wave,
+			String(ch_d.get("name", "?")), GameState.kills, GameState.run_time,
+			"daily:" + GameState.daily_date)
+		dead_label.text = "你倒下了 · 今日挑战积分 %d" % GameState.score
+		if rank_d > 0:
+			EventBus.banner_requested.emit("今日榜更新",
+				"积分 %d · 今日第 %d 名" % [GameState.score, rank_d], 3.0)
+	elif GameState.endless:
 		# 无尽：成绩写入排行榜并展示名次
 		var ch: Dictionary = Registry.get_character(GameState.character_id)
 		var rank := Leaderboard.record(GameState.score, wave_manager.wave,
 			String(ch.get("name", "?")), GameState.kills, GameState.run_time)
+		dead_label.text = "你倒下了 · 积分 %d · 获得 ✦%d 精华" % [GameState.score, earned]
 		if rank == 1:
 			EventBus.banner_requested.emit("新纪录！",
 				"积分 %d 登顶排行榜 · 获得 ✦%d 精华" % [GameState.score, earned], 3.0)
@@ -193,6 +206,26 @@ func _on_boss_killed() -> void:
 		# 无尽：积分与波次收尾由 wave_manager 处理（wave_ended → 商店 → 下一波）
 		EventBus.banner_requested.emit("BOSS 击破！",
 			"积分 +%d · 炼狱继续深入" % Config.boss_kill_score(wave_manager.wave), 2.2)
+		return
+	if GameState.daily:
+		# 每日挑战：通关结算入今日榜（BOSS 击破加分 ×2）
+		GameState.add_score(Config.boss_kill_score(wave_manager.wave) * 2)
+		GameState.set_phase(GameState.Phase.VICTORY)
+		EventBus.run_ended.emit(true)
+		var ch_v: Dictionary = Registry.get_character(GameState.character_id)
+		var rank_v := Leaderboard.record(GameState.score, wave_manager.wave,
+			String(ch_v.get("name", "?")), GameState.kills, GameState.run_time,
+			"daily:" + GameState.daily_date)
+		victory_label.text = "今日挑战完成！· 积分 %d%s" % [GameState.score,
+			" · 今日第 %d 名" % rank_v if rank_v > 0 else ""]
+		victory_label.visible = true
+		Sfx.play("victory")
+		_victory_menu.visible = true
+		_victory_continue.visible = false   # 每日挑战无"继续无尽"
+		for btn in _victory_menu.get_children():
+			if btn is Button and btn.visible:
+				btn.grab_focus()
+				break
 		return
 	# 标准模式通关：存档保留到玩家作出选择（继续无尽会改写为无尽档）
 	GameState.set_phase(GameState.Phase.VICTORY)

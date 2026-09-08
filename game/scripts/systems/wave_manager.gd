@@ -56,10 +56,12 @@ func start_wave(n: int) -> void:
 	intro_t = 2.6 if is_boss_wave else 2.2
 	GameState.set_phase(GameState.Phase.INTRO)
 	if is_boss_wave:
-		var bid := Registry.boss_id()
+		var bid := _pick_boss_id()
 		spawn(bid)
+		var bname: String = Registry.enemies[bid].name
+		var title: String = Config.BOSS_TITLES.get(bid, "")
 		EventBus.banner_requested.emit("第 %d 波 · BOSS" % wave,
-			Registry.enemies[bid].name + " 出现了！活下去并击败它！", 2.6)
+			"%s 出现了！%s" % [bname, "（%s）" % title if title != "" else ""], 2.6)
 	elif Config.is_event_wave(wave):
 		_roll_event_wave()
 	else:
@@ -67,6 +69,22 @@ func start_wave(n: int) -> void:
 				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱"],
 			"武器会自动攻击，专心走位", 2.2)
 	EventBus.wave_started.emit(wave)
+
+## BOSS 轮换：从 BOSS_POOL 按当前波次确定性选取（同种子同波次同 BOSS，
+## 每日挑战全服一致；mod 的 boss_override 仍最高优先）
+func _pick_boss_id() -> String:
+	var override := Registry.boss_id()
+	if override != "boss" or not Registry.enemies.has("boss_spiral"):
+		return override
+	# 每日挑战：今日 BOSS 由日期哈希固定（全服一致）
+	if GameState.daily:
+		var daily_boss := String(Config.daily_setup(GameState.daily_date).get("boss_id", "boss"))
+		return daily_boss if Registry.enemies.has(daily_boss) else "boss"
+	# 波 10/20/30… 在池内轮换（种子 + 轮次决定）
+	var round_idx := wave / 10
+	var pool: Array = Config.BOSS_POOL.duplicate()
+	var pick: String = pool[(GameRng._a + round_idx * 7919) % pool.size()]
+	return pick if Registry.enemies.has(pick) else "boss"
 
 ## 事件波抽取：宝箱守卫 / 精英狩猎 / 流星雨 三选一
 func _roll_event_wave() -> void:

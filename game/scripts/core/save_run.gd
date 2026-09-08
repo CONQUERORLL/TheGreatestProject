@@ -44,7 +44,10 @@ func reset_storage_root_after_tests() -> void:
 
 ## 保存当前局到当前槽。checkpoint 表示恢复后进入商店还是直接重打该波。
 ## 无尽模式波次上限放宽到 ENDLESS_MAX_WAVE。
+## 每日挑战不落盘（slot 0 / 全服同局，不存档），直接返回 true 跳过。
 func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_START) -> bool:
+	if GameState.daily:
+		return true
 	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless else Config.WAVES_TOTAL
 	if next_wave < 1 or next_wave > wave_max:
 		push_warning("SaveRun: 非法波次 %d，拒绝保存" % next_wave)

@@ -55,10 +55,10 @@ func _process(delta: float) -> void:
 	_vignette.color.a = _vignette_a * 0.55
 	if player == null or wave_manager == null:
 		return
-	# 无尽模式：右上角显示累计积分（标准模式隐藏）
-	_score_text.visible = GameState.endless
-	if GameState.endless:
-		_score_text.text = "★ %d" % GameState.score
+	# 无尽/每日挑战：右上角显示累计积分（标准模式隐藏）
+	_score_text.visible = GameState.endless or GameState.daily
+	if _score_text.visible:
+		_score_text.text = "%s %d" % ["📅" if GameState.daily else "★", GameState.score]
 	# 商店/暂停/升级/结算期间战斗数值冻结，跳过整段刷新
 	if GameState.phase != GameState.Phase.PLAYING and GameState.phase != GameState.Phase.INTRO:
 		return

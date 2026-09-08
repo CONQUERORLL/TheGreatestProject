@@ -31,9 +31,14 @@ var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）|
 var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
 var _lb_panel: Control        # 无尽炼狱排行榜弹窗
 var _lb_rows: VBoxContainer
+var _lb_mode := "endless"     # 排行榜标签：endless 无尽总榜 / daily 今日榜
+var _lb_title: Label
+var _lb_btn_endless: Button
+var _lb_btn_daily: Button
 var _talent_panel: Control    # 天赋树弹窗
 var _talent_essence: Label    # 精华余额
 var _talent_rows: VBoxContainer
+var _daily_panel: Control     # 每日挑战详情弹窗
 
 const TOTAL_STEPS := 5
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
@@ -49,6 +54,7 @@ func _ready() -> void:
 	_build_slots_panel()
 	_build_leaderboard_panel()
 	_build_talent_panel()
+	_build_daily_panel()
 
 # ---------------- 存档槽选择弹窗 ----------------
 
@@ -220,6 +226,7 @@ func _home_specs() -> Array:
 	if SaveRun.any_exists():
 		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
 	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
+	specs.append(["每 日 挑 战", 220.0, func() -> void: _open_daily()])
 	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
 	specs.append(["天 赋 树", 220.0, func() -> void: _open_talents()])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
@@ -434,6 +441,11 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 每日挑战弹窗：Esc / 手柄 B 关闭
+	if _daily_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_daily()
+		get_viewport().set_input_as_handled()
+		return
 	# 天赋树弹窗：Esc / 手柄 B 关闭
 	if _talent_panel.visible and event.is_action_pressed("ui_cancel"):
 		_close_talents()
@@ -474,6 +486,90 @@ func _start() -> void:
 	GameState.endless = _sel_endless
 	GameState.continue_pending = false
 	# Main 在玩家初始化后原子覆盖该槽；场景加载或写入失败时旧档仍保留。
+	Haptics.rumble(0.3, 0.0, 0.1)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+# ---------------- 每日挑战（全服同局） ----------------
+
+## 今日配置卡片：日期种子决定角色/难度/BOSS，全部玩家一致
+func _build_daily_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_daily_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "📅 每日挑战"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(title)
+	var setup: Dictionary = Config.daily_setup(Time.get_date_string_from_system())
+	var ch: Dictionary = Registry.get_character(String(setup.character_id))
+	var diff: Dictionary = Registry.get_difficulty(String(setup.difficulty_id))
+	var boss_name: String = Registry.enemies.get(String(setup.boss_id), {}).get("name", "?")
+	var info := Label.new()
+	info.text = "今日阵容全服一致：\n\n%s %s ｜ %s 难度 ｜ 最终 BOSS：%s\n\n同种子同商店序列 · 死亡/通关记入今日榜" % [
+		ch.get("ico", "🧑"), ch.get("name", "?"), diff.get("name", "?"), boss_name]
+	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	info.add_theme_font_size_override("font_size", 15)
+	info.add_theme_color_override("font_color", Color("d8dde6"))
+	info.custom_minimum_size = Vector2(480.0, 0.0)
+	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(info)
+	var start := Button.new()
+	start.text = "开始今日挑战（不占存档槽）"
+	start.custom_minimum_size = Vector2(480.0, 46.0)
+	start.add_theme_font_size_override("font_size", 17)
+	start.pressed.connect(_start_daily)
+	box.add_child(start)
+	var cancel := Button.new()
+	cancel.text = "关 闭（Esc）"
+	cancel.custom_minimum_size = Vector2(480.0, 44.0)
+	cancel.pressed.connect(_close_daily)
+	box.add_child(cancel)
+
+func _open_daily() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_daily_panel.visible = true
+	_home.visible = false
+	for c in _daily_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _close_daily() -> void:
+	_daily_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+## 开始每日挑战：日期种子 + 固定阵容，直接进局（不占存档槽）
+func _start_daily() -> void:
+	var today := Time.get_date_string_from_system()
+	var setup: Dictionary = Config.daily_setup(today)
+	GameState.daily = true
+	GameState.daily_date = today
+	GameState.endless = false
+	GameState.difficulty_id = String(setup.difficulty_id)
+	GameState.character_id = String(setup.character_id)
+	GameState.loadout_weapon = ""
+	GameState.loadout_item = ""
+	GameState.slot_id = 0   # 0 = 不落盘（SaveRun 全部拒绝）
+	GameState.continue_pending = false
+	GameRng.seed_from(int(setup.seed))
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
@@ -597,20 +693,33 @@ func _build_leaderboard_panel() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
 	center.add_child(box)
-	var title := Label.new()
-	title.text = "🔥 无尽炼狱 · 排行榜"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 26)
-	title.add_theme_color_override("font_color", Color("e8b84b"))
-	box.add_child(title)
-	var tip := Label.new()
-	tip.text = "记录无尽模式的最高积分挑战（Top 10）"
-	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	tip.add_theme_font_size_override("font_size", 13)
-	tip.add_theme_color_override("font_color", Color("9aa3b2"))
-	box.add_child(tip)
+	_lb_title = Label.new()
+	_lb_title.text = "🔥 无尽炼狱 · 排行榜"
+	_lb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lb_title.add_theme_font_size_override("font_size", 26)
+	_lb_title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(_lb_title)
+	# 标签行：无尽总榜 / 今日榜
+	var tabs := HBoxContainer.new()
+	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("separation", 10)
+	box.add_child(tabs)
+	_lb_btn_endless = Button.new()
+	_lb_btn_endless.text = "无尽总榜"
+	_lb_btn_endless.custom_minimum_size = Vector2(160.0, 38.0)
+	_lb_btn_endless.toggle_mode = true
+	_lb_btn_endless.pressed.connect(func() -> void:
+		_switch_lb_tab("endless"))
+	tabs.add_child(_lb_btn_endless)
+	_lb_btn_daily = Button.new()
+	_lb_btn_daily.text = "📅 今日榜"
+	_lb_btn_daily.custom_minimum_size = Vector2(160.0, 38.0)
+	_lb_btn_daily.toggle_mode = true
+	_lb_btn_daily.pressed.connect(func() -> void:
+		_switch_lb_tab("daily"))
+	tabs.add_child(_lb_btn_daily)
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(560.0, 400.0)
+	scroll.custom_minimum_size = Vector2(560.0, 370.0)
 	box.add_child(scroll)
 	_lb_rows = VBoxContainer.new()
 	_lb_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -622,8 +731,17 @@ func _build_leaderboard_panel() -> void:
 	close.pressed.connect(_close_leaderboard)
 	box.add_child(close)
 
+func _switch_lb_tab(tab: String) -> void:
+	_lb_mode = tab
+	_lb_btn_endless.button_pressed = tab == "endless"
+	_lb_btn_daily.button_pressed = tab == "daily"
+	Haptics.rumble(0.15, 0.0, 0.05)
+	_refresh_leaderboard()
+
 func _open_leaderboard() -> void:
 	Haptics.rumble(0.2, 0.0, 0.08)
+	_lb_btn_endless.button_pressed = _lb_mode == "endless"
+	_lb_btn_daily.button_pressed = _lb_mode == "daily"
 	_refresh_leaderboard()
 	_lb_panel.visible = true
 	_home.visible = false
@@ -644,10 +762,18 @@ func _refresh_leaderboard() -> void:
 	for c in _lb_rows.get_children():
 		_lb_rows.remove_child(c)
 		c.queue_free()
-	var list := Leaderboard.get_list()
+	var list: Array = Leaderboard.get_list()
+	var empty_hint := "去无尽炼狱模式创造第一个纪录吧！"
+	if _lb_mode == "daily":
+		var today := Time.get_date_string_from_system()
+		list = Leaderboard.get_daily_list(today)
+		_lb_title.text = "📅 每日挑战 · 今日榜（%s）" % today
+		empty_hint = "今天的挑战还没人完成，去「每日挑战」打个样！"
+	else:
+		_lb_title.text = "🔥 无尽炼狱 · 排行榜"
 	if list.is_empty():
 		var empty := Label.new()
-		empty.text = "暂无记录\n\n去无尽炼狱模式创造第一个纪录吧！"
+		empty.text = "暂无记录\n\n" + empty_hint
 		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		empty.add_theme_font_size_override("font_size", 15)
 		empty.add_theme_color_override("font_color", Color("5a6270"))

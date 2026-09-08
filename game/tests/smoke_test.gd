@@ -672,6 +672,106 @@ func _check_items() -> void:
 	GameState.set_phase(GameState.Phase.PLAYING)
 	print("SMOKE: event waves OK")
 
+	# ---- 每日挑战 + BOSS 池 ----
+	# 日期哈希稳定：同日期同配置（全服同局的基础）
+	var d1: Dictionary = Config.daily_setup("2026-09-08")
+	var d2: Dictionary = Config.daily_setup("2026-09-08")
+	if d1.seed != d2.seed or d1.character_id != d2.character_id \
+			or d1.boss_id != d2.boss_id or d1.difficulty_id != d2.difficulty_id:
+		_fail("每日挑战配置不稳定（同日期结果不同）")
+		return
+	var d3: Dictionary = Config.daily_setup("2026-09-09")
+	if d3.seed == d1.seed:
+		_fail("不同日期种子应不同")
+		return
+	if not Registry.characters.has(String(d1.character_id)) \
+			or not Registry.difficulties.has(String(d1.difficulty_id)) \
+			or not Registry.enemies.has(String(d1.boss_id)):
+		_fail("每日挑战配置引用了不存在的内容（%s / %s / %s）"
+			% [d1.character_id, d1.difficulty_id, d1.boss_id])
+		return
+	# 新 BOSS 注册与专属行为
+	for bid in ["boss_spiral", "boss_summoner"]:
+		if not Registry.enemies.has(bid) or not Registry.enemies[bid].is_boss:
+			_fail("新 BOSS 未注册或未标记 is_boss：%s" % bid)
+			return
+	# BOSS 轮换：daily 模式固定今日 BOSS
+	GameState.daily = true
+	GameState.daily_date = "2026-09-08"
+	var wm_d: Node = _main.get_node("WaveManager")
+	var picked_daily: String = wm_d._pick_boss_id()
+	if picked_daily != String(d1.boss_id):
+		_fail("每日挑战 BOSS 未按日期固定（%s != %s）" % [picked_daily, d1.boss_id])
+		return
+	# 每日榜：按日期隔离（独立测试目录，防真实榜残留污染）
+	Leaderboard.set_storage_root_for_tests("user://tests/lb_daily")
+	var endless_cnt: int = Leaderboard.get_list().size()
+	if Leaderboard.record(500, 5, "每日A", 10, 60.0, "daily:2026-09-08") != 1:
+		_fail("每日榜首次记录应第 1 名")
+		return
+	if Leaderboard.record(300, 4, "每日B", 8, 50.0, "daily:2026-09-09") != 1:
+		_fail("不同日期每日榜应独立")
+		return
+	if Leaderboard.get_daily_list("2026-09-08").size() != 1 \
+			or int(Leaderboard.get_daily_list("2026-09-08")[0].score) != 500:
+		_fail("每日榜隔离读取错误")
+		return
+	if Leaderboard.get_list().size() != endless_cnt:
+		_fail("每日榜成绩不应混入无尽总榜")
+		return
+	Leaderboard.reset_storage_root_after_tests()
+	# 清理每日榜测试目录
+	var lb_daily_file := "user://tests/lb_daily/leaderboard.json"
+	if FileAccess.file_exists(lb_daily_file):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(lb_daily_file))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://tests/lb_daily"))
+	# BOSS 实例行为：spiral BOSS 生成螺旋弹、summoner BOSS 召唤小怪
+	GameState.daily = false
+	GameState.set_phase(GameState.Phase.PLAYING)
+	# 清理此前测试累积的敌弹（护栏 150 会拦截新弹，导致误判）
+	for b_pre in get_tree().get_nodes_in_group("enemy_bullets"):
+		b_pre.queue_free()
+	for e_pre in get_tree().get_nodes_in_group("enemies"):
+		e_pre.queue_free()
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var p5: Node2D = _main.get_node("Player")
+	p5.iframes = 1.0e9
+	var sp_boss: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	sp_boss.setup("boss_spiral", 10)
+	sp_boss.position = p5.global_position + Vector2(400, 0)
+	_main.add_child(sp_boss)
+	sp_boss.player = p5
+	sp_boss.ring_cd = 0.0
+	# 直接驱动螺旋弹幕（确定性，不依赖物理帧时机）
+	sp_boss._fire_spiral_volley()
+	await get_tree().physics_frame
+	var bullets1: int = get_tree().get_nodes_in_group("enemy_bullets").size()
+	if bullets1 <= 0:
+		_fail("螺旋 BOSS 未发射弹幕")
+		return
+	sp_boss.queue_free()
+	var sm_boss: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	sm_boss.setup("boss_summoner", 10)
+	sm_boss.position = p5.global_position + Vector2(400, 0)
+	_main.add_child(sm_boss)
+	sm_boss.player = p5
+	# 直接驱动召唤（确定性）
+	sm_boss._summon_minions()
+	await get_tree().physics_frame
+	var enemies1: int = get_tree().get_nodes_in_group("enemies").size()
+	if enemies1 <= 0:
+		_fail("召唤 BOSS 未召唤小怪")
+		return
+	sm_boss.queue_free()
+	p5.iframes = 0.45
+	# 清理召唤物与敌弹
+	for e5 in get_tree().get_nodes_in_group("enemies"):
+		e5.queue_free()
+	for b5 in get_tree().get_nodes_in_group("enemy_bullets"):
+		b5.queue_free()
+	print("SMOKE: daily challenge + boss pool OK")
+
 	if not Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 0), 4.0) \
 			or Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 20), 4.0):
 		_fail("连续线段碰撞判定错误")

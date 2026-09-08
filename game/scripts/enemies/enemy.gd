@@ -29,6 +29,9 @@ var ring_cd := 0.0
 var enraged := false
 var flee := 0.0
 var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才重绘
+var _spiral_angle := 0.0   # 螺旋织网者：当前螺旋弹幕相位
+var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
+var spawn_wave := 1        # 生成时波次（召唤物继承）
 
 ## 敌间分离查询余量：普通敌最大组合 30+30=60；大体型（BOSS 56+卫兵 30=86）用 90，
 ## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
@@ -37,6 +40,7 @@ const SEPARATION_PAD_LARGE := 90.0
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
+	spawn_wave = wave
 	cfg = Registry.enemies[type_name]
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	var boss_flag := type_name == "boss" or bool(cfg.get("is_boss", false)) \
@@ -117,7 +121,22 @@ func _physics_process(delta: float) -> void:
 		if not enraged and hp < max_hp * 0.5:
 			enraged = true
 			speed *= 1.35
-		if ring_cd <= 0.0 and d < 760.0:
+		# 螺旋织网者：短间隔连续发弹，弹幕角随发射次数旋转形成螺旋
+		if bool(cfg.get("spiral_mode", false)):
+			if ring_cd <= 0.0 and d < 820.0:
+				ring_cd = (1.1 if enraged else float(cfg.ring_cd))
+				_spiral_angle += 0.45
+				_fire_spiral_volley()
+				EventBus.screen_shake.emit(2.5)
+		# 腐土孵化者：周期召唤蜂群幼体围攻
+		var summon_cd := float(cfg.get("summon_cd", 0.0))
+		if summon_cd > 0.0:
+			_summon_cd -= delta
+			if _summon_cd <= 0.0:
+				_summon_cd = summon_cd * (0.7 if enraged else 1.0)
+				_summon_minions()
+		# 通用环形弹幕（织网者不用，由螺旋弹替代）
+		if ring_cd <= 0.0 and d < 760.0 and not bool(cfg.get("spiral_mode", false)):
 			ring_cd = 1.6 if enraged else float(cfg.ring_cd)
 			_fire_ring()
 			EventBus.screen_shake.emit(3.0)
@@ -177,6 +196,31 @@ func _fire_ring() -> void:
 	for i in n:
 		var a := off + TAU * float(i) / float(n)
 		_fire_enemy_bullet(a, float(cfg.bspeed), 7.0, 4.5, touch_dmg * 0.7)
+
+## 螺旋弹幕：以当前相位为起点扇形连发数发，形成旋转的"织网"轨迹
+func _fire_spiral_volley() -> void:
+	var count := int(cfg.ring_count)
+	var base := _spiral_angle
+	for i in count:
+		var a := base + TAU * float(i) / float(count)
+		_fire_enemy_bullet(a, float(cfg.bspeed), 6.0, 4.0, touch_dmg * 0.6)
+
+## 召唤蜂群：在自身周围一圈生成小怪（腐土孵化者）
+func _summon_minions() -> void:
+	var stype := String(cfg.get("summon_type", "swarm"))
+	var count := int(cfg.get("summon_count", 4))
+	for i in count:
+		var a := GameRng.next() * TAU
+		var pos := global_position + Vector2.from_angle(a) * (radius + 46.0)
+		pos = pos.clamp(Vector2(40.0, 40.0),
+			Vector2(Config.WORLD.w, Config.WORLD.h) - Vector2(40.0, 40.0))
+		var minion: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+		minion.setup(stype, spawn_wave)
+		minion.position = pos
+		get_parent().add_child(minion)
+		minion.player = player
+	EventBus.screen_shake.emit(2.0)
+	Sfx.play("shoot_rocket")
 
 func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg: float) -> void:
 	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
