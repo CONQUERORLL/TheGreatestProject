@@ -1,18 +1,20 @@
 extends Control
-## 主菜单 + 开局向导（分步）：开始游戏 → ① 角色 → ② 初始武器 → ③ 初始道具 → ④ 难度 → 进入游戏
+## 主菜单 + 开局向导（分步）：开始游戏 → ① 角色 → ② 初始武器 → ③ 初始道具 → ④ 难度 → ⑤ 模式 → 进入游戏
 ## 选项全部来自 Registry 注册表（创意工坊内容自动出现）；鼠标 + 手柄均可操作
-## Esc / 手柄 B：向导内返回上一步，首页退出
+## Esc / 手柄 B：向导内返回上一步，首页退出；首页含无尽炼积分排行榜入口
 
 var _g_diff := ButtonGroup.new()
 var _g_char := ButtonGroup.new()
 var _g_weapon := ButtonGroup.new()
 var _g_item := ButtonGroup.new()
+var _g_mode := ButtonGroup.new()
 
 # 缓存向导每步选中 id（ButtonGroup 按钮跨步骤被释放后 get_pressed_button 返回 null）
 var _sel_char := "potato"
 var _sel_weapon := "pistol"
 var _sel_item := ""
 var _sel_diff := "normal"
+var _sel_endless := false   # 第 5 步：标准模式 / 无尽炼狱
 
 var _home: Control
 var _wizard: Control
@@ -27,9 +29,11 @@ var _slots_tip: Label
 var _slot_btns: Array = []    # 3 个槽位 Button（下标 0~2 = 槽 1~3）
 var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）| "continue" = 读取
 var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
+var _lb_panel: Control        # 无尽炼狱排行榜弹窗
+var _lb_rows: VBoxContainer
 
-const TOTAL_STEPS := 4
-const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度"]
+const TOTAL_STEPS := 5
+const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
 
 func _ready() -> void:
 	SaveRun.migrate_legacy_if_needed()
@@ -40,6 +44,7 @@ func _ready() -> void:
 	_build_home()
 	_build_wizard()
 	_build_slots_panel()
+	_build_leaderboard_panel()
 
 # ---------------- 存档槽选择弹窗 ----------------
 
@@ -127,7 +132,7 @@ func _refresh_slots() -> void:
 			b.text = info + "\n（开始新局将覆盖此进度）" if has else info
 			b.remove_theme_color_override("font_color")
 
-## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间
+## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间（无尽档带 🔥 与积分）
 func _slot_label(i: int) -> String:
 	var s := SaveRun.summary(i)
 	if s.is_empty():
@@ -138,6 +143,9 @@ func _slot_label(i: int) -> String:
 	var when := String(s.get("saved_at", ""))
 	if when != "":
 		when = "\n" + when
+	if bool(s.get("endless", false)):
+		return "第 %d 槽 · 🔥 第 %d 波 %s · 积分 %d%s" % [i, int(s.get("wave", 1)),
+			String(ch.get("name", "")), int(s.get("score", 0)), when]
 	return "第 %d 槽 · 第 %d 波 %s%s" % [i, int(s.get("wave", 1)), String(ch.get("name", "")), when]
 
 func _on_slot_pressed(i: int) -> void:
@@ -208,6 +216,7 @@ func _home_specs() -> Array:
 	if SaveRun.any_exists():
 		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
 	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
+	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
@@ -312,6 +321,14 @@ func _build_step() -> void:
 						d.get("desc", ""), float(d.hp_mult), float(d.dmg_mult), float(d.spawn_mult)],
 					d.id == _sel_diff,
 					Config.DIFFICULTY_COLORS.get(d.id, Color("e8b84b"))))
+		4:
+			_options.columns = 2
+			_options.add_child(_make_card(_g_mode, "standard", "🥔", "标准模式",
+				"10 波通关挑战\n击败最终 BOSS 即胜利",
+				not _sel_endless, Color("7ec850")))
+			_options.add_child(_make_card(_g_mode, "endless", "🔥", "无尽炼狱",
+				"波次无上限 · 每 10 波一轮 BOSS\n击杀累计积分 · 冲击排行榜",
+				_sel_endless, Color("e0564f")))
 	# 焦点：已选中的卡片，否则第一张
 	var focus_target: Button = null
 	for b in _options.get_children():
@@ -382,6 +399,7 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 			1: _sel_weapon = id
 			2: _sel_item = id
 			3: _sel_diff = id
+			4: _sel_endless = id == "endless"
 		Haptics.rumble(0.15, 0.0, 0.05)
 		if _step < TOTAL_STEPS - 1:
 			_next()
@@ -404,6 +422,11 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 排行榜弹窗：Esc / 手柄 B 关闭
+	if _lb_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_leaderboard()
+		get_viewport().set_input_as_handled()
+		return
 	# 选槽弹窗：返回键退出覆盖确认态，再按关闭弹窗
 	if _slots_panel.visible and event.is_action_pressed("ui_cancel"):
 		if _confirm_slot != 0:
@@ -431,7 +454,97 @@ func _start() -> void:
 	GameState.character_id = _sel_char
 	GameState.loadout_weapon = _sel_weapon
 	GameState.loadout_item = _sel_item
+	GameState.endless = _sel_endless
 	GameState.continue_pending = false
 	# Main 在玩家初始化后原子覆盖该槽；场景加载或写入失败时旧档仍保留。
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+# ---------------- 无尽炼积分排行榜 ----------------
+
+func _build_leaderboard_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_lb_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "🔥 无尽炼狱 · 排行榜"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(title)
+	var tip := Label.new()
+	tip.text = "记录无尽模式的最高积分挑战（Top 10）"
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tip.add_theme_font_size_override("font_size", 13)
+	tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(tip)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(560.0, 400.0)
+	box.add_child(scroll)
+	_lb_rows = VBoxContainer.new()
+	_lb_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lb_rows.add_theme_constant_override("separation", 6)
+	scroll.add_child(_lb_rows)
+	var close := Button.new()
+	close.text = "关 闭（Esc）"
+	close.custom_minimum_size = Vector2(560.0, 44.0)
+	close.pressed.connect(_close_leaderboard)
+	box.add_child(close)
+
+func _open_leaderboard() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_refresh_leaderboard()
+	_lb_panel.visible = true
+	_home.visible = false
+	for c in _lb_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 焦点给关闭按钮（手柄直达）
+			break
+
+func _close_leaderboard() -> void:
+	_lb_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 焦点回首页第一个按钮
+			break
+
+func _refresh_leaderboard() -> void:
+	for c in _lb_rows.get_children():
+		_lb_rows.remove_child(c)
+		c.queue_free()
+	var list := Leaderboard.get_list()
+	if list.is_empty():
+		var empty := Label.new()
+		empty.text = "暂无记录\n\n去无尽炼狱模式创造第一个纪录吧！"
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty.add_theme_font_size_override("font_size", 15)
+		empty.add_theme_color_override("font_color", Color("5a6270"))
+		empty.custom_minimum_size = Vector2(540.0, 200.0)
+		empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		empty.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_lb_rows.add_child(empty)
+		return
+	var medals := ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+	for i in list.size():
+		var e: Dictionary = list[i]
+		var row := Label.new()
+		row.text = "%s  %d 分 · 第 %d 波 · %s · 击杀 %d · %s" % [medals[i],
+			int(e.score), int(e.wave), String(e.char_name), int(e.kills), String(e.date)]
+		row.add_theme_font_size_override("font_size", 15)
+		row.add_theme_color_override("font_color",
+			Color("ffd24a") if i == 0 else Color("d8dde6"))
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_lb_rows.add_child(row)

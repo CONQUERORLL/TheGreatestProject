@@ -19,14 +19,23 @@ var _stats_t := 0.0   # 左下属性行刷新节流（0.2s 一次，属性不逐
 @onready var _timer_text: Label = $Top/TimerText
 @onready var _mat_text: Label = $TopRight/MatText
 @onready var _kill_text: Label = $TopRight/KillText
+@onready var _top_right: VBoxContainer = $TopRight
 @onready var _stats_label: Label = $BottomLeft/StatsText
 @onready var _weapons_box: HBoxContainer = $WeaponsBox
 @onready var _vignette: ColorRect = $Vignette
+
+var _score_text: Label   # 无尽模式积分（代码追加到右上角）
 
 func _ready() -> void:
 	_style_bar(_hp_bar, Color("ef6b5e"))
 	_style_bar(_xp_bar, Color("7ec850"))
 	EventBus.player_damaged.connect(_on_player_damaged)
+	_score_text = Label.new()
+	_score_text.add_theme_font_size_override("font_size", 14)
+	_score_text.add_theme_color_override("font_color", Color("ff9d3b"))
+	_score_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_score_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_top_right.add_child(_score_text)
 
 func get_wave_text() -> String:
 	return _wave_text.text
@@ -46,6 +55,10 @@ func _process(delta: float) -> void:
 	_vignette.color.a = _vignette_a * 0.55
 	if player == null or wave_manager == null:
 		return
+	# 无尽模式：右上角显示累计积分（标准模式隐藏）
+	_score_text.visible = GameState.endless
+	if GameState.endless:
+		_score_text.text = "★ %d" % GameState.score
 	# 商店/暂停/升级/结算期间战斗数值冻结，跳过整段刷新
 	if GameState.phase != GameState.Phase.PLAYING and GameState.phase != GameState.Phase.INTRO:
 		return
@@ -57,9 +70,9 @@ func _process(delta: float) -> void:
 	_lv_text.text = "Lv %d" % GameState.level
 	_xp_bar.max_value = Config.xp_need(GameState.level)
 	_xp_bar.value = GameState.xp
-	# 顶中：波次 / 计时（BOSS 波显示血量，对应原型 updateHUD）
+	# 顶中：波次 / 计时（BOSS 在场时显示血量；无尽模式每 10 波一轮）
 	var wm_boss: Node2D = wave_manager.boss
-	if wave_manager.wave == Config.BOSS_WAVE and wm_boss and is_instance_valid(wm_boss):
+	if wm_boss and is_instance_valid(wm_boss):
 		_wave_text.text = "BOSS 战"
 		_timer_text.text = "BOSS 血量 %d / %d" % [ceili(maxf(wm_boss.hp, 0.0)), roundi(wm_boss.max_hp)]
 	else:

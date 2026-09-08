@@ -27,6 +27,12 @@ var loadout_item := ""           # 开局道具（"" = 无）
 
 var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，TouchControls 写入）
 
+var endless := false   # 无尽炼狱模式（每 10 波 BOSS，波次无上限，积分排行）
+var score := 0         # 无尽模式积分（击杀 / BOSS 击破 / 清波奖励）
+
+func add_score(v: int) -> void:
+	score = maxi(0, score + v)
+
 ## 加经验并处理连升（原型 settlePickup 的 while 循环）
 func gain_xp(v: int) -> void:
 	xp += v
@@ -61,6 +67,7 @@ func reset_run() -> void:
 	xp = 0
 	level_queue = 0
 	touch_move = Vector2.ZERO
+	score = 0   # endless 为本局开局选定/存档恢复的配置，不在重置之列
 
 func start_run() -> void:
 	reset_run()

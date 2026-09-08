@@ -2,6 +2,7 @@ extends Node
 ## 冒烟测试：武器闭环 + 掉落拾取 + 波次推进（波末掉落自动回收）+ 商店 + BOSS 弹幕
 ##   + 升级三选一（含波末积压升级补弹）+ HUD + 手柄焦点 + Registry/mod 加载 + 数值断言
 ##   + 粒子/飘字/爆炸特效（fx 组）+ 稀有度加权/新品阶/新角色/新怪物回归
+##   + 无尽炼狱（BOSS 波衔接/积分/存档/排行榜）+ 240 敌群性能压测
 ## 运行：godot --headless --path . res://tests/smoke_test.tscn（退出码 0=通过）
 
 class SegmentEnemy:
@@ -670,9 +671,131 @@ func _check_items() -> void:
 		return
 	menu.queue_free()
 	print("SMOKE: save isolation + contracts + menu wizard OK")
+	await _check_endless()
 	_cleanup_test_storage(true)
 	print("SMOKE: PASS")
 	get_tree().quit(0)
+
+## 无尽炼狱模式回归：BOSS 波判定/积分公式/排行榜、
+## BOSS 击破 → 商店衔接 → wave11 存档/恢复、240 敌群性能压测、死亡入榜
+func _check_endless() -> void:
+	Leaderboard.set_storage_root_for_tests("user://tests/lb")
+	# ---- 纯函数断言 ----
+	GameState.endless = false
+	if not Config.is_boss_wave(10) or Config.is_boss_wave(11) or Config.is_boss_wave(20):
+		_fail("is_boss_wave 标准模式判定错误")
+		return
+	GameState.endless = true
+	if not Config.is_boss_wave(20) or Config.is_boss_wave(19):
+		_fail("is_boss_wave 无尽模式判定错误")
+		return
+	if Config.kill_score(Registry.enemies.grunt) <= 0 \
+			or Config.boss_kill_score(10) <= 0 or Config.wave_clear_score(5) <= 0:
+		_fail("积分公式错误")
+		return
+	# ---- 排行榜：记录 / 排序 / 名次 ----
+	if Leaderboard.record(100, 5, "测试A", 10, 60.0) != 1:
+		_fail("排行榜首次记录应第 1 名")
+		return
+	Leaderboard.record(300, 8, "测试B", 30, 90.0)
+	if int(Leaderboard.get_list()[0].score) != 300 or Leaderboard.get_list().size() != 2:
+		_fail("排行榜排序错误")
+		return
+	if Leaderboard.record(0, 9, "无效", 1, 1.0) != 0:
+		_fail("零分不应入榜")
+		return
+	# ---- 无尽流程：第 10 波 BOSS ----
+	GameState.score = 0
+	var wm: Node = _main.get_node("WaveManager")
+	wm.start_wave(10)
+	var boss: Node2D = wm.boss
+	if boss == null:
+		_fail("无尽第 10 波未生成 BOSS")
+		return
+	var p3: Node2D = _main.get_node("Player")
+	# 普通击杀计分
+	var grunt: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	grunt.setup("grunt", 10)
+	grunt.position = p3.global_position + Vector2(500, 0)
+	_main.add_child(grunt)
+	grunt.player = p3
+	grunt.take_damage(1.0e9, false)
+	if GameState.score <= 0:
+		_fail("无尽模式击杀未计积分")
+		return
+	# BOSS 击破 → 商店衔接 + wave11 存档
+	boss.take_damage(1.0e9, false)
+	await get_tree().process_frame
+	if GameState.phase != GameState.Phase.SHOP or wm.boss != null:
+		_fail("无尽 BOSS 击破未衔接商店（phase=%d）" % GameState.phase)
+		return
+	if not SaveRun.exists(GameState.slot_id):
+		_fail("无尽 wave11 存档失败")
+		return
+	# 存档往返：endless 标志与积分一致
+	var score_saved: int = GameState.score
+	if SaveRun.restore(p3) != 11:
+		_fail("无尽存档波次往返失败")
+		return
+	if not GameState.endless or GameState.score != score_saved:
+		_fail("无尽标志/积分未随存档恢复（endless=%s score=%d/%d）"
+			% [str(GameState.endless), GameState.score, score_saved])
+		return
+	# ---- 240 敌群性能压测（120 物理帧）----
+	# 排空波末回收积压的升级（补弹机制），保证压测期间敌群不被升级 UI 冻结
+	GameState.set_phase(GameState.Phase.PLAYING)
+	var lu: Control = _main.get_node("UI/LevelUp")
+	while GameState.level_queue > 0 or lu.visible:
+		if lu.visible:
+			lu._choose(0)
+		else:
+			GameState.level_queue = 0
+		await get_tree().process_frame
+	p3.iframes = 1.0e9   # 免伤，防止压测期间死亡
+	var saved_weapons: Array = p3.weapons.duplicate(true)
+	p3.weapons = []      # 关闭自动攻击，聚焦敌群模拟开销
+	var perf_enemies: Array = []
+	var pp: Vector2 = p3.global_position
+	for _i in 240:
+		var e2: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+		e2.setup("grunt", 20)
+		e2.position = pp + Vector2.from_angle(GameRng.next() * TAU) * GameRng.range_f(60.0, 620.0)
+		_main.add_child(e2)
+		e2.player = p3
+		perf_enemies.append(e2)
+	var t0 := Time.get_ticks_msec()
+	for _f in 120:
+		await get_tree().physics_frame
+	var elapsed := Time.get_ticks_msec() - t0
+	print("SMOKE: perf 240 enemies x 120 ticks = %d ms (%.2f ms/tick)" % [elapsed, elapsed / 120.0])
+	for e3 in perf_enemies:
+		e3.queue_free()
+	await get_tree().physics_frame
+	p3.weapons = saved_weapons
+	p3.iframes = 0.45
+	# 120 帧理想 2000ms；放宽到 3400ms（≈28ms/帧）防灾难性回归
+	if elapsed > 3400:
+		_fail("240 敌群物理帧耗时异常（%d ms / 120 ticks）" % elapsed)
+		return
+	# ---- 死亡 → 排行榜记录 ----
+	GameState.set_phase(GameState.Phase.PLAYING)
+	var score_at_death: int = GameState.score
+	EventBus.player_died.emit()
+	await get_tree().process_frame
+	var lb := Leaderboard.get_list()
+	if lb.is_empty() or int(lb[0].score) != score_at_death:
+		_fail("无尽死亡未记录排行榜（top=%s）"
+			% str((lb[0] as Dictionary).get("score", -1) if not lb.is_empty() else "空"))
+		return
+	if Leaderboard.record(9999, 2, "测试C", 1, 1.0) != 1 or Leaderboard.get_list().size() != 4:
+		_fail("排行榜插入排序错误")
+		return
+	GameState.endless = false
+	Leaderboard.reset_storage_root_after_tests()
+	var lb_path := "user://tests/lb/leaderboard.json"
+	if FileAccess.file_exists(lb_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(lb_path))
+	print("SMOKE: endless mode + leaderboard + perf OK")
 
 func _cleanup_test_storage(reset_root: bool) -> void:
 	var previous_slot := GameState.slot_id

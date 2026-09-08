@@ -128,22 +128,25 @@ func _physics_process(delta: float) -> void:
 		var push: float = (radius + float(Config.PLAYER.radius) + 10.0) - contact_d
 		if push > 0.0:
 			global_position -= contact_dir * push
-	Combat.update_enemy_position(self)
-	# 空间索引只查询邻近敌人（小半径，避免全网格扫描），并按实例 ID 每对只处理一次。
-	for other in Combat.enemies_near(global_position, radius + SEPARATION_QUERY_PAD):
-		if other == self or other.flee > 0.0 or is_queued_for_deletion() \
-				or other.is_queued_for_deletion() or get_instance_id() >= other.get_instance_id():
-			continue
-		var separation: Vector2 = other.global_position - global_position
-		var separation_d := separation.length()
-		var min_d: float = radius + other.radius
-		if separation_d > 0.01 and separation_d < min_d:
-			var shift := separation / separation_d * (min_d - separation_d) * 0.5
-			global_position -= shift
-			other.global_position += shift
-			other.global_position = other.global_position.clamp(
-				Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
-			Combat.update_enemy_position(other)
+	# 敌间分离：隔帧错峰（按实例 ID 奇偶分半），大规模敌群下查询开销减半；
+	# 索引位置容许一帧偏差（≤3px / 128px 网格），省去逐敌逐帧的中间索引更新
+	if (Engine.get_physics_frames() + (get_instance_id() % 2)) % 2 == 0:
+		# 空间索引只查询邻近敌人（小半径，避免全网格扫描），并按实例 ID 每对只处理一次。
+		var my_id := get_instance_id()
+		for other in Combat.enemies_near(global_position, radius + SEPARATION_QUERY_PAD):
+			if other == self or other.flee > 0.0 \
+					or other.is_queued_for_deletion() or my_id >= other.get_instance_id():
+				continue
+			var separation: Vector2 = other.global_position - global_position
+			var separation_d := separation.length()
+			var min_d: float = radius + other.radius
+			if separation_d > 0.01 and separation_d < min_d:
+				var shift := separation / separation_d * (min_d - separation_d) * 0.5
+				global_position -= shift
+				other.global_position += shift
+				other.global_position = other.global_position.clamp(
+					Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
+				Combat.update_enemy_position(other)
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
 	Combat.update_enemy_position(self)
@@ -164,6 +167,9 @@ func _fire_ring() -> void:
 		_fire_enemy_bullet(a, float(cfg.bspeed), 7.0, 4.5, touch_dmg * 0.7)
 
 func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg: float) -> void:
+	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
+	if get_tree().get_nodes_in_group("enemy_bullets").size() >= 150:
+		return
 	var b := EnemyBulletScene.instantiate()
 	b.setup(global_position, ang, bspeed, dmg, r, life_t)
 	b.player = player

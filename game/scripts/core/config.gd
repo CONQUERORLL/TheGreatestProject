@@ -101,9 +101,27 @@ const ITEMS := [
 
 const WAVES_TOTAL := 10
 const BOSS_WAVE := 10
+const ENDLESS_MAX_WAVE := 9999   # 无尽模式波次上限（防溢出的护栏值）
+const ENEMY_HARD_CAP := 240      # 同屏敌人绝对上限（大规模敌群性能护栏）
 const HEAL_DROP_CHANCE := 0.05
 const SHOP_HEAL_PRICE := 15
 const SHOP_UPGRADE_CHANCE := 0.29   # 商店刷出升级属性的概率（武器 42% 之外再分摊）
+
+## 是否 BOSS 波：标准模式 = 第 10 波；无尽炼狱 = 每 10 波一轮
+static func is_boss_wave(w: int) -> bool:
+	return (w % 10 == 0) if GameState.endless else (w == BOSS_WAVE)
+
+## 击杀积分（无尽模式）：基础 + 经验/材料折算，精英/BOSS 天然更值钱
+static func kill_score(cfg: Dictionary) -> int:
+	return 5 + int(cfg.get("xp", 1)) * 3 + int(cfg.get("mat", 1)) * 2
+
+## BOSS 击破积分奖励（无尽模式）
+static func boss_kill_score(w: int) -> int:
+	return 800 + w * 30
+
+## 波次清场积分奖励（无尽模式）
+static func wave_clear_score(w: int) -> int:
+	return w * 30
 
 ## 稀有度枚举（低 → 高）：common 白 / rare 蓝 / epic 紫 / mythic 金 / legendary 红
 const RARITIES := ["common", "rare", "epic", "mythic", "legendary"]
@@ -167,6 +185,7 @@ static func xp_need(level: int) -> int:
 	return 4 + (level - 1) * 3
 
 ## 刷怪权重组合：[{ "item": 敌人类型, "w": 权重 }]
+## w >= 10 仅无尽模式可达：精英占比随波次渐进上升（波 10 → 30 逐步拉满）
 static func wave_composition(w: int) -> Array:
 	if w <= 1:
 		return [{ "item": "grunt", "w": 0.72 }, { "item": "swarm", "w": 0.28 }]
@@ -181,9 +200,17 @@ static func wave_composition(w: int) -> Array:
 		return [{ "item": "grunt", "w": 0.18 }, { "item": "swarm", "w": 0.10 }, { "item": "runner", "w": 0.22 },
 			{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.16 }, { "item": "bomber", "w": 0.10 },
 			{ "item": "wizard", "w": 0.10 }]
-	return [{ "item": "grunt", "w": 0.12 }, { "item": "swarm", "w": 0.07 }, { "item": "runner", "w": 0.20 },
-		{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.15 }, { "item": "bomber", "w": 0.11 },
-		{ "item": "wizard", "w": 0.10 }, { "item": "shadow", "w": 0.07 }, { "item": "guard", "w": 0.04 }]
+	if w <= 9:
+		return [{ "item": "grunt", "w": 0.12 }, { "item": "swarm", "w": 0.07 }, { "item": "runner", "w": 0.20 },
+			{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.15 }, { "item": "bomber", "w": 0.11 },
+			{ "item": "wizard", "w": 0.10 }, { "item": "shadow", "w": 0.07 }, { "item": "guard", "w": 0.04 }]
+	# 无尽后期（w >= 10）：难度随波次上升，精英比重逐步拉满
+	var t := minf(1.0, float(w - 9) / 21.0)
+	return [{ "item": "grunt", "w": 0.14 - 0.06 * t }, { "item": "swarm", "w": 0.06 },
+		{ "item": "runner", "w": 0.18 }, { "item": "tank", "w": 0.14 + 0.02 * t },
+		{ "item": "shooter", "w": 0.14 }, { "item": "bomber", "w": 0.10 + 0.04 * t },
+		{ "item": "wizard", "w": 0.10 + 0.05 * t }, { "item": "shadow", "w": 0.08 + 0.05 * t },
+		{ "item": "guard", "w": 0.06 + 0.08 * t }]
 
 # ---- 商店公式 ----
 

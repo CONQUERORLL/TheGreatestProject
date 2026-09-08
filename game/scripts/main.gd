@@ -125,14 +125,18 @@ func _on_screen_shake(amount: float) -> void:
 	shake = maxf(shake, amount)
 	Haptics.rumble_from_shake(amount)   # 战斗震动随震屏强度联动
 
-func _on_enemy_killed(_type: String) -> void:
+func _on_enemy_killed(type: String) -> void:
 	GameState.kills += 1
+	if GameState.endless:
+		GameState.add_score(Config.kill_score(Registry.enemies.get(type, {})))
 	Haptics.rumble(0.12, 0.0, 0.06)   # 击杀微震（Haptics 内部节流防叠满）
 
 ## 普通波清场后进入商店（BOSS 波击杀直接结算，不走这里）
 ## 波末自动回收场上全部掉落：经验/材料/红心直接结算，
 ## 升级选择若在此触发会积压 level_queue，下一波开始时补弹
 func _on_wave_ended(w: int) -> void:
+	if GameState.endless:
+		GameState.add_score(Config.wave_clear_score(w))
 	shop_ui.open(w)
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
@@ -145,6 +149,20 @@ func _on_player_died() -> void:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.GAME_OVER)
 	EventBus.run_ended.emit(false)
+	if GameState.endless:
+		# 无尽：成绩写入排行榜并展示名次
+		var ch: Dictionary = Registry.get_character(GameState.character_id)
+		var rank := Leaderboard.record(GameState.score, wave_manager.wave,
+			String(ch.get("name", "?")), GameState.kills, GameState.run_time)
+		dead_label.text = "你倒下了 · 积分 %d" % GameState.score
+		if rank == 1:
+			EventBus.banner_requested.emit("新纪录！",
+				"积分 %d 登顶排行榜" % GameState.score, 3.0)
+		elif rank > 1:
+			EventBus.banner_requested.emit("挑战结束",
+				"积分 %d · 排行榜第 %d 名" % [GameState.score, rank], 3.0)
+	else:
+		dead_label.text = "你倒下了"
 	dead_label.visible = true
 	_dead_menu.visible = true
 	_dead_menu.get_child(0).grab_focus()   # 再来一局
@@ -156,6 +174,11 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 		"手柄 P%d 已%s" % [device + 1, "连接" if connected else "断开"], 1.5)
 
 func _on_boss_killed() -> void:
+	if GameState.endless:
+		# 无尽：积分与波次收尾由 wave_manager 处理（wave_ended → 商店 → 下一波）
+		EventBus.banner_requested.emit("BOSS 击破！",
+			"积分 +%d · 炼狱继续深入" % Config.boss_kill_score(wave_manager.wave), 2.2)
+		return
 	if SaveRun.current_run_owns_slot:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.VICTORY)

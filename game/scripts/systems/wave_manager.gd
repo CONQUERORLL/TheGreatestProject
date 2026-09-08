@@ -3,7 +3,8 @@ extends Node
 ## 普通波：intro 横幅 → 按 interval 刷怪（受 cap 限制；高难度按 elite_chance 混入精英）
 ##   → waveTimer 到 → 敌人 flee 消散 + 清空敌方子弹 → 清场后进入商店
 ##   （场上掉落由 main 在波末自动回收结算，不再跨波滞留）
-## BOSS 波（第 10 波）：开场即刷 BOSS（不死不休），持续刷混合干扰怪
+## BOSS 波：标准=第 10 波；无尽炼狱=每 10 波。开场即刷 BOSS（不死不休），
+##   持续刷混合干扰怪；无尽下 BOSS 击破 → 退场进商店 → 继续下一波
 
 const EnemyScene := preload("res://scenes/enemies/enemy.tscn")
 
@@ -13,24 +14,39 @@ var spawn_t := 0.0
 var intro_t := 0.0
 var ending_started := false
 var boss: Node2D   # 当前 BOSS 引用（HUD 显示血量用；击杀后清空）
+var boss_dead := false   # 无尽 BOSS 波：BOSS 击破后停止补怪
 var player: Node2D
+var _alive_cache := 0    # 存活敌数缓存（0.12s 刷新，大规模敌群省全量遍历）
+var _alive_t := 0.0
 
 func _ready() -> void:
 	EventBus.boss_killed.connect(_on_boss_killed)
 
 func _on_boss_killed() -> void:
 	boss = null
+	if not GameState.endless:
+		return
+	# 无尽：BOSS 击破 → 积分入账 → 干扰怪退场 → 进商店 → 挑战更深的波次
+	boss_dead = true
+	GameState.add_score(Config.boss_kill_score(wave))
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if e.flee <= 0.0:
+			e.start_flee()
+	_clear_projectiles()
+	EventBus.wave_ended.emit(wave)
 
 func start_wave(n: int) -> void:
-	wave = clampi(n, 1, Config.WAVES_TOTAL)
+	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless else Config.WAVES_TOTAL
+	wave = clampi(n, 1, wave_max)
 	ending_started = false
+	boss_dead = false
 	spawn_t = 0.6
 	wave_timer = Config.wave_duration(wave)
 	_clear_projectiles()
 	# 玩家回到世界中心（原型 startWave 同款）
 	player.global_position = Vector2(Config.WORLD.w, Config.WORLD.h) / 2.0
 	player.velocity = Vector2.ZERO
-	var is_boss_wave := wave == Config.BOSS_WAVE
+	var is_boss_wave := Config.is_boss_wave(wave)
 	intro_t = 2.6 if is_boss_wave else 2.2
 	GameState.set_phase(GameState.Phase.INTRO)
 	if is_boss_wave:
@@ -39,7 +55,8 @@ func start_wave(n: int) -> void:
 		EventBus.banner_requested.emit("第 %d 波 · BOSS" % wave,
 			Registry.enemies[bid].name + " 出现了！活下去并击败它！", 2.6)
 	else:
-		EventBus.banner_requested.emit("第 %d 波 / 共 %d 波" % [wave, Config.WAVES_TOTAL],
+		EventBus.banner_requested.emit("第 %d 波%s" % [wave,
+				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱"],
 			"武器会自动攻击，专心走位", 2.2)
 	EventBus.wave_started.emit(wave)
 
@@ -52,16 +69,25 @@ func _physics_process(delta: float) -> void:
 	if GameState.phase != GameState.Phase.PLAYING:
 		return
 	GameState.run_time += delta
-	var is_boss_wave := wave == Config.BOSS_WAVE
+	var is_boss_wave := Config.is_boss_wave(wave)
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	if not is_boss_wave:
 		wave_timer -= delta
 		spawn_t -= delta
-		var alive := _alive_count(false)
-		var cap := int(float(Config.wave_cap(wave)) * float(diff.spawn_mult))
+		# 存活敌数 0.12s 缓存刷新：大规模敌群下免每帧全量遍历
+		_alive_t -= delta
+		if _alive_t <= 0.0:
+			_alive_t = 0.12
+			_alive_cache = _alive_count(false)
+		var alive := _alive_cache
+		# 同屏上限 = 波次曲线 × 难度倍率，且不超过性能护栏
+		var cap := mini(int(float(Config.wave_cap(wave)) * float(diff.spawn_mult)),
+			Config.ENEMY_HARD_CAP)
 		if wave_timer > 0.0 and spawn_t <= 0.0 and alive < cap:
 			spawn_t = Config.wave_interval(wave) / float(diff.spawn_mult)
 			spawn(_pick_spawn_id(diff))
+			_alive_cache += 1
+			alive += 1
 		if wave_timer <= 0.0 and not ending_started:
 			ending_started = true
 			# 时间到只执行一次：敌人退场，双方弹丸清空，掉落物由波末自动回收。
@@ -70,13 +96,14 @@ func _physics_process(delta: float) -> void:
 					e.start_flee()
 			_clear_projectiles()
 			alive = 0   # 退场敌人不再计入存活
+			_alive_cache = 0
 		# 普通波：清场后进入商店（main 监听 wave_ended 打开；下一波由商店"下一波"触发）
 		if wave_timer <= 0.0 and alive == 0:
 			EventBus.wave_ended.emit(wave)
 	else:
-		# BOSS 波：少量干扰小怪持续刷新（混合种类），BOSS 不死不休
+		# BOSS 波：混合干扰怪持续刷新（BOSS 击破后停止），BOSS 不死不休
 		spawn_t -= delta
-		if spawn_t <= 0.0 and _alive_count(true) < 16:
+		if not boss_dead and spawn_t <= 0.0 and _alive_count(true) < 16:
 			spawn_t = 2.4
 			spawn(String(GameRng.weighted_pick([
 				{ "item": "runner", "w": 0.35 }, { "item": "grunt", "w": 0.30 },

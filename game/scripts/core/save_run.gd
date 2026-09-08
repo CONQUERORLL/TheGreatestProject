@@ -43,8 +43,10 @@ func reset_storage_root_after_tests() -> void:
 	_legacy_path = LEGACY_PATH
 
 ## 保存当前局到当前槽。checkpoint 表示恢复后进入商店还是直接重打该波。
+## 无尽模式波次上限放宽到 ENDLESS_MAX_WAVE。
 func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_START) -> bool:
-	if next_wave < 1 or next_wave > Config.WAVES_TOTAL:
+	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless else Config.WAVES_TOTAL
+	if next_wave < 1 or next_wave > wave_max:
 		push_warning("SaveRun: 非法波次 %d，拒绝保存" % next_wave)
 		return false
 	if checkpoint not in [CHECKPOINT_SHOP, CHECKPOINT_WAVE_START]:
@@ -71,6 +73,8 @@ func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_STA
 			"character_id": GameState.character_id,
 			"loadout_weapon": GameState.loadout_weapon,
 			"loadout_item": GameState.loadout_item,
+			"endless": GameState.endless,
+			"score": GameState.score,
 		},
 		"player": {
 			"hp": player.hp,
@@ -117,6 +121,8 @@ func restore(player: Node) -> int:
 	GameState.character_id = character_id
 	GameState.loadout_weapon = loadout_weapon
 	GameState.loadout_item = loadout_item
+	GameState.endless = bool(run.get("endless", false))
+	GameState.score = maxi(0, int(run.get("score", 0)))
 	GameRng._a = int(data.get("rng_a", 0)) & 0xFFFFFFFF
 	var pl: Dictionary = data.player
 	var saved_stats: Dictionary = pl.stats
@@ -148,11 +154,14 @@ func summary(slot: int) -> Dictionary:
 	var data := _read(slot)
 	if data.is_empty():
 		return {}
+	var run: Dictionary = data.run
 	return {
-		"wave": int(data.run.wave),
-		"character_id": String(data.run.get("character_id", "potato")),
+		"wave": int(run.wave),
+		"character_id": String(run.get("character_id", "potato")),
 		"saved_at": String(data.get("saved_at", "")),
 		"checkpoint": String(data.get("checkpoint", CHECKPOINT_SHOP)),
+		"endless": bool(run.get("endless", false)),
+		"score": int(run.get("score", 0)),
 	}
 
 func clear() -> void:
@@ -198,13 +207,17 @@ func _read_path(path: String) -> Dictionary:
 		return {}
 	var run: Dictionary = data.run
 	var pl: Dictionary = data.player
-	if not _integer_in_range(run.get("wave"), 1, Config.WAVES_TOTAL) \
+	if run.has("endless") and typeof(run.endless) != TYPE_BOOL:
+		return {}
+	var wave_max := Config.ENDLESS_MAX_WAVE if bool(run.get("endless", false)) else Config.WAVES_TOTAL
+	if not _integer_in_range(run.get("wave"), 1, wave_max) \
 			or not _integer_in_range(run.get("materials"), 0, 2_000_000_000) \
 			or not _integer_in_range(run.get("kills"), 0, 2_000_000_000) \
 			or not _integer_in_range(run.get("level"), 1, 100_000) \
 			or not _integer_in_range(run.get("xp"), 0, 2_000_000_000) \
 			or not _integer_in_range(run.get("level_queue"), 0, 100_000) \
-			or not _number_in_range(run.get("run_time"), 0.0, 315_360_000.0):
+			or not _number_in_range(run.get("run_time"), 0.0, 315_360_000.0) \
+			or (run.has("score") and not _integer_in_range(run.get("score"), 0, 2_000_000_000)):
 		return {}
 	for key in ["difficulty_id", "character_id", "loadout_weapon", "loadout_item"]:
 		if run.has(key) and typeof(run[key]) != TYPE_STRING:

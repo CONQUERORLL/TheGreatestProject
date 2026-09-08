@@ -27,6 +27,7 @@ Haptics="*res://scripts/core/haptics.gd"
 Sfx="*res://scripts/core/sfx.gd"
 Settings="*res://scripts/core/settings.gd"
 SaveRun="*res://scripts/core/save_run.gd"
+Leaderboard="*res://scripts/core/leaderboard.gd"
 
 [display]
 
