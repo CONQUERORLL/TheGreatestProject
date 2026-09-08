@@ -416,7 +416,7 @@ func _register_builtin() -> void:
 	var ai_map := { "grunt": "chaser", "runner": "runner", "tank": "chaser",
 		"shooter": "shooter", "boss": "boss",
 		"swarm": "chaser", "bomber": "runner", "wizard": "shooter",
-		"shadow": "runner", "guard": "chaser" }
+		"shadow": "runner", "guard": "chaser", "chest_guard": "chaser" }
 	for id2 in Config.ENEMIES:
 		var e: Dictionary = Config.ENEMIES[id2].duplicate()
 		e["id"] = id2

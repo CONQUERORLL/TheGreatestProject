@@ -49,6 +49,7 @@ const ENEMIES := {
 	"wizard": { "name": "蛊惑法师", "hp": 26.0, "speed": 66.0, "dmg": 12.0, "xp": 9, "mat": 6, "r": 16.0, "color": "#b05ae0", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.7, "bspeed": 340.0, "heart_chance": 0.10 },
 	"shadow": { "name": "暗影刺客", "hp": 18.0, "speed": 205.0, "dmg": 12.0, "xp": 6, "mat": 4, "r": 10.0, "color": "#3d4356", "shape": "diamond", "heart_chance": 0.05 },
 	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
+	"chest_guard": { "name": "宝箱守卫", "hp": 90.0, "speed": 60.0, "dmg": 14.0, "xp": 12, "mat": 15, "r": 24.0, "color": "#c9a24a", "shape": "square", "heart_chance": 0.10 },
 	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "heart_chance": 1.0 },
 }
 
@@ -57,6 +58,22 @@ const ELITE_POOL := [
 	{ "item": "guard", "w": 0.30 }, { "item": "wizard", "w": 0.30 },
 	{ "item": "shadow", "w": 0.22 }, { "item": "bomber", "w": 0.18 },
 ]
+
+## 事件波：每 4 波触发一次（波 3/7/11/15…，跳过 BOSS 波），从 3 种事件随机
+## - treasure 宝箱守卫波：全场只刷宝箱守卫，清完必掉 1 件高品阶道具（紫/金/红加权）
+## - hunt 精英狩猎波：少量精英怪 + 常规怪，波末存活精英数越少奖励材料越多
+## - meteor 流星雨波：常规怪 + 天降流星（预警圈 0.9s 后砸落 AOE），考验走位
+const EVENT_WAVE_INTERVAL := 4
+const EVENT_WAVE_FIRST := 3
+const METEOR_WARN_TIME := 0.9
+const METEOR_DAMAGE := 22.0
+const METEOR_RADIUS := 78.0
+const METEOR_FALL_CD := 1.5
+
+static func is_event_wave(w: int) -> bool:
+	if w < EVENT_WAVE_FIRST or Config.is_boss_wave(w):
+		return false
+	return (w - EVENT_WAVE_FIRST) % EVENT_WAVE_INTERVAL == 0
 
 ## 升级池（可重复叠加；effects 键 = player.stats 键，创意工坊数据驱动；
 ## 特例：heal_flat = 最大生命+立即回复同值，heal_pct = 立即回复最大生命百分比）

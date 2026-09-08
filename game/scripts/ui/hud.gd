@@ -76,7 +76,12 @@ func _process(delta: float) -> void:
 		_wave_text.text = "BOSS 战"
 		_timer_text.text = "BOSS 血量 %d / %d" % [ceili(maxf(wm_boss.hp, 0.0)), roundi(wm_boss.max_hp)]
 	else:
-		_wave_text.text = "第 %d 波" % wave_manager.wave
+		var ev_label := ""
+		match wave_manager.event_kind:
+			"treasure": ev_label = " · 🎁宝箱守卫"
+			"hunt": ev_label = " · ⚔精英狩猎"
+			"meteor": ev_label = " · ☄流星雨"
+		_wave_text.text = "第 %d 波%s" % [wave_manager.wave, ev_label]
 		_timer_text.text = ("剩余 %d 秒" % ceili(wave_manager.wave_timer)) \
 			if wave_manager.wave_timer > 0.0 else "清场中…"
 	# 右上：材料 / 击杀

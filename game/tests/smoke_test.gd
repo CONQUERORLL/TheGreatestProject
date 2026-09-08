@@ -611,7 +611,67 @@ func _check_items() -> void:
 	if FileAccess.file_exists(meta_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(meta_path))
 	print("SMOKE: talent + weapon evolution OK")
-	# 连续碰撞工具：线段跨过圆心必须命中，偏离则不能误判。
+	# ---- 事件波：判定/三种事件/结算 ----
+	GameState.endless = false
+	if not Config.is_event_wave(3) or Config.is_event_wave(4) or Config.is_event_wave(10):
+		_fail("事件波判定错误（3 应为事件波，10 BOSS 波不触发）")
+		return
+	GameState.endless = true
+	if not Config.is_event_wave(11) or Config.is_event_wave(17) or Config.is_event_wave(20):
+		_fail("事件波判定错误（11/15/19 事件，17 常规，20 BOSS 排除）")
+		return
+	GameState.endless = false
+	# 宝箱守卫波：直接驱动 wave_manager 内部状态走完整流程
+	var wm3: Node = _main.get_node("WaveManager")
+	wm3.start_wave(3)
+	await get_tree().process_frame
+	if not ["treasure", "hunt", "meteor"].has(wm3.event_kind):
+		_fail("事件波未抽取类型（kind=%s）" % wm3.event_kind)
+		return
+	# 三种事件的选怪逻辑
+	var diff_normal: Dictionary = Registry.get_difficulty("normal")
+	if wm3.event_kind == "treasure" and wm3._pick_spawn_id(diff_normal) != "chest_guard":
+		_fail("宝箱守卫波选怪错误")
+		return
+	# 强制 treasure 结算路径：清场 → 掉高阶道具
+	wm3.event_kind = "treasure"
+	var mats_t0: int = GameState.materials
+	var items_t0: int = p4.items_owned.size()
+	wm3.ending_started = true
+	wm3.wave_timer = 0.0
+	wm3._settle_event_wave()
+	await get_tree().process_frame
+	if p4.items_owned.size() <= items_t0:
+		_fail("宝箱守卫波清场未掉高阶道具")
+		return
+	# 强制 hunt 结算路径：0 精英存活给满额奖励
+	wm3.event_kind = "hunt"
+	wm3._hunt_elites_total = 5
+	wm3.wave_timer = 0.0
+	var mats_h0: int = GameState.materials
+	wm3._settle_event_wave()
+	if GameState.materials <= mats_h0:
+		_fail("精英狩猎结算未发放奖励")
+		return
+	# 强制 meteor 结算 + 流星生成
+	wm3.event_kind = "meteor"
+	wm3._meteor_t = 0.0
+	var mats_m0: int = GameState.materials
+	wm3._spawn_meteor()
+	wm3._settle_event_wave()
+	if GameState.materials <= mats_m0:
+		_fail("流星雨结算未发放奖励")
+		return
+	if get_tree().get_nodes_in_group("fx").is_empty():
+		_fail("流星未生成预警特效")
+		return
+	# 清理测试残留：回到安全状态
+	wm3.event_kind = ""
+	for fx_node in get_tree().get_nodes_in_group("fx"):
+		fx_node.queue_free()
+	GameState.set_phase(GameState.Phase.PLAYING)
+	print("SMOKE: event waves OK")
+
 	if not Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 0), 4.0) \
 			or Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 20), 4.0):
 		_fail("连续线段碰撞判定错误")
