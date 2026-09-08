@@ -43,7 +43,7 @@ const ENEMIES := {
 	"wizard": { "name": "蛊惑法师", "hp": 26.0, "speed": 66.0, "dmg": 12.0, "xp": 9, "mat": 6, "r": 16.0, "color": "#b05ae0", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.7, "bspeed": 340.0, "heart_chance": 0.10 },
 	"shadow": { "name": "暗影刺客", "hp": 18.0, "speed": 205.0, "dmg": 12.0, "xp": 6, "mat": 4, "r": 10.0, "color": "#3d4356", "shape": "diamond", "heart_chance": 0.05 },
 	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
-	"boss": { "name": "巨型土豆王", "hp": 2400.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "heart_chance": 1.0 },
+	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "heart_chance": 1.0 },
 }
 
 ## 高难度精英替换池（难度 elite_chance 触发时从中抽取，W4+ 生效）

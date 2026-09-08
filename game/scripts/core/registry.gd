@@ -230,7 +230,9 @@ func register_enemy(data: Dictionary) -> bool:
 	for key in ["hp", "speed", "dmg", "r", "xp", "mat", "heart_chance"]:
 		if not _finite_number(data.get(key)):
 			return _reject("敌人", data, "%s 必须是有限数值" % key)
-	if float(data.hp) <= 0.0 or float(data.hp) > 5000.0 \
+	# BOSS 允许超高血量（无尽后期/自定义数值）；普通敌人维持 5000 上限
+	var hp_max := 1.0e9 if ai == "boss" else 5000.0
+	if float(data.hp) <= 0.0 or float(data.hp) > hp_max \
 			or float(data.speed) < 0.0 or float(data.speed) > 400.0 \
 			or float(data.dmg) < 0.0 or float(data.dmg) > 200.0 \
 			or float(data.r) < 5.0 or float(data.r) > 120.0 \
