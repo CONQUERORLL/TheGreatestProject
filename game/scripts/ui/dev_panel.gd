@@ -157,11 +157,11 @@ func _weapon_row() -> HBoxContainer:
 		var wkeys: Array = Registry.weapons.keys()
 		if idx >= 0 and idx < wkeys.size():
 			var wid: String = wkeys[idx]
-			if player.weapons.size() < Config.WEAPON_SLOTS:
+			if player.weapons.size() < MetaProgress.weapon_slots():
 				player.weapons.append({ "type": wid, "cd": 0.1 })
-				print("DEV: 添加武器 %s (%d/%d)" % [wid, player.weapons.size(), Config.WEAPON_SLOTS])
+				print("DEV: 添加武器 %s (%d/%d)" % [wid, player.weapons.size(), MetaProgress.weapon_slots()])
 			else:
-				print("DEV: 武器槽已满 %d/%d" % [player.weapons.size(), Config.WEAPON_SLOTS]))
+				print("DEV: 武器槽已满 %d/%d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
 	row.add_child(add)
 	return row
 

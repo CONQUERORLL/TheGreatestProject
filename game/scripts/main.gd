@@ -29,6 +29,9 @@ func _ready() -> void:
 	if GameState.continue_pending:
 		GameState.continue_pending = false
 		restored_wave = SaveRun.restore(player)
+	# 局外天赋（MetaProgress）：新局应用；读档局不重复应用（效果已烙进存档 stats）
+	if restored_wave == 0:
+		MetaProgress.apply_on_run_start(player)
 	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.player_died.connect(_on_player_died)
 	EventBus.enemy_killed.connect(_on_enemy_killed)
@@ -142,6 +145,14 @@ func _on_wave_ended(w: int) -> void:
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
 	shop_ui._refresh()   # 回收后刷新材料显示
+	# 武器进化：同名武器达标自动合成（回收后、存档前，进度包含进化结果）
+	var evolved: Array = player.evolve_weapons()
+	if not evolved.is_empty():
+		Haptics.rumble(0.5, 0.2, 0.3)
+		Sfx.play("victory")
+		EventBus.banner_requested.emit("⚔ 武器进化！",
+			" · ".join(evolved), 3.0)
+		shop_ui._refresh()   # 武器栏已变化
 	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
@@ -150,20 +161,23 @@ func _on_player_died() -> void:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.GAME_OVER)
 	EventBus.run_ended.emit(false)
+	# 局外成长：结算土豆精华（跨局永久）
+	var earned := MetaProgress.grant_run_essence(GameState.score,
+		wave_manager.wave, GameState.endless)
+	dead_label.text = "你倒下了 · 获得 ✦%d 精华" % earned
 	if GameState.endless:
 		# 无尽：成绩写入排行榜并展示名次
 		var ch: Dictionary = Registry.get_character(GameState.character_id)
 		var rank := Leaderboard.record(GameState.score, wave_manager.wave,
 			String(ch.get("name", "?")), GameState.kills, GameState.run_time)
-		dead_label.text = "你倒下了 · 积分 %d" % GameState.score
 		if rank == 1:
 			EventBus.banner_requested.emit("新纪录！",
-				"积分 %d 登顶排行榜" % GameState.score, 3.0)
+				"积分 %d 登顶排行榜 · 获得 ✦%d 精华" % [GameState.score, earned], 3.0)
 		elif rank > 1:
 			EventBus.banner_requested.emit("挑战结束",
-				"积分 %d · 排行榜第 %d 名" % [GameState.score, rank], 3.0)
+				"积分 %d · 排行榜第 %d 名 · ✦%d 精华" % [GameState.score, rank, earned], 3.0)
 	else:
-		dead_label.text = "你倒下了"
+		dead_label.text = "你倒下了 · 获得 ✦%d 精华" % earned
 	dead_label.visible = true
 	_dead_menu.visible = true
 	_dead_menu.get_child(0).grab_focus()   # 再来一局
@@ -183,6 +197,9 @@ func _on_boss_killed() -> void:
 	# 标准模式通关：存档保留到玩家作出选择（继续无尽会改写为无尽档）
 	GameState.set_phase(GameState.Phase.VICTORY)
 	EventBus.run_ended.emit(true)
+	# 局外成长：通关结算土豆精华（按波次折算）
+	var earned_v := MetaProgress.grant_run_essence(0, wave_manager.wave, false)
+	victory_label.text = "通关！· 获得 ✦%d 精华" % earned_v
 	victory_label.visible = true
 	Sfx.play("victory")
 	_victory_menu.visible = true
@@ -395,7 +412,7 @@ func _refresh_pause_content() -> void:
 	_pause_left.add_child(head)
 	var s: Dictionary = player.stats
 	_pause_left.add_child(_pause_stat_row("生命", "%d / %d" % [roundi(player.hp), roundi(s.max_hp)]))
-	_pause_left.add_child(_pause_stat_row("武器", "%d / %d" % [player.weapons.size(), Config.WEAPON_SLOTS]))
+	_pause_left.add_child(_pause_stat_row("武器", "%d / %d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
 	_pause_left.add_child(_pause_stat_row("伤害", "x%.2f" % float(s.dmg_mult)))
 	_pause_left.add_child(_pause_stat_row("攻速", "x%.2f" % float(s.as_mult)))
 	_pause_left.add_child(_pause_stat_row("移速", "%.0f" % float(s.base_speed * s.speed_mult)))

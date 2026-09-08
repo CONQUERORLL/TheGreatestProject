@@ -103,7 +103,7 @@ func _rebuild_weapons(groups: Dictionary) -> void:
 		c.queue_free()
 	for k in groups:
 		_weapons_box.add_child(_make_slot(Registry.weapons[k], int(groups[k])))
-	for _i in Config.WEAPON_SLOTS - player.weapons.size():
+	for _i in MetaProgress.weapon_slots() - player.weapons.size():
 		_weapons_box.add_child(_make_slot({}, 0))
 
 func _make_slot(c: Dictionary, count: int) -> Control:

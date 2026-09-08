@@ -17,20 +17,26 @@ const PLAYER := {
 }
 
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
+## evolve_need：持有同名武器达到该数量，波末自动合成为 evolve_to（吸血鬼幸存者式）
 const WEAPONS := {
-	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "desc": "稳定单体远程" },
-	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "desc": "极快射速，轻微散射" },
-	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "desc": "一次射出5发扇形弹丸" },
-	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "desc": "近战弧形挥砍" },
+	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "evolve_need": 4, "evolve_to": "pistol_ex", "desc": "稳定单体远程" },
+	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "evolve_need": 4, "evolve_to": "smg_ex", "desc": "极快射速，轻微散射" },
+	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "evolve_need": 3, "evolve_to": "shotgun_ex", "desc": "一次射出5发扇形弹丸" },
+	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "evolve_need": 4, "evolve_to": "blade_ex", "desc": "近战弧形挥砍" },
 	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "rarity": "epic", "desc": "命中范围爆炸 AOE" },
 	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "rarity": "epic", "desc": "一发入魂的超远距重击" },
 	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 108.0, "swing_arc": 1.9, "rarity": "epic", "desc": "大开大合的宽弧重斩" },
+	# ---- 进化形态（不进商店池：shop_weight 极低但保持可注册校验；波末合成获得） ----
+	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：双联齐射，单发伤害 +67%" },
+	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：三管齐喷的弹幕风暴" },
+	"shotgun_ex": { "name": "毁灭炮", "ico": "💣", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.75, "dmg": 12.0, "bspeed": 520.0, "pellets": 8, "arc": 1.1, "bullet_life": 0.6, "splash": 60.0, "shake": 3.0, "rarity": "legendary", "shop_weight": 0.001, "desc": "进化：8 弹丸 + 爆炸溅射" },
+	"blade_ex": { "name": "斩魄刀", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.34, "dmg": 42.0, "range": 132.0, "swing_arc": 2.4, "shake": 1.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：全域横扫，伤害 +162%" },
 }
 
 const WEAPON_SLOTS := 6
 const WEAPON_SHOP_CHANCE := 0.42
-const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0 }
-const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68 }
+const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
+const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {

@@ -28,6 +28,7 @@ Sfx="*res://scripts/core/sfx.gd"
 Settings="*res://scripts/core/settings.gd"
 SaveRun="*res://scripts/core/save_run.gd"
 Leaderboard="*res://scripts/core/leaderboard.gd"
+MetaProgress="*res://scripts/core/meta_progress.gd"
 
 [display]
 

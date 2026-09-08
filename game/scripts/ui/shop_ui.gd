@@ -171,7 +171,7 @@ func _refresh_left() -> void:
 	_left_box.add_child(head)
 	var s: Dictionary = player.stats
 	_left_box.add_child(_stat_row("生命", "%d / %d" % [roundi(player.hp), roundi(s.max_hp)]))
-	_left_box.add_child(_stat_row("武器", "%d / %d" % [player.weapons.size(), Config.WEAPON_SLOTS]))
+	_left_box.add_child(_stat_row("武器", "%d / %d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
 	_left_box.add_child(_stat_row("伤害", "x%.2f" % float(s.dmg_mult)))
 	_left_box.add_child(_stat_row("攻速", "x%.2f" % float(s.as_mult)))
 	_left_box.add_child(_stat_row("移速", "%.0f" % float(s.base_speed * s.speed_mult)))
@@ -252,10 +252,10 @@ func _sell(id: String) -> void:
 
 # ---------------- 开关与商品 ----------------
 
-## 打开商店（原型 openShop：刷新费 = 8 + wave*3，重掷商品）
+## 打开商店（原型 openShop：刷新费 = 8 + wave*3 × 砍价折扣，重掷商品）
 func open(shop_wave: int) -> void:
 	_wave = shop_wave
-	_reroll_cost = Config.shop_reroll_cost(_wave)
+	_reroll_cost = _discounted_reroll(Config.shop_reroll_cost(_wave))
 	GameState.set_phase(GameState.Phase.SHOP)
 	_roll_goods()
 	_title.text = "商店 · 备战第 %d 波" % (_wave + 1)
@@ -273,6 +273,11 @@ func goods_count() -> int:
 func get_reroll_cost() -> int:
 	return _reroll_cost
 
+## 砍价大师天赋：刷新费按等级折扣（最低 60 折）
+func _discounted_reroll(base: int) -> int:
+	var disc := minf(0.40, MetaProgress.effect_sum("reroll"))
+	return maxi(1, roundi(float(base) * (1.0 - disc)))
+
 ## 外部/测试接口：锁定指定格（刷新时保留；已售格不可锁）
 func set_lock(i: int, on: bool) -> void:
 	if i >= 0 and i < goods.size() and not goods[i].sold:
@@ -282,7 +287,7 @@ func set_lock(i: int, on: bool) -> void:
 ## 升级/道具按稀有度加权抽取（品阶越高越稀有，权重随波次小幅提升）
 func _roll_goods() -> void:
 	goods = []
-	var weapon_full: bool = player.weapons.size() >= Config.WEAPON_SLOTS
+	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in 4:
 		goods.append(_roll_one(weapon_full))
 
@@ -417,7 +422,7 @@ func _make_good_card(i: int) -> Control:
 	name_l.add_theme_color_override("font_color", Config.rarity_color(g.rarity))
 	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(name_l)
-	# 武器显示已拥有数量（同名武器聚合提示）
+	# 武器显示已拥有数量（同名武器聚合提示）+ 进化进度（如 3/4）
 	if g.kind == "weapon":
 		var owned := 0
 		for w in player.weapons:
@@ -425,6 +430,15 @@ func _make_good_card(i: int) -> Control:
 				owned += 1
 		if owned > 0:
 			name_l.text = "%s  x%d" % [g.name, owned]
+		# 进化提示：拥有同名武器时显示进度/预告
+		var wcfg: Dictionary = Registry.weapons.get(g.wtype, {})
+		var need := int(wcfg.get("evolve_need", 0))
+		if need > 0 and owned > 0:
+			var ex_name: String = Registry.weapons[wcfg.evolve_to].name
+			if owned >= need:
+				g.desc = "★ 波末自动进化 → %s" % ex_name
+			else:
+				g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
 	desc.text = g.desc
 	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -458,7 +472,7 @@ func _make_good_card(i: int) -> Control:
 		btn.text = "%d ◆" % price
 		# 满槽武器拦截在扣钱前（修正原型 buyGood 先扣钱后检查的坑）
 		btn.disabled = GameState.materials < price \
-			or (g.kind == "weapon" and player.weapons.size() >= Config.WEAPON_SLOTS)
+			or (g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots())
 		btn.pressed.connect(buy.bind(i))
 	row.add_child(btn)
 	panel.set_meta("buy_btn", btn)
@@ -485,7 +499,7 @@ func buy(i: int) -> void:
 	var price := _price_of(g)
 	if g.sold or GameState.materials < price:
 		return
-	if g.kind == "weapon" and player.weapons.size() >= Config.WEAPON_SLOTS:
+	if g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots():
 		return
 	GameState.add_materials(-price)
 	g.sold = true
@@ -502,16 +516,16 @@ func buy(i: int) -> void:
 	_refresh()
 	_save_checkpoint()   # 商店内即时重存，退出不丢购物
 
-## 刷新：费用 ×1.4 递增；已售格与锁定格原位保留，其余重 roll
+## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
 func reroll() -> void:
 	if GameState.materials < _reroll_cost:
 		return
 	GameState.add_materials(-_reroll_cost)
-	_reroll_cost = roundi(_reroll_cost * 1.4)
+	_reroll_cost = _discounted_reroll(roundi(_reroll_cost * 1.4))
 	Haptics.rumble(0.25, 0.0, 0.08)
 	Sfx.play("reroll")
 	var old := goods.duplicate(true)
-	var weapon_full: bool = player.weapons.size() >= Config.WEAPON_SLOTS
+	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	goods = []
 	for i in 4:
 		if old[i].sold or old[i].locked:

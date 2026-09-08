@@ -199,6 +199,52 @@ func take_damage(raw: float) -> void:
 		hp = 0.0
 		EventBus.player_died.emit()
 
+## 武器进化（波末由 main 调用）：同名武器达到 evolve_need 时自动合成进化形态。
+## 4 把手枪 → 1 把双管神射（腾出槽位），返回进化公告文本列表（无进化返回空）
+func evolve_weapons() -> Array:
+	var results: Array = []
+	var counts := {}
+	for w in weapons:
+		counts[w.type] = counts.get(w.type, 0) + 1
+	var to_process: Array = []
+	for wtype in counts:
+		var cfg: Dictionary = Registry.weapons.get(wtype, {})
+		if cfg.is_empty():
+			continue
+		var need := int(cfg.get("evolve_need", 0))
+		if need > 0 and int(counts[wtype]) >= need and Registry.weapons.has(cfg.evolve_to):
+			to_process.append(wtype)
+	for wtype in to_process:
+		var cfg: Dictionary = Registry.weapons[wtype]
+		var need := int(cfg.evolve_need)
+		# 移除 need 把同名武器，追加 1 把进化形态
+		var removed := 0
+		var new_weapons: Array = []
+		for w in weapons:
+			if w.type == wtype and removed < need:
+				removed += 1
+			else:
+				new_weapons.append(w)
+		weapons = new_weapons
+		weapons.append({ "type": cfg.evolve_to, "cd": 0.1 })
+		var ex_cfg: Dictionary = Registry.weapons[cfg.evolve_to]
+		results.append("%s ×%d → %s" % [cfg.name, need, ex_cfg.name])
+	return results
+
+## 进化预览：返回 [{type, name, have, need}]（商店/HUD 提示用）
+func evolve_progress() -> Array:
+	var counts := {}
+	for w in weapons:
+		counts[w.type] = counts.get(w.type, 0) + 1
+	var progress: Array = []
+	for wtype in counts:
+		var cfg: Dictionary = Registry.weapons.get(wtype, {})
+		var need := int(cfg.get("evolve_need", 0))
+		if need > 0 and int(counts[wtype]) < need and Registry.weapons.has(cfg.get("evolve_to", "")):
+			progress.append({ "type": wtype, "name": cfg.name,
+				"have": int(counts[wtype]), "need": need })
+	return progress
+
 func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）
 	var r: float = Config.PLAYER.radius

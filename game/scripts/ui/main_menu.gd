@@ -31,6 +31,9 @@ var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）|
 var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
 var _lb_panel: Control        # 无尽炼狱排行榜弹窗
 var _lb_rows: VBoxContainer
+var _talent_panel: Control    # 天赋树弹窗
+var _talent_essence: Label    # 精华余额
+var _talent_rows: VBoxContainer
 
 const TOTAL_STEPS := 5
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
@@ -45,6 +48,7 @@ func _ready() -> void:
 	_build_wizard()
 	_build_slots_panel()
 	_build_leaderboard_panel()
+	_build_talent_panel()
 
 # ---------------- 存档槽选择弹窗 ----------------
 
@@ -217,6 +221,7 @@ func _home_specs() -> Array:
 		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
 	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
 	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
+	specs.append(["天 赋 树", 220.0, func() -> void: _open_talents()])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
@@ -429,6 +434,11 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 天赋树弹窗：Esc / 手柄 B 关闭
+	if _talent_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_talents()
+		get_viewport().set_input_as_handled()
+		return
 	# 排行榜弹窗：Esc / 手柄 B 关闭
 	if _lb_panel.visible and event.is_action_pressed("ui_cancel"):
 		_close_leaderboard()
@@ -467,7 +477,109 @@ func _start() -> void:
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
-# ---------------- 无尽炼积分排行榜 ----------------
+# ---------------- 天赋树（局外成长） ----------------
+
+func _build_talent_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_talent_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "🌟 天赋树 · 局外成长"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(title)
+	_talent_essence = Label.new()
+	_talent_essence.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_talent_essence.add_theme_font_size_override("font_size", 16)
+	_talent_essence.add_theme_color_override("font_color", Color("ffd24a"))
+	box.add_child(_talent_essence)
+	var tip := Label.new()
+	tip.text = "土豆精华：局末按积分/波次结算，永不清零 · 天赋对所有新局生效"
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tip.add_theme_font_size_override("font_size", 12)
+	tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(tip)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(600.0, 360.0)
+	box.add_child(scroll)
+	_talent_rows = VBoxContainer.new()
+	_talent_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_talent_rows.add_theme_constant_override("separation", 8)
+	scroll.add_child(_talent_rows)
+	var close := Button.new()
+	close.text = "关 闭（Esc）"
+	close.custom_minimum_size = Vector2(600.0, 44.0)
+	close.pressed.connect(_close_talents)
+	box.add_child(close)
+
+func _open_talents() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_refresh_talents()
+	_talent_panel.visible = true
+	_home.visible = false
+	# 焦点给第一个可购买天赋（无则关闭按钮）
+	for c in _talent_rows.get_children():
+		if c is Button and not c.disabled:
+			c.grab_focus()
+			return
+	for c in _talent_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _close_talents() -> void:
+	_talent_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _refresh_talents() -> void:
+	for c in _talent_rows.get_children():
+		_talent_rows.remove_child(c)
+		c.queue_free()
+	_talent_essence.text = "◆ 土豆精华 %d（累计获得 %d）" % [MetaProgress.essence, MetaProgress.total_earned]
+	for id in MetaProgress.TALENTS:
+		var t: Dictionary = MetaProgress.TALENTS[id]
+		var lv := MetaProgress.talent_level(id)
+		var max_lv := int(t.max_lv)
+		var cost := MetaProgress.talent_cost(id)
+		var row := Button.new()
+		row.custom_minimum_size = Vector2(580.0, 64.0)
+		var full := lv >= max_lv
+		if full:
+			row.text = "%s %s　Lv %d/%d　已满级" % [t.ico, t.name, lv, max_lv]
+			row.disabled = true
+		else:
+			row.text = "%s %s　Lv %d/%d　升级：%d 精华\n%s" % [t.ico, t.name, lv, max_lv, cost, t.desc]
+			row.disabled = MetaProgress.essence < cost
+		row.pressed.connect(_on_talent_buy.bind(id))
+		_talent_rows.add_child(row)
+
+func _on_talent_buy(id: String) -> void:
+	if MetaProgress.buy_talent(id):
+		Haptics.rumble(0.25, 0.0, 0.08)
+		Sfx.play("buy")
+		_refresh_talents()
+		# 重新抓焦首个可购买项，保持手柄导航连续
+		for c in _talent_rows.get_children():
+			if c is Button and not c.disabled:
+				c.grab_focus()
+				return
 
 func _build_leaderboard_panel() -> void:
 	var overlay := Control.new()

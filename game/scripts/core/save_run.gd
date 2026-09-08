@@ -242,7 +242,8 @@ func _read_path(path: String) -> Dictionary:
 			return {}
 	if float(pl.hp) > float(pl.stats.max_hp):
 		return {}
-	if pl.weapons.is_empty() or pl.weapons.size() > Config.WEAPON_SLOTS:
+	# 6 基础槽 + 1 军火专家天赋槽；玩家可能购买天赋后存 7 把再读档
+	if pl.weapons.is_empty() or pl.weapons.size() > Config.WEAPON_SLOTS + 1:
 		return {}
 	for w in pl.weapons:
 		if typeof(w) != TYPE_DICTIONARY or typeof(w.get("type")) != TYPE_STRING \

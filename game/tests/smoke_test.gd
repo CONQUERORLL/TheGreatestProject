@@ -20,6 +20,7 @@ const TEST_SAVE_ROOT := "user://tests/smoke_run"
 
 func _ready() -> void:
 	SaveRun.set_storage_root_for_tests(TEST_SAVE_ROOT)
+	MetaProgress.reset_for_tests()   # 隔离本机天赋档（开局加成会污染数值断言）
 	_cleanup_test_storage(false)
 	_main = preload("res://scenes/main.tscn").instantiate()
 	add_child(_main)
@@ -536,6 +537,80 @@ func _check_items() -> void:
 	if SaveRun.save(Config.WAVES_TOTAL + 1, p2) or SaveRun.slot_path(0) != "":
 		_fail("非法波次/槽位未被拒绝")
 		return
+	# ---- 武器进化：4 把手枪波末合成双管神射 ----
+	var p4: Node2D = _main.get_node("Player")
+	var saved_weapons4: Array = p4.weapons.duplicate(true)
+	p4.weapons = []
+	for _i2 in 4:
+		p4.weapons.append({ "type": "pistol", "cd": 0.1 })
+	p4.weapons.append({ "type": "rocket", "cd": 0.1 })   # 混入其他武器验证只合成同名
+	var evolved: Array = p4.evolve_weapons()
+	print("SMOKE: evolve results=%s weapons=%d" % [str(evolved), p4.weapons.size()])
+	if evolved.size() != 1 or not String(evolved[0]).contains("双管神射"):
+		_fail("武器进化结果错误（%s）" % str(evolved))
+		return
+	var pistol_cnt := 0
+	var ex_cnt := 0
+	for w in p4.weapons:
+		if w.type == "pistol":
+			pistol_cnt += 1
+		if w.type == "pistol_ex":
+			ex_cnt += 1
+	if pistol_cnt != 0 or ex_cnt != 1 or p4.weapons.size() != 2:
+		_fail("进化后武器列表错误（pistol=%d ex=%d total=%d）" % [pistol_cnt, ex_cnt, p4.weapons.size()])
+		return
+	# 进化预览：2 把手枪显示 2/4
+	p4.weapons = [{ "type": "pistol", "cd": 0.1 }, { "type": "pistol", "cd": 0.1 }]
+	var prog: Array = p4.evolve_progress()
+	if prog.size() != 1 or int(prog[0].have) != 2 or int(prog[0].need) != 4:
+		_fail("进化进度预览错误（%s）" % str(prog))
+		return
+	p4.weapons = saved_weapons4   # 还原
+	# ---- 局外天赋：购买/效果/槽位 ----
+	MetaProgress.reset_for_tests()
+	MetaProgress.essence = 1000
+	if not MetaProgress.buy_talent("vitality") or MetaProgress.talent_level("vitality") != 1:
+		_fail("天赋购买失败")
+		return
+	if MetaProgress.essence != 940:
+		_fail("天赋扣费错误（%d，应 940）" % MetaProgress.essence)
+		return
+	if not is_equal_approx(MetaProgress.effect_sum("stats", "max_hp"), 15.0):
+		_fail("天赋效果合计错误")
+		return
+	if MetaProgress.weapon_slots() != 6:
+		_fail("未购军火专家时武器槽应为 6")
+		return
+	# 精华不足拒绝：余额清零后尝试购买
+	MetaProgress.essence = 0
+	if MetaProgress.buy_talent("arsenal"):
+		_fail("精华不足不应购入军火专家")
+		return
+	MetaProgress.essence = 1000
+	if not MetaProgress.buy_talent("arsenal") or MetaProgress.weapon_slots() != 7:
+		_fail("军火专家购买后武器槽应为 7")
+		return
+	# 开局应用：stats 叠加 + 材料入账
+	MetaProgress.buy_talent("fortune")
+	GameState.set_materials(0)
+	var stats_before: Dictionary = p4.stats.duplicate()
+	MetaProgress.apply_on_run_start(p4)
+	if not is_equal_approx(float(p4.stats.max_hp), float(stats_before.max_hp) + 15.0) \
+			or GameState.materials != 40:
+		_fail("天赋开局应用错误（max_hp=%.0f mats=%d）" % [p4.stats.max_hp, GameState.materials])
+		return
+	# 精华结算：无尽按积分 8%
+	MetaProgress.reset_for_tests()
+	var got_e: int = MetaProgress.grant_run_essence(1000, 5, true)
+	if got_e != 80 or MetaProgress.essence != 80 or MetaProgress.total_earned != 80:
+		_fail("局末精华结算错误（got=%d）" % got_e)
+		return
+	MetaProgress.reset_for_tests()
+	# 清理写入 user:// 的测试天赋档
+	var meta_path := "user://meta_progress.json"
+	if FileAccess.file_exists(meta_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(meta_path))
+	print("SMOKE: talent + weapon evolution OK")
 	# 连续碰撞工具：线段跨过圆心必须命中，偏离则不能误判。
 	if not Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 0), 4.0) \
 			or Combat.segment_hits_circle(Vector2.ZERO, Vector2(100, 0), Vector2(50, 20), 4.0):
@@ -856,6 +931,11 @@ func _cleanup_test_storage(reset_root: bool) -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(lb_file))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://tests/lb"))
 	Leaderboard.reset_storage_root_after_tests()
+	# 天赋档：测试内购买/结算会写真实 user://meta_progress.json，结束时删除
+	# （本机玩家天赋进度由测试开头 reset 前的 _load 保留在内存中，此文件已非其数据）
+	var meta_file := "user://meta_progress.json"
+	if FileAccess.file_exists(meta_file):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(meta_file))
 	if reset_root:
 		SaveRun.reset_storage_root_after_tests()
 
