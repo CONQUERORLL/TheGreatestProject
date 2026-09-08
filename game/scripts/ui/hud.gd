@@ -9,6 +9,7 @@ var wave_manager: Node   # systems/wave_manager.gd 引用，由 main 注入
 
 var _vignette_a := 0.0
 var _weapons_key := ""
+var _stats_t := 0.0   # 左下属性行刷新节流（0.2s 一次，属性不逐帧变化）
 
 @onready var _hp_bar: ProgressBar = $TopLeft/Box/HpRow/HpBar
 @onready var _hp_text: Label = $TopLeft/Box/HpRow/HpText
@@ -45,6 +46,9 @@ func _process(delta: float) -> void:
 	_vignette.color.a = _vignette_a * 0.55
 	if player == null or wave_manager == null:
 		return
+	# 商店/暂停/升级/结算期间战斗数值冻结，跳过整段刷新
+	if GameState.phase != GameState.Phase.PLAYING and GameState.phase != GameState.Phase.INTRO:
+		return
 	var s: Dictionary = player.stats
 	# 血条 / 等级 / 经验条
 	_hp_bar.max_value = s.max_hp
@@ -65,10 +69,13 @@ func _process(delta: float) -> void:
 	# 右上：材料 / 击杀
 	_mat_text.text = "◆ %d" % GameState.materials
 	_kill_text.text = "击杀 %d" % GameState.kills
-	# 左下：属性行
-	_stats_label.text = "伤害 x%.2f ｜ 攻速 x%.2f ｜ 暴击 %d%%\n护甲 %d ｜ 闪避 %d%% ｜ 移速 x%.2f ｜ 回复 %.1f/s" % [
-		s.dmg_mult, s.as_mult, roundi(s.crit_ch * 100.0), int(s.armor),
-		roundi(s.dodge * 100.0), s.speed_mult, s.regen]
+	# 左下：属性行（0.2s 节流，7 项数值格式化不是每帧必要开销）
+	_stats_t -= delta
+	if _stats_t <= 0.0:
+		_stats_t = 0.2
+		_stats_label.text = "伤害 x%.2f ｜ 攻速 x%.2f ｜ 暴击 %d%%\n护甲 %d ｜ 闪避 %d%% ｜ 移速 x%.2f ｜ 回复 %.1f/s" % [
+			s.dmg_mult, s.as_mult, roundi(s.crit_ch * 100.0), int(s.armor),
+			roundi(s.dodge * 100.0), s.speed_mult, s.regen]
 	# 武器槽：分组 key 变化才重建（避免每帧建节点）
 	var groups := {}
 	for w in player.weapons:

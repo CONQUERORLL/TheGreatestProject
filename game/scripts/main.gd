@@ -79,8 +79,7 @@ func _process(delta: float) -> void:
 	if banner_t > 0.0:
 		banner_t -= delta
 		if banner_t <= 0.0:
-			banner_title.visible = false
-			banner_sub.visible = false
+			_hide_banner()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause"):
@@ -131,8 +130,13 @@ func _on_enemy_killed(_type: String) -> void:
 	Haptics.rumble(0.12, 0.0, 0.06)   # 击杀微震（Haptics 内部节流防叠满）
 
 ## 普通波清场后进入商店（BOSS 波击杀直接结算，不走这里）
+## 波末自动回收场上全部掉落：经验/材料/红心直接结算，
+## 升级选择若在此触发会积压 level_queue，下一波开始时补弹
 func _on_wave_ended(w: int) -> void:
 	shop_ui.open(w)
+	for l in get_tree().get_nodes_in_group("loot"):
+		l.settle()
+	shop_ui._refresh()   # 回收后刷新材料显示
 	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
@@ -161,12 +165,31 @@ func _on_boss_killed() -> void:
 	_victory_menu.visible = true
 	_victory_menu.get_child(0).grab_focus()   # 再来一局
 
+var _banner_tween: Tween = null
+
 func _on_banner(title: String, subtitle: String, duration: float) -> void:
 	banner_title.text = title
 	banner_sub.text = subtitle
 	banner_title.visible = true
 	banner_sub.visible = true
 	banner_t = duration
+	if _banner_tween:
+		_banner_tween.kill()
+	_banner_tween = create_tween()
+	_banner_tween.set_parallel(true)
+	_banner_tween.tween_property(banner_title, "modulate:a", 1.0, 0.15).from(0.0)
+	_banner_tween.tween_property(banner_sub, "modulate:a", 1.0, 0.15).from(0.0)
+
+func _hide_banner() -> void:
+	if _banner_tween:
+		_banner_tween.kill()
+	_banner_tween = create_tween()
+	_banner_tween.set_parallel(true)
+	_banner_tween.tween_property(banner_title, "modulate:a", 0.0, 0.18)
+	_banner_tween.tween_property(banner_sub, "modulate:a", 0.0, 0.18)
+	_banner_tween.chain().tween_callback(func() -> void:
+		banner_title.visible = false
+		banner_sub.visible = false)
 
 func toggle_pause() -> void:
 	if GameState.phase == GameState.Phase.PLAYING or GameState.phase == GameState.Phase.INTRO:

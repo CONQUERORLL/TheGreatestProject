@@ -23,12 +23,14 @@ const WEAPONS := {
 	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "desc": "一次射出5发扇形弹丸" },
 	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "desc": "近战弧形挥砍" },
 	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "rarity": "epic", "desc": "命中范围爆炸 AOE" },
+	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "rarity": "epic", "desc": "一发入魂的超远距重击" },
+	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 108.0, "swing_arc": 1.9, "rarity": "epic", "desc": "大开大合的宽弧重斩" },
 }
 
 const WEAPON_SLOTS := 6
 const WEAPON_SHOP_CHANCE := 0.42
-const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8 }
-const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60 }
+const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0 }
+const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68 }
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {
@@ -36,8 +38,19 @@ const ENEMIES := {
 	"runner": { "name": "冲锋者", "hp": 8.0, "speed": 168.0, "dmg": 6.0, "xp": 3, "mat": 2, "r": 11.0, "color": "#e8902a", "shape": "diamond", "heart_chance": 0.04 },
 	"tank": { "name": "坦克", "hp": 46.0, "speed": 50.0, "dmg": 16.0, "xp": 8, "mat": 6, "r": 23.0, "color": "#8e5bbf", "shape": "circle", "heart_chance": 0.12 },
 	"shooter": { "name": "射手", "hp": 12.0, "speed": 72.0, "dmg": 10.0, "xp": 5, "mat": 4, "r": 14.0, "color": "#3bbfae", "shape": "square", "keep_dist": 270.0, "shoot_cd": 2.2, "bspeed": 300.0, "heart_chance": 0.08 },
+	"swarm": { "name": "蜂群幼体", "hp": 5.0, "speed": 118.0, "dmg": 4.0, "xp": 2, "mat": 1, "r": 8.0, "color": "#cdd94f", "shape": "circle", "heart_chance": 0.02 },
+	"bomber": { "name": "自爆虫", "hp": 10.0, "speed": 150.0, "dmg": 14.0, "xp": 4, "mat": 3, "r": 12.0, "color": "#ff5e3a", "shape": "diamond", "heart_chance": 0.05 },
+	"wizard": { "name": "蛊惑法师", "hp": 26.0, "speed": 66.0, "dmg": 12.0, "xp": 9, "mat": 6, "r": 16.0, "color": "#b05ae0", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.7, "bspeed": 340.0, "heart_chance": 0.10 },
+	"shadow": { "name": "暗影刺客", "hp": 18.0, "speed": 205.0, "dmg": 12.0, "xp": 6, "mat": 4, "r": 10.0, "color": "#3d4356", "shape": "diamond", "heart_chance": 0.05 },
+	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
 	"boss": { "name": "巨型土豆王", "hp": 750.0, "speed": 58.0, "dmg": 22.0, "xp": 30, "mat": 80, "r": 52.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.4, "ring_count": 14, "bspeed": 240.0, "heart_chance": 1.0 },
 }
+
+## 高难度精英替换池（难度 elite_chance 触发时从中抽取，W4+ 生效）
+const ELITE_POOL := [
+	{ "item": "guard", "w": 0.30 }, { "item": "wizard", "w": 0.30 },
+	{ "item": "shadow", "w": 0.22 }, { "item": "bomber", "w": 0.18 },
+]
 
 ## 升级池（可重复叠加；effects 键 = player.stats 键，创意工坊数据驱动；
 ## 特例：heal_flat = 最大生命+立即回复同值，heal_pct = 立即回复最大生命百分比）
@@ -54,6 +67,12 @@ const UPGRADES := [
 	{ "id": "regen", "ico": "✚", "name": "再生", "desc": "生命回复 +0.6 / 秒", "rarity": "rare", "effects": { "regen": 0.6 } },
 	{ "id": "harv", "ico": "🌾", "name": "丰收", "desc": "材料获取 +18%", "rarity": "rare", "effects": { "harvesting": 0.18 } },
 	{ "id": "heal", "ico": "🥔", "name": "急救土豆", "desc": "立即回复 35% 最大生命", "rarity": "epic", "effects": { "heal_pct": 0.35 } },
+	{ "id": "precision", "ico": "🔭", "name": "精密校准", "desc": "暴击率 +12%", "rarity": "mythic", "effects": { "crit_ch": 0.12 } },
+	{ "id": "greed", "ico": "💰", "name": "贪婪之心", "desc": "材料获取 +50%", "rarity": "mythic", "effects": { "harvesting": 0.50 } },
+	{ "id": "frenzy", "ico": "🎶", "name": "狂热节拍", "desc": "攻击速度 +18%", "rarity": "mythic", "effects": { "as_mult": 0.18 } },
+	{ "id": "berserk", "ico": "💀", "name": "血之狂怒", "desc": "伤害 +35%", "rarity": "legendary", "effects": { "dmg_mult": 0.35 } },
+	{ "id": "overdrive", "ico": "🔥", "name": "极限超频", "desc": "攻速 +25%，暴击伤害 +40%", "rarity": "legendary", "effects": { "as_mult": 0.25, "crit_mult": 0.40 } },
+	{ "id": "titanheart", "ico": "🫀", "name": "泰坦心脏", "desc": "最大生命 +60（并回复 60），护甲 +3", "rarity": "legendary", "effects": { "heal_flat": 60.0, "armor": 3.0 } },
 ]
 
 ## 商店道具（被动 = 永久属性；effects 键 = player.stats 键，创意工坊数据驱动；
@@ -70,6 +89,14 @@ const ITEMS := [
 	{ "id": "i-reg", "ico": "💊", "name": "再生器", "desc": "生命回复 +1.0 / 秒", "price": 42, "rarity": "epic", "effects": { "regen": 1.0 } },
 	{ "id": "i-harv", "ico": "💰", "name": "金币袋", "desc": "材料获取 +25%", "price": 32, "rarity": "rare", "effects": { "harvesting": 0.25 } },
 	{ "id": "i-ls", "ico": "🩸", "name": "血蛭", "desc": "每击杀 1 个敌人回复 1 点生命（可叠加）", "price": 48, "rarity": "epic", "effects": { "lifesteal": 1.0 } },
+	{ "id": "i-goldcore", "ico": "✨", "name": "黄金核心", "desc": "伤害 +25%，攻速 +15%", "price": 200, "rarity": "mythic", "effects": { "dmg_mult": 0.25, "as_mult": 0.15 } },
+	{ "id": "i-fortress", "ico": "🏰", "name": "堡垒之心", "desc": "护甲 +6，最大生命 +45", "price": 185, "rarity": "mythic", "effects": { "armor": 6.0, "max_hp": 45.0 } },
+	{ "id": "i-fortune", "ico": "🤑", "name": "财神金蟾", "desc": "材料获取 +80%，拾取范围 +80", "price": 170, "rarity": "mythic", "effects": { "harvesting": 0.80, "pickup_range": 80.0 } },
+	{ "id": "i-bladesoul", "ico": "🗡", "name": "剑圣之魂", "desc": "暴击率 +15%，暴击伤害 +80%", "price": 210, "rarity": "mythic", "effects": { "crit_ch": 0.15, "crit_mult": 0.80 } },
+	{ "id": "i-titan", "ico": "🏆", "name": "泰坦之力", "desc": "伤害 +45%，最大生命 +30", "price": 260, "rarity": "legendary", "effects": { "dmg_mult": 0.45, "max_hp": 30.0 } },
+	{ "id": "i-gale", "ico": "🌪", "name": "风神羽靴", "desc": "移速 +35%，攻速 +30%，闪避 +10%", "price": 250, "rarity": "legendary", "effects": { "speed_mult": 0.35, "as_mult": 0.30, "dodge": 0.10 } },
+	{ "id": "i-sanguine", "ico": "🧛", "name": "血族圣冠", "desc": "击杀回血 +3，生命回复 +2 / 秒", "price": 280, "rarity": "legendary", "effects": { "lifesteal": 3.0, "regen": 2.0 } },
+	{ "id": "i-crown", "ico": "👑", "name": "王者桂冠", "desc": "伤害 +15%，攻速 +15%，暴击 +8%，暴伤 +50%", "price": 300, "rarity": "legendary", "effects": { "dmg_mult": 0.15, "as_mult": 0.15, "crit_ch": 0.08, "crit_mult": 0.50 } },
 ]
 
 const WAVES_TOTAL := 10
@@ -78,13 +105,33 @@ const HEAL_DROP_CHANCE := 0.05
 const SHOP_HEAL_PRICE := 15
 const SHOP_UPGRADE_CHANCE := 0.29   # 商店刷出升级属性的概率（武器 42% 之外再分摊）
 
+## 稀有度枚举（低 → 高）：common 白 / rare 蓝 / epic 紫 / mythic 金 / legendary 红
+const RARITIES := ["common", "rare", "epic", "mythic", "legendary"]
+
 ## 稀有度色（商店/向导/暂停页卡片背景与边框共用）
 const RARITY_COLORS := {
 	"common": Color("e6e6e6"),
 	"rare": Color("5aa9e6"),
 	"epic": Color("b07fe0"),
+	"mythic": Color("ffb42e"),
 	"legendary": Color("e0564f"),
 }
+
+## 商店/升级池按稀有度抽取的基础权重（单条目权重，品阶越高越稀有）
+const RARITY_BASE_WEIGHTS := {
+	"common": 1.0, "rare": 0.50, "epic": 0.22, "mythic": 0.055, "legendary": 0.018,
+}
+
+## 稀有度抽取权重：progress = 波次（商店）或等级（升级三选一），
+## 越往后高品阶权重越高，构筑成型期才有机会刷出金色/红色
+static func rarity_weight(rarity: String, progress: int) -> float:
+	var w := float(RARITY_BASE_WEIGHTS.get(rarity, 1.0))
+	var t := maxf(0.0, float(progress - 1))
+	match rarity:
+		"mythic": w *= 1.0 + 0.22 * t
+		"legendary": w *= 1.0 + 0.28 * t
+		"epic": w *= 1.0 + 0.06 * t
+	return w
 
 static func rarity_color(r: String) -> Color:
 	return RARITY_COLORS.get(r, Color("9aa3b2"))
@@ -102,10 +149,10 @@ static func wave_duration(w: int) -> float:
 	return 45.0 + (w - 1) * 5.0   # 初始 45s，每波 +5s
 
 static func wave_interval(w: int) -> float:
-	return maxf(0.4, 1.25 - 0.085 * (w - 1))
+	return maxf(0.4, 1.0 - 0.07 * (w - 1))   # 前期刷怪更密，保证经验/材料流转
 
 static func wave_cap(w: int) -> int:
-	return 26 + w * 4
+	return 24 + w * 6
 
 static func wave_hp_scale(w: int) -> float:
 	return 1.0 + 0.30 * (w - 1)
@@ -122,14 +169,21 @@ static func xp_need(level: int) -> int:
 ## 刷怪权重组合：[{ "item": 敌人类型, "w": 权重 }]
 static func wave_composition(w: int) -> Array:
 	if w <= 1:
-		return [{ "item": "grunt", "w": 1.0 }]
+		return [{ "item": "grunt", "w": 0.72 }, { "item": "swarm", "w": 0.28 }]
 	if w == 2:
-		return [{ "item": "grunt", "w": 0.8 }, { "item": "runner", "w": 0.2 }]
+		return [{ "item": "grunt", "w": 0.42 }, { "item": "swarm", "w": 0.28 }, { "item": "runner", "w": 0.30 }]
 	if w == 3:
-		return [{ "item": "grunt", "w": 0.6 }, { "item": "runner", "w": 0.25 }, { "item": "tank", "w": 0.15 }]
+		return [{ "item": "grunt", "w": 0.32 }, { "item": "swarm", "w": 0.20 }, { "item": "runner", "w": 0.26 }, { "item": "tank", "w": 0.22 }]
 	if w <= 5:
-		return [{ "item": "grunt", "w": 0.5 }, { "item": "runner", "w": 0.25 }, { "item": "tank", "w": 0.13 }, { "item": "shooter", "w": 0.12 }]
-	return [{ "item": "grunt", "w": 0.38 }, { "item": "runner", "w": 0.27 }, { "item": "tank", "w": 0.17 }, { "item": "shooter", "w": 0.18 }]
+		return [{ "item": "grunt", "w": 0.26 }, { "item": "swarm", "w": 0.14 }, { "item": "runner", "w": 0.24 },
+			{ "item": "tank", "w": 0.16 }, { "item": "shooter", "w": 0.20 }]
+	if w <= 7:
+		return [{ "item": "grunt", "w": 0.18 }, { "item": "swarm", "w": 0.10 }, { "item": "runner", "w": 0.22 },
+			{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.16 }, { "item": "bomber", "w": 0.10 },
+			{ "item": "wizard", "w": 0.10 }]
+	return [{ "item": "grunt", "w": 0.12 }, { "item": "swarm", "w": 0.07 }, { "item": "runner", "w": 0.20 },
+		{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.15 }, { "item": "bomber", "w": 0.11 },
+		{ "item": "wizard", "w": 0.10 }, { "item": "shadow", "w": 0.07 }, { "item": "guard", "w": 0.04 }]
 
 # ---- 商店公式 ----
 

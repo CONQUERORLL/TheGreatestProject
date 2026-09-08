@@ -8,6 +8,8 @@ var size_f := 13
 var life := 0.7
 var max_life := 0.7
 
+static var _cached_font: Font = null   # 避免每帧每实例取 ThemeDB
+
 func _ready() -> void:
 	add_to_group("fx")
 
@@ -28,6 +30,7 @@ func _process(delta: float) -> void:
 		queue_free()
 
 func _draw() -> void:
-	var font := ThemeDB.fallback_font
-	draw_string_outline(font, Vector2(-200, 0), text, HORIZONTAL_ALIGNMENT_CENTER, 400.0, size_f, 3, Color(0, 0, 0, 0.6))
-	draw_string(font, Vector2(-200, 0), text, HORIZONTAL_ALIGNMENT_CENTER, 400.0, size_f, color)
+	if _cached_font == null:
+		_cached_font = ThemeDB.fallback_font
+	draw_string_outline(_cached_font, Vector2(-200, 0), text, HORIZONTAL_ALIGNMENT_CENTER, 400.0, size_f, 3, Color(0, 0, 0, 0.6))
+	draw_string(_cached_font, Vector2(-200, 0), text, HORIZONTAL_ALIGNMENT_CENTER, 400.0, size_f, color)

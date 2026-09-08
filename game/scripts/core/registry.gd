@@ -143,7 +143,7 @@ func register_weapon(data: Dictionary) -> bool:
 		return _reject("武器", data, "ID/名称不能为空")
 	if attack_type not in ["projectile", "melee"]:
 		return _reject("武器", data, "attack_type 非法")
-	if data.rarity not in ["common", "rare", "epic"]:
+	if data.rarity not in Config.RARITIES:
 		return _reject("武器", data, "rarity 非法")
 	for key in ["cd", "dmg", "price", "shop_weight", "shake"]:
 		if not _finite_number(data.get(key)):
@@ -178,7 +178,7 @@ func register_item(data: Dictionary) -> bool:
 	_apply_defaults(data, {"ico": "🧩", "desc": "", "rarity": "common", "price": 30})
 	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity"]):
 		return _reject("道具", data, "文本字段类型非法")
-	if data.rarity not in ["common", "rare", "epic"]:
+	if data.rarity not in Config.RARITIES:
 		return _reject("道具", data, "rarity 非法")
 	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty() \
 			or not _valid_effects(data.effects) or not _nonnegative_integer(data.price) \
@@ -193,7 +193,7 @@ func register_upgrade(data: Dictionary) -> bool:
 	_apply_defaults(data, {"ico": "✨", "desc": "", "rarity": "common", "price": 22})
 	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity"]):
 		return _reject("升级", data, "文本字段类型非法")
-	if data.rarity not in ["common", "rare", "epic"]:
+	if data.rarity not in Config.RARITIES:
 		return _reject("升级", data, "rarity 非法")
 	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty() \
 			or not _valid_effects(data.effects) or not _nonnegative_integer(data.price) \
@@ -256,7 +256,8 @@ func register_enemy(data: Dictionary) -> bool:
 func register_difficulty(data: Dictionary) -> bool:
 	if not _valid(data, "难度", ["id", "name"]):
 		return false
-	_apply_defaults(data, {"desc": "", "hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0})
+	_apply_defaults(data, {"desc": "", "hp_mult": 1.0, "dmg_mult": 1.0,
+		"spawn_mult": 1.0, "elite_chance": 0.0})
 	if not _string_fields(data, ["id", "name", "desc"]):
 		return _reject("难度", data, "文本字段类型非法")
 	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty():
@@ -266,6 +267,8 @@ func register_difficulty(data: Dictionary) -> bool:
 			return _reject("难度", data, "%s 必须在 [0.2, 10]" % key)
 	if not _number_in_range(data.spawn_mult, 0.2, 5.0):
 		return _reject("难度", data, "spawn_mult 必须在 [0.2, 5]")
+	if not _number_in_range(data.elite_chance, 0.0, 1.0):
+		return _reject("难度", data, "elite_chance 必须在 [0, 1]")
 	difficulties[String(data.id)] = data
 	return true
 
@@ -340,12 +343,55 @@ func _enemy_is_boss(data: Dictionary) -> bool:
 # ------------------------------------------------------------
 
 func _register_builtin() -> void:
+	# 内置角色：stats 仅覆盖差异项（其余沿用 Config.PLAYER）
 	characters = {
 		"potato": {
 			"id": "potato", "name": "土豆勇者", "ico": "🥔",
-			"desc": "均衡的冒险家，各项属性标准",
+			"desc": "均衡的冒险家，各项属性标准，适合任何构筑",
 			"color": "#e8b84b", "start_weapon": "pistol",
-			"stats": Config.PLAYER.duplicate(),
+			"stats": {},
+		},
+		"berserker": {
+			"id": "berserker", "name": "狂战士", "ico": "🪓",
+			"desc": "嗜血近战：生命与伤害极高、自带护甲，但攻速与移速略降。初始武器：太刀",
+			"color": "#d9534f", "start_weapon": "blade",
+			"stats": { "max_hp": 130.0, "armor": 3.0, "dmg_mult": 1.25,
+				"as_mult": 0.95, "speed_mult": 0.92, "crit_ch": 0.03 },
+		},
+		"ranger": {
+			"id": "ranger", "name": "游侠", "ico": "🏹",
+			"desc": "远程精准：高暴击高机动，放风筝打法，但身板脆弱。初始武器：狙击枪",
+			"color": "#3bbfae", "start_weapon": "sniper",
+			"stats": { "crit_ch": 0.15, "crit_mult": 2.4, "dodge": 0.10,
+				"speed_mult": 1.10, "max_hp": 75.0, "armor": -1.0 },
+		},
+		"gambler": {
+			"id": "gambler", "name": "赌徒", "ico": "🎲",
+			"desc": "高风险高回报：暴击与闪避拉满、材料加成，但血薄甲脆、伤害不稳",
+			"color": "#e8902a", "start_weapon": "pistol",
+			"stats": { "crit_ch": 0.28, "crit_mult": 2.6, "dodge": 0.12,
+				"harvesting": 0.35, "max_hp": 65.0, "armor": -2.0, "dmg_mult": 0.90 },
+		},
+		"farmer": {
+			"id": "farmer", "name": "收获者", "ico": "🌾",
+			"desc": "经济流：材料获取 +60%、超大拾取范围，用钱滚雪球碾压商店",
+			"color": "#7ec850", "start_weapon": "pistol",
+			"stats": { "harvesting": 0.60, "pickup_range": 260.0,
+				"max_hp": 95.0, "dmg_mult": 0.92, "speed_mult": 1.02 },
+		},
+		"vampire": {
+			"id": "vampire", "name": "血族", "ico": "🧛",
+			"desc": "续航之王：击杀回血 + 持续回复，越战越勇，但生命上限很低",
+			"color": "#b05ae0", "start_weapon": "knife",
+			"stats": { "lifesteal": 2.0, "regen": 1.2, "dodge": 0.08,
+				"max_hp": 70.0, "dmg_mult": 0.95, "speed_mult": 1.06 },
+		},
+		"guardian": {
+			"id": "guardian", "name": "铁卫", "ico": "🐢",
+			"desc": "不动如山：超高生命、护甲与回复，攻速补偿，代价是移速大幅降低",
+			"color": "#5a6dbf", "start_weapon": "knife",
+			"stats": { "max_hp": 165.0, "armor": 6.0, "regen": 0.5,
+				"speed_mult": 0.82, "dodge": 0.0, "as_mult": 1.08 },
 		},
 	}
 	weapons = {}
@@ -366,7 +412,9 @@ func _register_builtin() -> void:
 	enemies = {}
 	# AI 行为类型：chaser 追击 / runner 抖动冲刺 / shooter 风筝射击 / boss 环形弹幕
 	var ai_map := { "grunt": "chaser", "runner": "runner", "tank": "chaser",
-		"shooter": "shooter", "boss": "boss" }
+		"shooter": "shooter", "boss": "boss",
+		"swarm": "chaser", "bomber": "runner", "wizard": "shooter",
+		"shadow": "runner", "guard": "chaser" }
 	for id2 in Config.ENEMIES:
 		var e: Dictionary = Config.ENEMIES[id2].duplicate()
 		e["id"] = id2
@@ -376,11 +424,11 @@ func _register_builtin() -> void:
 		register_enemy(e)
 	difficulties = {
 		"normal": { "id": "normal", "name": "普通", "desc": "标准挑战",
-			"hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0 },
-		"hard": { "id": "hard", "name": "困难", "desc": "敌人更硬更痛，刷怪更密",
-			"hp_mult": 1.5, "dmg_mult": 1.3, "spawn_mult": 1.15 },
-		"nightmare": { "id": "nightmare", "name": "噩梦", "desc": "为构筑成型的老手准备",
-			"hp_mult": 2.2, "dmg_mult": 1.6, "spawn_mult": 1.3 },
+			"hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0, "elite_chance": 0.0 },
+		"hard": { "id": "hard", "name": "困难", "desc": "敌人更硬更痛，刷怪更密，混入精英怪",
+			"hp_mult": 1.5, "dmg_mult": 1.3, "spawn_mult": 1.25, "elite_chance": 0.10 },
+		"nightmare": { "id": "nightmare", "name": "噩梦", "desc": "精英成群，为成型的构筑准备",
+			"hp_mult": 2.2, "dmg_mult": 1.6, "spawn_mult": 1.5, "elite_chance": 0.20 },
 	}
 
 # ------------------------------------------------------------

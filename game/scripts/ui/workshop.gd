@@ -37,19 +37,20 @@ const FIELD_DEFS := {
 		["sfx", "音效 ID", "text", "shoot_pistol"],
 		["price", "商店售价", "i", 30, 0, 300, 5],
 		["shop_weight", "商店出现权重", "f", 1.0, 0.0, 5.0, 0.1],
-		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic"]],
+		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic", "mythic", "legendary"]],
 		["desc", "描述", "text", "自定义武器"],
 	],
 	"items": [
 		["id", "ID（英文唯一）", "text", "my_item"],
 		["name", "名称", "text", "新道具"], ["ico", "图标（emoji）", "text", "🧩"],
 		["price", "商店售价", "i", 30, 5, 300, 5],
-		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic"]],
+		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic", "mythic", "legendary"]],
 		["desc", "描述", "text", "自定义道具"],
 	],
 	"upgrades": [
 		["id", "ID（英文唯一）", "text", "my_upgrade"],
 		["name", "名称", "text", "新升级"], ["ico", "图标（emoji）", "text", "✨"],
+		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic", "mythic", "legendary"]],
 		["desc", "描述（升级池随机出现）", "text", "自定义升级"],
 	],
 	"enemies": [

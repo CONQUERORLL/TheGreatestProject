@@ -2,7 +2,7 @@ extends Control
 ## 商店 UI（波末清场后由 main 打开；节点全部代码构建，见 godot-game-ui 技能）
 ## 功能：4 格商品（武器/道具/升级属性，来自 Registry）+ 锁定 + 刷新 + 回血 + 下一波
 ## 布局：左侧角色属性面板 ｜ 中间商品 ｜ 右侧已购道具（可按 50% 购入价出售）
-## 卡面按稀有度着色：common 白 / rare 蓝 / epic 紫 / legendary 红
+## 卡面按稀有度着色：common 白 / rare 蓝 / epic 紫 / mythic 金 / legendary 红
 ## 输入：鼠标 + 手柄焦点导航（卡片行 ↓ 动作区，动作区 ↑ 第一张可购卡）
 
 var player  # characters/player.gd 引用，由 main 注入
@@ -11,6 +11,8 @@ var goods: Array = []    # 商品 [{kind, wtype/id, ico, name, desc, rarity, bas
 
 var _reroll_cost := 0
 var _wave := 0
+var _save_dirty := false    # 有未落盘的商店操作
+var _save_pending := false  # 合并写定时器已排队
 
 var _title: Label
 var _mat: Label
@@ -260,6 +262,10 @@ func open(shop_wave: int) -> void:
 	_title.text = "商店 · 备战第 %d 波" % (_wave + 1)
 	visible = true
 	_refresh()
+	# 轻淡入过渡（0.12s，不阻塞交互）
+	modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(self, "modulate:a", 1.0, 0.12)
 	_grab_first_focus()
 
 func goods_count() -> int:
@@ -274,6 +280,7 @@ func set_lock(i: int, on: bool) -> void:
 		goods[i].locked = on
 
 ## 4 格商品：42% 武器格（满槽则跳过），29% 升级属性，其余道具
+## 升级/道具按稀有度加权抽取（品阶越高越稀有，权重随波次小幅提升）
 func _roll_goods() -> void:
 	goods = []
 	var weapon_full: bool = player.weapons.size() >= Config.WEAPON_SLOTS
@@ -289,19 +296,29 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 			"desc": c.desc, "rarity": c.rarity,
 			"base_price": Registry.weapon_price(wt), "sold": false, "locked": false }
 	if r < Config.WEAPON_SHOP_CHANCE + Config.SHOP_UPGRADE_CHANCE:
-		var u: Dictionary = GameRng.pick(Registry.upgrade_list())
+		var u: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.upgrade_list()))
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
 			"base_price": int(u.get("price", 22)), "sold": false, "locked": false }
-	var it: Dictionary = GameRng.pick(Registry.item_list())
+	var it: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.item_list()))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
 		"base_price": int(it.price), "sold": false, "locked": false }
+
+## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) }]
+func _rarity_pool(entries: Array) -> Array:
+	var pool: Array = []
+	for e in entries:
+		pool.append({ "item": e,
+			"w": Config.rarity_weight(String(e.get("rarity", "common")), _wave) })
+	return pool
 
 func _price_of(g: Dictionary) -> int:
 	return Config.shop_price(g.base_price, _wave)
 
 func _refresh() -> void:
+	# 记录当前焦点所在卡片，重建后优先原位恢复（避免焦点跳回第一张）
+	var focus_idx := _focused_card_index()
 	_mat.text = "◆ %d" % GameState.materials
 	_refresh_left()
 	_refresh_right()
@@ -313,7 +330,27 @@ func _refresh() -> void:
 	_build_goods()
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
 	if visible:
-		_grab_first_focus()
+		_grab_focus_near(focus_idx)
+
+## 当前焦点位于哪张商品卡（buy/lock 钮均可），无焦点返回 -1
+func _focused_card_index() -> int:
+	var focus := get_viewport().gui_get_focus_owner()
+	if focus == null:
+		return -1
+	for i in _goods_box.get_child_count():
+		var card: Control = _goods_box.get_child(i)
+		if focus == card.get_meta("buy_btn") or focus == card.get_meta("lock_btn"):
+			return i
+	return -1
+
+## 恢复焦点：优先原位（未禁用），否则第一张可购卡/任意卡
+func _grab_focus_near(prefer: int) -> void:
+	if prefer >= 0 and prefer < _goods_box.get_child_count():
+		var btn: Button = _goods_box.get_child(prefer).get_meta("buy_btn")
+		if btn != null and not btn.disabled:
+			btn.grab_focus()
+			return
+	_grab_first_focus()
 
 func _build_goods() -> void:
 	for c in _goods_box.get_children():
@@ -496,16 +533,26 @@ func heal() -> void:
 	_refresh()
 	_save_checkpoint()   # 回血扣费后即时重存
 
+## 存档合并写：商店内连续购买/刷新/回血只落一次盘（0.4s 内合并），
+## 下一波/返回主菜单前强制落盘，最多丢 0.4s 内的最后一步操作
 func _save_checkpoint() -> bool:
-	if SaveRun.save(_wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
-		return true
-	EventBus.banner_requested.emit("存档失败", "进度未写入，请检查磁盘空间", 2.0)
-	return false
+	_save_dirty = true
+	if not _save_pending:
+		_save_pending = true
+		get_tree().create_timer(0.4).timeout.connect(_flush_save)
+	return true
 
-## 下一波：存档成功后关闭商店并进入 intro。
-func next_wave() -> void:
-	if not _save_checkpoint():
+func _flush_save() -> void:
+	_save_pending = false
+	if not _save_dirty:
 		return
+	_save_dirty = false
+	if not SaveRun.save(_wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+		EventBus.banner_requested.emit("存档失败", "进度未写入，请检查磁盘空间", 2.0)
+
+## 下一波：强制落盘后关闭商店并进入 intro。
+func next_wave() -> void:
+	_flush_save()
 	visible = false
 	goods = []
 	wave_manager.start_wave(_wave + 1)

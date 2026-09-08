@@ -13,23 +13,43 @@ var _choices: Array = []   # 当前三张升级卡（Registry.upgrades 元素）
 func _ready() -> void:
 	visible = false
 	EventBus.leveled_up.connect(_on_leveled_up)
+	# 波末掉落自动回收等场景会在非 PLAYING 阶段积压 level_queue，
+	# 回到战斗阶段时补弹升级卡，确保不吞升级选择
+	GameState.phase_changed.connect(_on_phase_changed)
 
 func _on_leveled_up(_new_level: int) -> void:
 	if GameState.phase == GameState.Phase.PLAYING and GameState.level_queue > 0:
 		open()
 
-## 打开升级选择（原型 openLevelUp：全量池随机抽 3 张不重复，可跨次重复）
+func _on_phase_changed(new_phase: int) -> void:
+	if new_phase == GameState.Phase.PLAYING and GameState.level_queue > 0 and not visible:
+		open()
+
+## 打开升级选择（原型 openLevelUp：随机抽 3 张不重复，可跨次重复；
+## 按稀有度加权，等级越高越容易出高品阶卡）
 func open() -> void:
 	GameState.set_phase(GameState.Phase.LEVEL_UP)
 	_choices = []
-	var pool := Registry.upgrade_list().duplicate()
+	var weighted: Array = []
+	for u in Registry.upgrade_list():
+		weighted.append({ "item": u,
+			"w": Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) })
 	for _i in 3:
-		if pool.is_empty():
+		if weighted.is_empty():
 			break
-		_choices.append(pool.pop_at(GameRng.range_i(0, pool.size() - 1)))
+		var chosen: Dictionary = GameRng.weighted_pick(weighted)
+		_choices.append(chosen)
+		for k in range(weighted.size()):
+			if weighted[k].item == chosen:
+				weighted.remove_at(k)
+				break
 	_title.text = "升级！Lv %d" % GameState.level
 	_build_cards()
 	visible = true
+	# 轻淡入过渡（0.1s，不阻塞选择）
+	modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(self, "modulate:a", 1.0, 0.1)
 	_grab_first_card()   # 旧按钮已 free，直接抓焦第一张
 
 func _grab_first_card() -> void:
@@ -48,10 +68,11 @@ func _build_cards() -> void:
 		c.free()   # 立即删除：不用 queue_free，否则帧末 get_children 返回旧+新混合
 	for i in _choices.size():
 		var u: Dictionary = _choices[i]
+		var rarity := String(u.get("rarity", "common"))
 		var btn := Button.new()
 		btn.custom_minimum_size = Vector2(200.0, 220.0)
 		btn.pressed.connect(_choose.bind(i))
-		_apply_card_style(btn)
+		_apply_card_style(btn, rarity)
 		_cards.add_child(btn)
 		# 卡面内容（不拦截鼠标，保证按钮可点）
 		var box := VBoxContainer.new()
@@ -69,7 +90,7 @@ func _build_cards() -> void:
 		name_l.text = u.name
 		name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_l.add_theme_font_size_override("font_size", 20)
-		name_l.add_theme_color_override("font_color", Color("e8b84b"))
+		name_l.add_theme_color_override("font_color", Config.rarity_color(rarity).lightened(0.1))
 		name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(name_l)
 		var key_l := Label.new()
@@ -89,15 +110,16 @@ func _build_cards() -> void:
 		desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(desc)
 
-## 暗色卡面样式（normal/hover/focus/pressed，focus 金边高亮供手柄导航）
-func _apply_card_style(btn: Button) -> void:
+## 卡面样式：稀有度描边 + 微底色（normal/hover/focus/pressed，focus 金边高亮供手柄导航）
+func _apply_card_style(btn: Button, rarity: String = "common") -> void:
+	var rc: Color = Config.rarity_color(rarity)
 	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color("22262f")
-	normal.border_color = Color("3a4150")
-	normal.set_border_width_all(1)
+	normal.bg_color = Color(rc.r, rc.g, rc.b, 0.08)
+	normal.border_color = rc
+	normal.set_border_width_all(2)
 	normal.set_corner_radius_all(10)
 	var hover: StyleBoxFlat = normal.duplicate()
-	hover.bg_color = Color("2b303b")
+	hover.bg_color = Color(rc.r, rc.g, rc.b, 0.16)
 	hover.border_color = Color("e8b84b")
 	btn.add_theme_stylebox_override("normal", normal)
 	btn.add_theme_stylebox_override("hover", hover)

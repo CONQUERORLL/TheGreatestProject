@@ -287,6 +287,11 @@ func _build_step() -> void:
 					c.id == _sel_char, Color(c.get("color", "#e8b84b"))))
 		1:
 			_options.columns = 4
+			# 默认选中角色专属初始武器（角色特色绑定，玩家仍可改选）
+			var sel_ch: Dictionary = Registry.get_character(_sel_char)
+			var start_w := String(sel_ch.get("start_weapon", "pistol"))
+			if Registry.weapons.has(start_w):
+				_sel_weapon = start_w
 			for w: Dictionary in Registry.weapons.values():
 				_options.add_child(_make_card(_g_weapon, w.id,
 					w.ico, w.name, "%s\n伤害 %.0f · CD %.2fs" % [w.desc, float(w.dmg), float(w.cd)],

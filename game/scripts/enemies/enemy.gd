@@ -28,6 +28,10 @@ var shoot_cd := 0.0
 var ring_cd := 0.0
 var enraged := false
 var flee := 0.0
+var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才重绘
+
+## 敌间分离查询半径：普通敌最大半径 30 + BOSS 52，60 已覆盖两两组合
+const SEPARATION_QUERY_PAD := 60.0
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
@@ -125,8 +129,8 @@ func _physics_process(delta: float) -> void:
 		if push > 0.0:
 			global_position -= contact_dir * push
 	Combat.update_enemy_position(self)
-	# 空间索引只查询邻近敌人，并按实例 ID 每对只处理一次。
-	for other in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+	# 空间索引只查询邻近敌人（小半径，避免全网格扫描），并按实例 ID 每对只处理一次。
+	for other in Combat.enemies_near(global_position, radius + SEPARATION_QUERY_PAD):
 		if other == self or other.flee > 0.0 or is_queued_for_deletion() \
 				or other.is_queued_for_deletion() or get_instance_id() >= other.get_instance_id():
 			continue
@@ -143,7 +147,11 @@ func _physics_process(delta: float) -> void:
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
 	Combat.update_enemy_position(self)
-	queue_redraw()
+	# 仅在视觉状态（闪白/血条）变化时重绘，位置由节点变换承担
+	var vis := 1 if flash_t > 0.0 else (2 if (bar_t > 0.0 and hp < max_hp) else 0)
+	if vis != _vis_state:
+		_vis_state = vis
+		queue_redraw()
 
 func _fire_shooter(ang: float) -> void:
 	_fire_enemy_bullet(ang, float(cfg.bspeed), 6.0, 3.0, touch_dmg)
@@ -167,6 +175,7 @@ func take_damage(dmg: float, crit: bool) -> void:
 	hp -= dmg
 	flash_t = 0.09
 	bar_t = 0.9
+	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
 	Sfx.play("enemy_hit")
 	FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -radius - 4.0),
 		str(roundi(dmg)) + ("!" if crit else ""), Color("ffd24a") if crit else Color.WHITE,

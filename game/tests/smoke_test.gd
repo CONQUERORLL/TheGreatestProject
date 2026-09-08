@@ -1,6 +1,7 @@
 extends Node
-## 冒烟测试：武器闭环 + 掉落拾取 + 波次推进（掉落跨波保留）+ 商店 + BOSS 弹幕
-##   + 升级三选一 + HUD + 手柄焦点 + Registry/mod 加载 + 数值断言 + 粒子/飘字/爆炸特效（fx 组）
+## 冒烟测试：武器闭环 + 掉落拾取 + 波次推进（波末掉落自动回收）+ 商店 + BOSS 弹幕
+##   + 升级三选一（含波末积压升级补弹）+ HUD + 手柄焦点 + Registry/mod 加载 + 数值断言
+##   + 粒子/飘字/爆炸特效（fx 组）+ 稀有度加权/新品阶/新角色/新怪物回归
 ## 运行：godot --headless --path . res://tests/smoke_test.tscn（退出码 0=通过）
 
 class SegmentEnemy:
@@ -10,8 +11,8 @@ class SegmentEnemy:
 
 var _main: Node
 var _last_ended := 0
-var _mats_at_end := -1      # 第 1 波收波结算后的材料数
-var _loot_left_at_end := -1 # 第 1 波收波结算后的场上剩余掉落
+var _mats_at_end := -1      # 第 1 波收波结算后的材料数（含自动回收）
+var _xp_at_end := -1        # 第 1 波收波结算后的经验/等级收益
 
 const TEST_SAVE_ROOT := "user://tests/smoke_run"
 
@@ -27,7 +28,7 @@ func _on_wave_ended(w: int) -> void:
 	_last_ended = w
 	if w == 1:
 		_mats_at_end = GameState.materials
-		_loot_left_at_end = get_tree().get_nodes_in_group("loot").size()
+		_xp_at_end = GameState.xp + (GameState.level - 1) * 4   # 粗略合并等级收益
 
 func _check_weapons() -> void:
 	var wm: Node = _main.get_node("WaveManager")
@@ -64,18 +65,22 @@ func _check_weapons() -> void:
 func _check_wave() -> void:
 	var wm: Node = _main.get_node("WaveManager")
 	var shop: Control = _main.get_node("UI/Shop")
-	print("SMOKE: wave=%d last_ended=%d mats_at_end=%d loot_left=%d lv=%d xp=%d" %
-		[wm.wave, _last_ended, _mats_at_end, _loot_left_at_end, GameState.level, GameState.xp])
+	print("SMOKE: wave=%d last_ended=%d mats_at_end=%d xp_at_end=%d lv=%d xp=%d" %
+		[wm.wave, _last_ended, _mats_at_end, _xp_at_end, GameState.level, GameState.xp])
 	if _last_ended < 1:
 		_fail("波次未推进（last_ended=%d）" % _last_ended)
 		return
-	if _mats_at_end <= 0 and _loot_left_at_end <= 0:
-		_fail("击杀既未拾取也无掉落留存")
+	if _mats_at_end <= 0 and _xp_at_end <= 0:
+		_fail("击杀既未拾取也无自动回收收益")
 		return
 	if GameState.level <= 1 and GameState.xp <= 0:
 		_fail("经验未入账")
 		return
-	# 波末不再回收掉落：只清敌人/敌弹，掉落物保留原位跨波
+	# 波末掉落自动回收：进商店后场上不应再有掉落物
+	if not get_tree().get_nodes_in_group("loot").is_empty():
+		_fail("波末掉落未自动回收（剩余 %d）"
+			% get_tree().get_nodes_in_group("loot").size())
+		return
 	if GameState.phase != GameState.Phase.SHOP:
 		_fail("波末未进入商店（phase=%d）" % GameState.phase)
 		return
@@ -94,10 +99,20 @@ func _check_wave() -> void:
 	if _main.get_node("Player").global_position != intro_pos:
 		_fail("INTRO 阶段玩家仍在移动")
 		return
-	var loot_kept := get_tree().get_nodes_in_group("loot").size()
-	print("SMOKE: loot_kept=%d (at_end=%d)" % [loot_kept, _loot_left_at_end])
-	if loot_kept < _loot_left_at_end:
-		_fail("跨波掉落物被清除（%d -> %d）" % [_loot_left_at_end, loot_kept])
+	# 波末自动回收可能积压升级：直接进入 PLAYING 触发补弹并清空（模拟玩家选卡），
+	# 避免 INTRO 自然结束后升级 UI 弹出冻结 BOSS 测试窗口
+	GameState.set_phase(GameState.Phase.PLAYING)
+	var lu_drain: Control = _main.get_node("UI/LevelUp")
+	while lu_drain.visible or GameState.level_queue > 0:
+		if lu_drain.visible:
+			lu_drain._choose(0)
+		else:
+			GameState.level_queue = 0
+		await get_tree().process_frame
+	var loot_left := get_tree().get_nodes_in_group("loot").size()
+	print("SMOKE: loot_left=%d (auto-collected at wave end)" % loot_left)
+	if loot_left != 0:
+		_fail("波末回收后仍残留掉落（%d）" % loot_left)
 		return
 	# 数值调整断言：波时 45+5/波、初始移速 742（495+50%）
 	if Config.wave_duration(1) != 45.0 or Config.wave_duration(2) != 50.0 \
@@ -105,18 +120,41 @@ func _check_wave() -> void:
 		_fail("数值调整未生效（波时/移速）")
 		return
 	# Registry 注册表 + 示例 mod 加载断言
-	if Registry.weapons.size() < 6 or not Registry.weapons.has("laser"):
+	if Registry.weapons.size() < 8 or not Registry.weapons.has("laser"):
 		_fail("Registry 未加载示例 mod 武器 laser")
 		return
-	if Registry.items.size() < 12 or Registry.difficulties.size() < 3 \
-			or Registry.characters.size() < 1:
+	if Registry.items.size() < 19 or Registry.difficulties.size() < 3 \
+			or Registry.characters.size() < 7:
 		_fail("Registry 内置内容缺失（items=%d difficulties=%d characters=%d）"
 			% [Registry.items.size(), Registry.difficulties.size(), Registry.characters.size()])
 		return
-	# BOSS 弹幕验证（在下一波进行中生成，避开收波清弹窗口）
+	# 新品阶/新内容回归：金色+红色道具与升级、新武器、新角色、新怪物、难度精英
+	if not Config.RARITIES.has("mythic") or not Config.RARITIES.has("legendary"):
+		_fail("稀有度枚举缺少 mythic/legendary")
+		return
+	if Config.rarity_weight("legendary", 1) <= 0.0 \
+			or Config.rarity_weight("legendary", 9) <= Config.rarity_weight("legendary", 1):
+		_fail("稀有度权重曲线错误（legendary 应随进度提升）")
+		return
+	if not Registry.items.has("i-crown") or not Registry.upgrades.has("berserk") \
+			or not Registry.weapons.has("sniper") or not Registry.weapons.has("blade"):
+		_fail("高品阶道具/升级/新武器未注册")
+		return
+	for cid in ["berserker", "ranger", "gambler", "farmer", "vampire", "guardian"]:
+		if not Registry.characters.has(cid):
+			_fail("新角色缺失：%s" % cid)
+			return
+	for eid in ["swarm", "bomber", "wizard", "shadow", "guard"]:
+		if not Registry.enemies.has(eid):
+			_fail("新怪物缺失：%s" % eid)
+			return
+	if not is_equal_approx(float(Registry.difficulties.nightmare.elite_chance), 0.2):
+		_fail("噩梦难度精英概率未生效")
+		return
+	# BOSS 弹幕验证（前面已显式进入 PLAYING，生成后 0.2s 即发射供测试观察）
 	var boss: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
 	boss.setup("boss", 10)
-	boss.ring_cd = 0.2   # INTRO 冻结，进入 PLAYING 后尽快发射供测试观察
+	boss.ring_cd = 0.2   # 尽快发射
 	if not boss.is_boss():
 		_fail("BOSS 判定失败（is_boss）")
 		return
@@ -361,6 +399,8 @@ func _check_items() -> void:
 		_fail("暂停面板属性/道具行未构建")
 		return
 	_main.toggle_pause()
+	# 波末自动回收积压的升级在此清空（触控/移动测试需要稳定的 PLAYING 阶段）
+	GameState.level_queue = 0
 	GameState.set_phase(GameState.Phase.PLAYING)   # 触控移动测试显式进入战斗阶段
 	# 移动端触控层：节点存在、桌面（无触屏）隐藏、touch_move 可驱动玩家
 	var tc: Control = _main.get_node("UI/TouchControls")

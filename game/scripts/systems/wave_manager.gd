@@ -1,8 +1,9 @@
 extends Node
 ## 波次管理（移植自原型 startWave / updateWaves）
-## 普通波：intro 横幅 → 按 interval 刷怪（受 cap 限制）→ waveTimer 到 →
-##   敌人 flee 消散 + 清空敌方子弹（掉落物保留原位，不清不收）→ 清场后进入商店
-## BOSS 波（第 10 波）：开场即刷 BOSS（不死不休），持续刷少量干扰怪
+## 普通波：intro 横幅 → 按 interval 刷怪（受 cap 限制；高难度按 elite_chance 混入精英）
+##   → waveTimer 到 → 敌人 flee 消散 + 清空敌方子弹 → 清场后进入商店
+##   （场上掉落由 main 在波末自动回收结算，不再跨波滞留）
+## BOSS 波（第 10 波）：开场即刷 BOSS（不死不休），持续刷混合干扰怪
 
 const EnemyScene := preload("res://scenes/enemies/enemy.tscn")
 
@@ -56,26 +57,39 @@ func _physics_process(delta: float) -> void:
 	if not is_boss_wave:
 		wave_timer -= delta
 		spawn_t -= delta
+		var alive := _alive_count(false)
 		var cap := int(float(Config.wave_cap(wave)) * float(diff.spawn_mult))
-		if wave_timer > 0.0 and spawn_t <= 0.0 and _alive_count(false) < cap:
+		if wave_timer > 0.0 and spawn_t <= 0.0 and alive < cap:
 			spawn_t = Config.wave_interval(wave) / float(diff.spawn_mult)
-			spawn(String(GameRng.weighted_pick(Registry.wave_composition(wave))))
+			spawn(_pick_spawn_id(diff))
 		if wave_timer <= 0.0 and not ending_started:
 			ending_started = true
-			# 时间到只执行一次：敌人退场，双方弹丸清空，掉落物跨波保留。
+			# 时间到只执行一次：敌人退场，双方弹丸清空，掉落物由波末自动回收。
 			for e in get_tree().get_nodes_in_group("enemies"):
 				if e.flee <= 0.0:
 					e.start_flee()
 			_clear_projectiles()
+			alive = 0   # 退场敌人不再计入存活
+		# 普通波：清场后进入商店（main 监听 wave_ended 打开；下一波由商店"下一波"触发）
+		if wave_timer <= 0.0 and alive == 0:
+			EventBus.wave_ended.emit(wave)
 	else:
-		# BOSS 波：少量干扰小怪持续刷新，BOSS 不死不休
+		# BOSS 波：少量干扰小怪持续刷新（混合种类），BOSS 不死不休
 		spawn_t -= delta
-		if spawn_t <= 0.0 and _alive_count(true) < 14:
+		if spawn_t <= 0.0 and _alive_count(true) < 16:
 			spawn_t = 2.4
-			spawn("runner" if GameRng.chance(0.6) else "grunt")
-	# 普通波：清场后进入商店（main 监听 wave_ended 打开；下一波由商店"下一波"触发）
-	if not is_boss_wave and wave_timer <= 0.0 and _alive_count(false) == 0:
-		EventBus.wave_ended.emit(wave)
+			spawn(String(GameRng.weighted_pick([
+				{ "item": "runner", "w": 0.35 }, { "item": "grunt", "w": 0.30 },
+				{ "item": "shadow", "w": 0.20 }, { "item": "bomber", "w": 0.15 }])))
+
+## 选怪：常规按波次权重组合；高难度（hard/噩梦）有 elite_chance 概率
+## 在第 4 波起替换为精英怪（重装卫兵/蛊惑法师/暗影刺客/自爆虫）
+func _pick_spawn_id(diff: Dictionary) -> String:
+	var pick_id := String(GameRng.weighted_pick(Registry.wave_composition(wave)))
+	var elite_ch := float(diff.get("elite_chance", 0.0))
+	if elite_ch > 0.0 and wave >= 4 and GameRng.chance(elite_ch):
+		pick_id = String(GameRng.weighted_pick(Config.ELITE_POOL))
+	return pick_id
 
 ## 刷怪：玩家视野外一圈、世界边界内（原型 12 次尝试，距玩家 >420）
 func spawn(type: String) -> void:
