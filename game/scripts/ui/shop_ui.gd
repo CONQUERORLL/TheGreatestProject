@@ -158,13 +158,12 @@ func _refresh_left() -> void:
 	var ch: Dictionary = Registry.get_character(GameState.character_id)
 	var head := HBoxContainer.new()
 	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var ico := Label.new()
-	ico.text = ch.get("ico", "🧑")
-	ico.add_theme_font_size_override("font_size", 22)
-	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	head.add_child(ico)
+	var av := CharacterAvatar.new()
+	av.setup(GameState.character_id, 44.0)
+	head.add_child(av)
 	var nm := Label.new()
 	nm.text = " %s" % ch.get("name", "?")
+	nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nm.add_theme_font_size_override("font_size", 17)
 	nm.add_theme_color_override("font_color", Color("e8b84b"))
 	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE

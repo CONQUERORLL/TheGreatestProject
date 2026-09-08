@@ -665,6 +665,15 @@ func _check_items() -> void:
 	if not menu._wizard.visible or menu._slots_panel.visible or not SaveRun.exists(1):
 		_fail("新局选槽未进入向导，或提前清除了旧档")
 		return
+	# 角色选择卡：每张卡内含程序化专属头像（CharacterAvatar）
+	var avatar_cnt := 0
+	for card in menu._options.get_children():
+		for box_child in card.get_child(0).get_children():
+			if box_child is CharacterAvatar:
+				avatar_cnt += 1
+	if avatar_cnt < 7:
+		_fail("角色卡专属头像缺失（%d/7）" % avatar_cnt)
+		return
 	var accept := InputEventAction.new()
 	accept.action = "ui_accept"
 	accept.pressed = true

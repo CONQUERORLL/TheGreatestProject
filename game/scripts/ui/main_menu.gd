@@ -293,7 +293,7 @@ func _build_step() -> void:
 			for c: Dictionary in Registry.characters.values():
 				_options.add_child(_make_card(_g_char, c.id,
 					c.get("ico", "?"), c.name, c.get("desc", ""),
-					c.id == _sel_char, Color(c.get("color", "#e8b84b"))))
+					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id))
 		1:
 			_options.columns = 4
 			# 默认选中角色专属初始武器（角色特色绑定，玩家仍可改选）
@@ -342,7 +342,8 @@ func _build_step() -> void:
 
 ## 选项卡片：暗底 + 稀有度/角色/难度色描边，大图标 + 色名 + 描述；选中即确认
 ## 前三步自动进入下一步，最后一步聚焦"开始游戏"防误触
-func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color) -> Button:
+## char_id 非空时卡面用程序化角色头像替代 emoji 图标
+func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color, char_id: String = "") -> Button:
 	var b := Button.new()
 	b.toggle_mode = true
 	b.button_group = group
@@ -369,12 +370,18 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	box.add_theme_constant_override("separation", 6)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	b.add_child(box)
-	var ico_l := Label.new()
-	ico_l.text = ico
-	ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ico_l.add_theme_font_size_override("font_size", 36)
-	ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(ico_l)
+	if char_id != "":
+		# 角色专属人物头像（程序化绘制）
+		var av := CharacterAvatar.new()
+		av.setup(char_id, 76.0)
+		box.add_child(av)
+	else:
+		var ico_l := Label.new()
+		ico_l.text = ico
+		ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ico_l.add_theme_font_size_override("font_size", 36)
+		ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		box.add_child(ico_l)
 	var name_l := Label.new()
 	name_l.text = title_text
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

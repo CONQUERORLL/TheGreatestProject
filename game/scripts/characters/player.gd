@@ -203,9 +203,11 @@ func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）
 	var r: float = Config.PLAYER.radius
 	draw_circle(Vector2.ZERO, stats.pickup_range, Color(0.494, 0.784, 0.31, 0.05))
-	# 身体
-	draw_circle(Vector2.ZERO, r, Color("e8b84b"))
-	draw_arc(Vector2.ZERO, r, 0.0, TAU, 40, Color("b98a2e"), 2.0, true)
+	# 身体：按角色主题色着色（游戏内外形象一致）
+	var body_col: Color = Color(String(Registry.get_character(
+		GameState.character_id).get("color", "#e8b84b")))
+	draw_circle(Vector2.ZERO, r, body_col)
+	draw_arc(Vector2.ZERO, r, 0.0, TAU, 40, body_col.darkened(0.35), 2.0, true)
 	# 旋转坐标系：眼睛+枪一起朝向 facing
 	draw_set_transform(Vector2.ZERO, facing, Vector2.ONE)
 	# 眼睛（朝前 = +X 方向）
