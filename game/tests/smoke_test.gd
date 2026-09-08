@@ -14,6 +14,7 @@ var _main: Node
 var _last_ended := 0
 var _mats_at_end := -1      # 第 1 波收波结算后的材料数（含自动回收）
 var _xp_at_end := -1        # 第 1 波收波结算后的经验/等级收益
+var _failed := false        # 失败标记：await 协程内 _fail 后外层不再继续输出 PASS
 
 const TEST_SAVE_ROOT := "user://tests/smoke_run"
 
@@ -163,7 +164,8 @@ func _check_wave() -> void:
 	boss.position = player.global_position + Vector2(300, 0)
 	add_child(boss)
 	boss.player = player
-	player.hp = 100.0  # 保证测试期间玩家存活
+	player.hp = 100.0   # 保证测试期间玩家存活
+	player.iframes = 1.0e9   # BOSS 弹幕强化后密集致死，测试窗口期免伤
 	get_tree().create_timer(3.0).timeout.connect(_check_boss)
 
 func _check_boss() -> void:
@@ -187,6 +189,7 @@ func _check_boss() -> void:
 	var fx1 := get_tree().get_nodes_in_group("fx").size()
 	player.iframes = 0.0
 	player.take_damage(10.0)               # 玩家受击：-N 飘字 + 6 粒红粒子（或闪避飘字）
+	player.iframes = 1.0e9                 # 受击断言后恢复免伤（BOSS 仍在场持续弹幕）
 	var fx2 := get_tree().get_nodes_in_group("fx").size()
 	print("SMOKE: fx hit %d->%d->%d" % [fx0, fx1, fx2])
 	if fx1 <= fx0 or fx2 <= fx1:
@@ -672,14 +675,41 @@ func _check_items() -> void:
 	menu.queue_free()
 	print("SMOKE: save isolation + contracts + menu wizard OK")
 	await _check_endless()
+	if _failed:
+		return   # 协程内已 _fail（quit(1) 已排队），不再覆盖退出码
 	_cleanup_test_storage(true)
 	print("SMOKE: PASS")
 	get_tree().quit(0)
 
-## 无尽炼狱模式回归：BOSS 波判定/积分公式/排行榜、
+## 无尽炼狱模式回归：标准通关→继续无尽、BOSS 波判定/积分公式/排行榜、
 ## BOSS 击破 → 商店衔接 → wave11 存档/恢复、240 敌群性能压测、死亡入榜
 func _check_endless() -> void:
 	Leaderboard.set_storage_root_for_tests("user://tests/lb")
+	Leaderboard.entries = []   # 防上次异常中断的残留文件污染名次断言
+	# ---- 标准模式第 10 波通关 → 胜利结算 → 继续无尽 ----
+	GameState.endless = false
+	GameState.score = 0
+	var wm_v: Node = _main.get_node("WaveManager")
+	wm_v.start_wave(10)
+	var vboss: Node2D = wm_v.boss
+	if vboss == null:
+		_fail("标准模式第 10 波未生成 BOSS")
+		return
+	var vboss_hp: float = vboss.max_hp
+	if vboss_hp < 2400.0:
+		_fail("BOSS 血量未强化（max_hp=%.0f）" % vboss_hp)
+		return
+	vboss.take_damage(1.0e9, false)
+	await get_tree().process_frame
+	if GameState.phase != GameState.Phase.VICTORY or not _main._victory_menu.visible:
+		_fail("击破 BOSS 未进入通关结算（phase=%d）" % GameState.phase)
+		return
+	_main._continue_endless()
+	await get_tree().process_frame
+	if not GameState.endless or wm_v.wave != 11 or GameState.phase != GameState.Phase.INTRO:
+		_fail("通关后继续无尽失败（endless=%s wave=%d phase=%d）"
+			% [str(GameState.endless), wm_v.wave, GameState.phase])
+		return
 	# ---- 纯函数断言 ----
 	GameState.endless = false
 	if not Config.is_boss_wave(10) or Config.is_boss_wave(11) or Config.is_boss_wave(20):
@@ -692,6 +722,14 @@ func _check_endless() -> void:
 	if Config.kill_score(Registry.enemies.grunt) <= 0 \
 			or Config.boss_kill_score(10) <= 0 or Config.wave_clear_score(5) <= 0:
 		_fail("积分公式错误")
+		return
+	# 无尽 BOSS 血量随波次增长（第 20 波 > 第 10 波基准）
+	var boss20: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	boss20.setup("boss", 20)
+	var boss20_hp: float = boss20.max_hp
+	boss20.free()
+	if boss20_hp <= vboss_hp:
+		_fail("无尽 BOSS 血量未随波次增长（w20=%.0f <= w10=%.0f）" % [boss20_hp, vboss_hp])
 		return
 	# ---- 排行榜：记录 / 排序 / 名次 ----
 	if Leaderboard.record(100, 5, "测试A", 10, 60.0) != 1:
@@ -791,10 +829,6 @@ func _check_endless() -> void:
 		_fail("排行榜插入排序错误")
 		return
 	GameState.endless = false
-	Leaderboard.reset_storage_root_after_tests()
-	var lb_path := "user://tests/lb/leaderboard.json"
-	if FileAccess.file_exists(lb_path):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(lb_path))
 	print("SMOKE: endless mode + leaderboard + perf OK")
 
 func _cleanup_test_storage(reset_root: bool) -> void:
@@ -807,10 +841,19 @@ func _cleanup_test_storage(reset_root: bool) -> void:
 	if FileAccess.file_exists(legacy_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(legacy_path))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_SAVE_ROOT))
+	# 排行榜测试隔离目录清理（_fail 路径也会走到这里，防跨运行残留污染）
+	var lb_file := "user://tests/lb/leaderboard.json"
+	if FileAccess.file_exists(lb_file):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(lb_file))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://tests/lb"))
+	Leaderboard.reset_storage_root_after_tests()
 	if reset_root:
 		SaveRun.reset_storage_root_after_tests()
 
 func _fail(reason: String) -> void:
+	if _failed:
+		return   # 已失败：只保留首个原因，退出码不被后续 quit(0) 覆盖
+	_failed = true
 	print("SMOKE: FAIL - " + reason)
 	_cleanup_test_storage(true)
 	get_tree().quit(1)

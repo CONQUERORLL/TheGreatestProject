@@ -30,17 +30,28 @@ var enraged := false
 var flee := 0.0
 var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才重绘
 
-## 敌间分离查询半径：普通敌最大半径 30 + BOSS 52，60 已覆盖两两组合
-const SEPARATION_QUERY_PAD := 60.0
+## 敌间分离查询余量：普通敌最大组合 30+30=60；大体型（BOSS 56+卫兵 30=86）用 90，
+## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
+const SEPARATION_PAD_NORMAL := 60.0
+const SEPARATION_PAD_LARGE := 90.0
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
 	cfg = Registry.enemies[type_name]
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	var boss_flag := type_name == "boss" or bool(cfg.get("is_boss", false)) \
-		or String(cfg.get("ai", "")) == "boss"
-	var hp_s := 1.0 if boss_flag else Config.wave_hp_scale(wave)
-	var dmg_s := (1.0 + 0.18 * (wave - 1)) if boss_flag else Config.wave_dmg_scale(wave)
+			or String(cfg.get("ai", "")) == "boss"
+	var hp_s := 1.0
+	var dmg_s := 1.0
+	if boss_flag:
+		# BOSS 不吃常规波次缩放；无尽模式每深 1 波血量 +30%（再叠难度倍率），
+		# 防止后期构筑对 BOSS 秒杀
+		if GameState.endless and wave > 10:
+			hp_s = 1.0 + 0.30 * float(wave - 10)
+		dmg_s = 1.0 + 0.18 * float(wave - 1)
+	else:
+		hp_s = Config.wave_hp_scale(wave)
+		dmg_s = Config.wave_dmg_scale(wave)
 	hp = cfg.hp * hp_s * float(diff.hp_mult)
 	max_hp = hp
 	speed = cfg.speed * Config.wave_spd_scale(wave)
@@ -131,9 +142,10 @@ func _physics_process(delta: float) -> void:
 	# 敌间分离：隔帧错峰（按实例 ID 奇偶分半），大规模敌群下查询开销减半；
 	# 索引位置容许一帧偏差（≤3px / 128px 网格），省去逐敌逐帧的中间索引更新
 	if (Engine.get_physics_frames() + (get_instance_id() % 2)) % 2 == 0:
-		# 空间索引只查询邻近敌人（小半径，避免全网格扫描），并按实例 ID 每对只处理一次。
+		# 空间索引只查询邻近敌人，并按实例 ID 每对只处理一次。
+		var pad := SEPARATION_PAD_LARGE if radius > 40.0 else SEPARATION_PAD_NORMAL
 		var my_id := get_instance_id()
-		for other in Combat.enemies_near(global_position, radius + SEPARATION_QUERY_PAD):
+		for other in Combat.enemies_near(global_position, radius + pad):
 			if other == self or other.flee > 0.0 \
 					or other.is_queued_for_deletion() or my_id >= other.get_instance_id():
 				continue

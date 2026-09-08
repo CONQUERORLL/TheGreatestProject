@@ -115,6 +115,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.physical_keycode == KEY_R \
 				and (GameState.phase == GameState.Phase.GAME_OVER \
 					or GameState.phase == GameState.Phase.VICTORY):
+			_finish_victory_run()
 			get_tree().reload_current_scene()
 
 func _debug_set_weapon(type: String) -> void:
@@ -179,14 +180,32 @@ func _on_boss_killed() -> void:
 		EventBus.banner_requested.emit("BOSS 击破！",
 			"积分 +%d · 炼狱继续深入" % Config.boss_kill_score(wave_manager.wave), 2.2)
 		return
-	if SaveRun.current_run_owns_slot:
-		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
+	# 标准模式通关：存档保留到玩家作出选择（继续无尽会改写为无尽档）
 	GameState.set_phase(GameState.Phase.VICTORY)
 	EventBus.run_ended.emit(true)
 	victory_label.visible = true
 	Sfx.play("victory")
 	_victory_menu.visible = true
-	_victory_menu.get_child(0).grab_focus()   # 再来一局
+	_victory_continue.grab_focus()   # 继续无尽（默认焦点）
+
+## 通关后继续：保留第 10 波构筑与难度，从第 11 波进入无尽炼狱
+func _continue_endless() -> void:
+	if GameState.phase != GameState.Phase.VICTORY:
+		return
+	GameState.endless = true
+	GameState.score = 0
+	victory_label.visible = false
+	_victory_menu.visible = false
+	Haptics.rumble(0.3, 0.0, 0.1)
+	if not SaveRun.save(11, player, SaveRun.CHECKPOINT_WAVE_START):
+		EventBus.banner_requested.emit("存档失败", "无尽进度未写入，仍可继续游玩", 2.0)
+	EventBus.banner_requested.emit("无尽炼狱开启", "从第 11 波继续，挑战没有尽头", 2.6)
+	wave_manager.start_wave(11)
+
+## 通关结算后结束本局（重开/回主菜单前清理存档；继续无尽则保留）
+func _finish_victory_run() -> void:
+	if GameState.phase == GameState.Phase.VICTORY and SaveRun.current_run_owns_slot:
+		SaveRun.clear()
 
 var _banner_tween: Tween = null
 
@@ -246,6 +265,7 @@ var _pause_overlay: Control = null
 var _pause_resume: Button = null
 var _pause_left: VBoxContainer = null
 var _pause_items: VBoxContainer = null
+var _victory_continue: Button = null
 
 ## 暂停页：全屏遮罩 + 左角色属性 / 中按钮 / 右已购道具
 func _build_pause_menu() -> void:
@@ -461,27 +481,44 @@ func _build_end_menus() -> void:
 	back_btn.pressed.connect(_goto_main_menu)
 	dead_vbox.add_child(back_btn)
 	_dead_menu = dead_vbox
-	# 胜利界面按钮
+	# 胜利界面按钮：继续无尽 / 再来一局 / 返回主菜单
 	victory_label.text = "通关！"
 	var vic_vbox := VBoxContainer.new()
 	vic_vbox.set_anchors_preset(Control.PRESET_CENTER)
-	vic_vbox.offset_left = -120.0
-	vic_vbox.offset_top = 8.0
-	vic_vbox.offset_right = 120.0
-	vic_vbox.offset_bottom = 90.0
+	vic_vbox.offset_left = -140.0
+	vic_vbox.offset_top = -52.0
+	vic_vbox.offset_right = 140.0
+	vic_vbox.offset_bottom = 148.0
 	vic_vbox.alignment = BoxContainer.ALIGNMENT_CENTER
 	vic_vbox.add_theme_constant_override("separation", 8.0)
 	vic_vbox.visible = false
 	$UI.add_child(vic_vbox)
+	_victory_continue = Button.new()
+	_victory_continue.text = "🔥 继续挑战 · 无尽炼狱"
+	_victory_continue.custom_minimum_size = Vector2(270.0, 46.0)
+	_victory_continue.add_theme_font_size_override("font_size", 17)
+	_victory_continue.pressed.connect(_continue_endless)
+	vic_vbox.add_child(_victory_continue)
+	var vic_tip := Label.new()
+	vic_tip.text = "保留当前构筑，从第 11 波继续"
+	vic_tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vic_tip.add_theme_font_size_override("font_size", 12)
+	vic_tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	vic_tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vic_vbox.add_child(vic_tip)
 	var vic_retry := Button.new()
 	vic_retry.text = "再来一局（R）"
-	vic_retry.custom_minimum_size = Vector2(200.0, 38.0)
-	vic_retry.pressed.connect(func() -> void: get_tree().reload_current_scene())
+	vic_retry.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_retry.pressed.connect(func() -> void:
+		_finish_victory_run()
+		get_tree().reload_current_scene())
 	vic_vbox.add_child(vic_retry)
 	var vic_back := Button.new()
 	vic_back.text = "返回主菜单"
-	vic_back.custom_minimum_size = Vector2(200.0, 38.0)
-	vic_back.pressed.connect(_goto_main_menu)
+	vic_back.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_back.pressed.connect(func() -> void:
+		_finish_victory_run()
+		_goto_main_menu())
 	vic_vbox.add_child(vic_back)
 	_victory_menu = vic_vbox
 
