@@ -16,16 +16,59 @@ const PLAYER := {
 	"iframes": 0.45, "touch_tick": 0.6,
 }
 
+## ============================================================
+## 状态效果（异常状态）—— 数据驱动，武器/道具/升级只引用状态 id
+## 字段说明：
+##   duration       基础持续时间（秒）
+##   tick           伤害跳数间隔（0 = 无持续伤害）
+##   dot_scale      每跳伤害 = 施加时伤害 × dot_scale × 层数
+##   dot_max_hp_pct 每跳伤害 = 目标最大生命 × 该比例 × 层数（优先于 dot_scale）
+##   speed_mult     持续期间移速倍率（0 = 完全定身）
+##   dmg_taken_mult 持续期间受到伤害倍率（冰冻易伤）
+##   stack_max      最大叠层；重复施加叠加层数并刷新时长
+## 施加入口：Enemy.apply_status() / Enemy.apply_hit_roll()；敌人字段 status_resist 可减免时长
+## ============================================================
+const STATUS := {
+	"burn": { "name": "燃烧", "ico": "🔥", "color": "#ff7a3c",
+		"desc": "持续伤害，最多 5 层", "duration": 3.0, "tick": 0.5, "dot_scale": 0.18,
+		"stack_max": 5, "speed_mult": 1.0, "dmg_taken_mult": 1.0 },
+	"poison": { "name": "中毒", "ico": "🧪", "color": "#7ec850",
+		"desc": "按最大生命百分比掉血", "duration": 4.0, "tick": 0.8, "dot_max_hp_pct": 0.008,
+		"stack_max": 5, "speed_mult": 1.0, "dmg_taken_mult": 1.0 },
+	"bleed": { "name": "流血", "ico": "🩸", "color": "#e0564f",
+		"desc": "持续伤害，高频武器叠加快", "duration": 4.0, "tick": 0.6, "dot_scale": 0.12,
+		"stack_max": 6, "speed_mult": 1.0, "dmg_taken_mult": 1.0 },
+	"freeze": { "name": "冰冻", "ico": "❄", "color": "#8fd8ff",
+		"desc": "定身，受到伤害 +25%", "duration": 1.1, "tick": 0.0, "dot_scale": 0.0,
+		"stack_max": 1, "speed_mult": 0.0, "dmg_taken_mult": 1.25 },
+	"slow": { "name": "减速", "ico": "🐌", "color": "#b9a6ff",
+		"desc": "移速降低 45%", "duration": 2.6, "tick": 0.0, "dot_scale": 0.0,
+		"stack_max": 1, "speed_mult": 0.55, "dmg_taken_mult": 1.0 },
+	"stun": { "name": "眩晕", "ico": "💫", "color": "#ffd24a",
+		"desc": "短暂无法行动", "duration": 0.9, "tick": 0.0, "dot_scale": 0.0,
+		"stack_max": 1, "speed_mult": 0.0, "dmg_taken_mult": 1.0 },
+}
+
+static func status_cfg(id: String) -> Dictionary:
+	return STATUS.get(id, {})
+
+static func status_ids() -> Array:
+	return STATUS.keys()
+
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
 ## evolve_need：持有同名武器达到该数量，波末自动合成为 evolve_to（吸血鬼幸存者式）
 const WEAPONS := {
 	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "evolve_need": 4, "evolve_to": "pistol_ex", "desc": "稳定单体远程" },
 	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "evolve_need": 4, "evolve_to": "smg_ex", "desc": "极快射速，轻微散射" },
 	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "evolve_need": 3, "evolve_to": "shotgun_ex", "desc": "一次射出5发扇形弹丸" },
-	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "rarity": "common", "evolve_need": 4, "evolve_to": "blade_ex", "desc": "近战弧形挥砍" },
-	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "rarity": "epic", "desc": "命中范围爆炸 AOE" },
-	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "rarity": "epic", "desc": "一发入魂的超远距重击" },
-	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 108.0, "swing_arc": 1.9, "rarity": "epic", "desc": "大开大合的宽弧重斩" },
+	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "evolve_need": 4, "evolve_to": "blade_ex", "desc": "近战弧形挥砍，概率造成流血" },
+	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "status": "burn", "status_chance": 0.45, "rarity": "epic", "desc": "命中范围爆炸 AOE，概率点燃" },
+	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "status": "bleed", "status_chance": 0.35, "rarity": "epic", "desc": "一发入魂的超远距重击，概率造成流血" },
+	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 108.0, "swing_arc": 1.9, "status": "bleed", "status_chance": 0.45, "rarity": "epic", "desc": "大开大合的宽弧重斩，高概率造成流血" },
+	# ---- 状态效果武器（数据驱动：status = Config.STATUS 键） ----
+	"flamethrower": { "name": "火焰喷射器", "ico": "🔥", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 4.0, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.34, "status": "burn", "status_chance": 0.85, "rarity": "rare", "desc": "短程火舌，高频叠加燃烧" },
+	"frost_staff": { "name": "霜冻法杖", "ico": "❄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.80, "dmg": 9.0, "bspeed": 420.0, "splash": 58.0, "status": "freeze", "status_chance": 0.55, "rarity": "epic", "desc": "范围冰冻定身，冻结目标受到额外伤害" },
+	"venom_dagger": { "name": "毒牙匕首", "ico": "🐍", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.42, "dmg": 12.0, "range": 88.0, "swing_arc": 1.6, "status": "poison", "status_chance": 0.70, "rarity": "rare", "desc": "淬毒近战，按最大生命持续掉血" },
 	# ---- 进化形态（不进商店池：shop_weight 极低但保持可注册校验；波末合成获得） ----
 	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：双联齐射，单发伤害 +67%" },
 	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：三管齐喷的弹幕风暴" },
@@ -35,8 +78,8 @@ const WEAPONS := {
 
 const WEAPON_SLOTS := 6
 const WEAPON_SHOP_CHANCE := 0.42
-const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
-const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
+const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
+const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {
@@ -50,9 +93,9 @@ const ENEMIES := {
 	"shadow": { "name": "暗影刺客", "hp": 18.0, "speed": 205.0, "dmg": 12.0, "xp": 6, "mat": 4, "r": 10.0, "color": "#3d4356", "shape": "diamond", "heart_chance": 0.05 },
 	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
 	"chest_guard": { "name": "宝箱守卫", "hp": 90.0, "speed": 60.0, "dmg": 14.0, "xp": 12, "mat": 15, "r": 24.0, "color": "#c9a24a", "shape": "square", "heart_chance": 0.10 },
-	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "heart_chance": 1.0 },
-	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "heart_chance": 1.0 },
-	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "heart_chance": 1.0 },
+	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "status_resist": 0.55, "heart_chance": 1.0 },
 }
 
 ## BOSS 轮换池：标准第 10 波 / 无尽每 10 波，按种子随机轮换（每日挑战全服同 BOSS）
@@ -129,6 +172,10 @@ const UPGRADES := [
 	{ "id": "berserk", "ico": "💀", "name": "血之狂怒", "desc": "伤害 +35%", "rarity": "legendary", "effects": { "dmg_mult": 0.35 } },
 	{ "id": "overdrive", "ico": "🔥", "name": "极限超频", "desc": "攻速 +25%，暴击伤害 +40%", "rarity": "legendary", "effects": { "as_mult": 0.25, "crit_mult": 0.40 } },
 	{ "id": "titanheart", "ico": "🫀", "name": "泰坦心脏", "desc": "最大生命 +60（并回复 60），护甲 +3", "rarity": "legendary", "effects": { "heal_flat": 60.0, "armor": 3.0 } },
+	# ---- 状态效果升级（异常流构筑） ----
+	{ "id": "pyromancy", "ico": "🔥", "name": "纵火", "desc": "状态伤害 +25%", "rarity": "rare", "effects": { "status_dmg_mult": 0.25 } },
+	{ "id": "lingering", "ico": "⏳", "name": "延烧", "desc": "异常持续时间 +30%", "rarity": "epic", "effects": { "status_dur_mult": 0.30 } },
+	{ "id": "hex", "ico": "🕯", "name": "咒术", "desc": "异常命中率 +10%", "rarity": "epic", "effects": { "status_chance": 0.10 } },
 ]
 
 ## 商店道具（被动 = 永久属性；effects 键 = player.stats 键，创意工坊数据驱动；
@@ -140,11 +187,21 @@ const ITEMS := [
 	{ "id": "i-spd", "ico": "👟", "name": "运动鞋", "desc": "移速 +10%", "price": 26, "rarity": "common", "effects": { "speed_mult": 0.10 } },
 	{ "id": "i-crit", "ico": "🔭", "name": "瞄准镜", "desc": "暴击率 +10%", "price": 42, "rarity": "epic", "effects": { "crit_ch": 0.10 } },
 	{ "id": "i-arm", "ico": "⚙", "name": "钢板", "desc": "护甲 +3", "price": 36, "rarity": "rare", "effects": { "armor": 3.0 } },
-	{ "id": "i-dod", "ico": "斗篷", "name": "斗篷", "desc": "闪避 +8%", "price": 32, "rarity": "rare", "effects": { "dodge": 0.08 } },
+	{ "id": "i-dod", "ico": "🧥", "name": "斗篷", "desc": "闪避 +8%", "price": 32, "rarity": "rare", "effects": { "dodge": 0.08 } },
 	{ "id": "i-mag", "ico": "🧲", "name": "大磁铁", "desc": "拾取范围 +55", "price": 22, "rarity": "common", "effects": { "pickup_range": 55.0 } },
 	{ "id": "i-reg", "ico": "💊", "name": "再生器", "desc": "生命回复 +1.0 / 秒", "price": 42, "rarity": "epic", "effects": { "regen": 1.0 } },
 	{ "id": "i-harv", "ico": "💰", "name": "金币袋", "desc": "材料获取 +25%", "price": 32, "rarity": "rare", "effects": { "harvesting": 0.25 } },
 	{ "id": "i-ls", "ico": "🩸", "name": "血蛭", "desc": "每击杀 1 个敌人回复 1 点生命（可叠加）", "price": 48, "rarity": "epic", "effects": { "lifesteal": 1.0 } },
+	# ---- 状态效果道具（on_hit_* = 命中时施加概率；status_dmg_mult = 持续伤害加成） ----
+	{ "id": "i-ember", "ico": "🔥", "name": "余烬", "desc": "命中时 20% 概率点燃（伤害随攻击力）", "price": 44, "rarity": "rare", "effects": { "on_hit_burn": 0.20 } },
+	{ "id": "i-venom", "ico": "🧪", "name": "毒囊", "desc": "命中时 20% 概率使目标中毒", "price": 44, "rarity": "rare", "effects": { "on_hit_poison": 0.20 } },
+	{ "id": "i-hemo", "ico": "🩸", "name": "放血针", "desc": "命中时 25% 概率造成流血", "price": 40, "rarity": "rare", "effects": { "on_hit_bleed": 0.25 } },
+	{ "id": "i-frost", "ico": "❄", "name": "霜核", "desc": "命中时 12% 概率冰冻目标", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12 } },
+	{ "id": "i-tar", "ico": "🕸", "name": "沥青网", "desc": "命中时 18% 概率减速目标", "price": 42, "rarity": "rare", "effects": { "on_hit_slow": 0.18 } },
+	{ "id": "i-thunder", "ico": "🌩", "name": "雷击石", "desc": "命中时 8% 概率眩晕目标", "price": 66, "rarity": "epic", "effects": { "on_hit_stun": 0.08 } },
+	{ "id": "i-plague", "ico": "☠", "name": "瘟疫之心", "desc": "中毒伤害 +60%，中毒目标死亡时传染", "price": 175, "rarity": "mythic", "effects": { "status_dmg_mult": 0.60, "status_spread": 1.0 } },
+	{ "id": "i-pyro", "ico": "🌋", "name": "熔火核心", "desc": "状态伤害 +35%，异常持续时间 +25%", "price": 195, "rarity": "mythic", "effects": { "status_dmg_mult": 0.35, "status_dur_mult": 0.25 } },
+	{ "id": "i-conductor", "ico": "⚡", "name": "异常导体", "desc": "异常命中率 +15%，状态伤害 +20%", "price": 230, "rarity": "legendary", "effects": { "status_chance": 0.15, "status_dmg_mult": 0.20 } },
 	{ "id": "i-goldcore", "ico": "✨", "name": "黄金核心", "desc": "伤害 +25%，攻速 +15%", "price": 200, "rarity": "mythic", "effects": { "dmg_mult": 0.25, "as_mult": 0.15 } },
 	{ "id": "i-fortress", "ico": "🏰", "name": "堡垒之心", "desc": "护甲 +6，最大生命 +45", "price": 185, "rarity": "mythic", "effects": { "armor": 6.0, "max_hp": 45.0 } },
 	{ "id": "i-fortune", "ico": "🤑", "name": "财神金蟾", "desc": "材料获取 +80%，拾取范围 +80", "price": 170, "rarity": "mythic", "effects": { "harvesting": 0.80, "pickup_range": 80.0 } },
@@ -191,6 +248,12 @@ const RARITY_COLORS := {
 	"legendary": Color("e0564f"),
 }
 
+## 稀有度中文名（图鉴/商店展示）
+const RARITY_NAMES := {
+	"common": "普通", "rare": "稀有", "epic": "史诗",
+	"mythic": "神话", "legendary": "传说",
+}
+
 ## 商店/升级池按稀有度抽取的基础权重（单条目权重，品阶越高越稀有）
 const RARITY_BASE_WEIGHTS := {
 	"common": 1.0, "rare": 0.50, "epic": 0.22, "mythic": 0.055, "legendary": 0.018,
@@ -209,6 +272,9 @@ static func rarity_weight(rarity: String, progress: int) -> float:
 
 static func rarity_color(r: String) -> Color:
 	return RARITY_COLORS.get(r, Color("9aa3b2"))
+
+static func rarity_name(r: String) -> String:
+	return RARITY_NAMES.get(r, r)
 
 ## 难度色阶（向导卡片）
 const DIFFICULTY_COLORS := {

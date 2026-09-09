@@ -39,12 +39,14 @@ var _talent_panel: Control    # 天赋树弹窗
 var _talent_essence: Label    # 精华余额
 var _talent_rows: VBoxContainer
 var _daily_panel: Control     # 每日挑战详情弹窗
+var _codex                   # 图鉴（scripts/ui/codex.gd，动态引用避免跨脚本静态类型）
 
 const TOTAL_STEPS := 5
 const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
 
 func _ready() -> void:
 	SaveRun.migrate_legacy_if_needed()
+	Music.play_track("menu", 0.5)
 	var bg := ColorRect.new()
 	bg.color = Color("101218")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -55,6 +57,7 @@ func _ready() -> void:
 	_build_leaderboard_panel()
 	_build_talent_panel()
 	_build_daily_panel()
+	_build_codex()
 
 # ---------------- 存档槽选择弹窗 ----------------
 
@@ -229,6 +232,7 @@ func _home_specs() -> Array:
 	specs.append(["每 日 挑 战", 220.0, func() -> void: _open_daily()])
 	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
 	specs.append(["天 赋 树", 220.0, func() -> void: _open_talents()])
+	specs.append(["图　　鉴", 220.0, func() -> void: _open_codex()])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
@@ -441,6 +445,8 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _codex != null and _codex.visible:
+		return   # 图鉴自行处理返回键，避免重复消费
 	# 每日挑战弹窗：Esc / 手柄 B 关闭
 	if _daily_panel.visible and event.is_action_pressed("ui_cancel"):
 		_close_daily()
@@ -550,6 +556,26 @@ func _open_daily() -> void:
 
 func _close_daily() -> void:
 	_daily_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+# ---------------- 图鉴 ----------------
+
+## 挂载为主菜单子节点（全屏覆盖层）；关闭时发 closed 信号，焦点回首页
+func _build_codex() -> void:
+	_codex = preload("res://scenes/ui/codex.tscn").instantiate()
+	add_child(_codex)
+	_codex.closed.connect(_on_codex_closed)
+
+func _open_codex() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_home.visible = false
+	_codex.open()
+
+func _on_codex_closed() -> void:
 	_home.visible = true
 	for c in _home.get_child(0).get_children():
 		if c is Button:

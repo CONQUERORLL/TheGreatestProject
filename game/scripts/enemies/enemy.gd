@@ -32,6 +32,11 @@ var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才�
 var _spiral_angle := 0.0   # 螺旋织网者：当前螺旋弹幕相位
 var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
 var spawn_wave := 1        # 生成时波次（召唤物继承）
+var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
+var status_resist := 0.0        # 状态时长减免（BOSS 0.55）
+var _status_sig := 0            # 状态签名（层数/集合变化才重绘）
+var _status_flash_t := 0.0      # 状态触发彩色扩散环剩余时间
+var _status_flash_color := Color.WHITE
 
 ## 敌间分离查询余量：普通敌最大组合 30+30=60；大体型（BOSS 56+卫兵 30=86）用 90，
 ## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
@@ -66,6 +71,8 @@ func setup(type_name: String, wave: int = 1) -> void:
 	wob = GameRng.next() * TAU
 	shoot_cd = GameRng.range_f(1.0, 2.0)   # 原型 rand(1,2)：首发时机错开
 	ring_cd = float(cfg.get("ring_cd", 0.0))
+	status_resist = clampf(float(cfg.get("status_resist", 0.0)), 0.0, 0.95)
+	CodexData.unlock("enemy", type_name)   # 图鉴：遭遇即解锁
 
 ## 是否 BOSS（内置 boss / 自定义 is_boss=true / ai="boss"）
 func is_boss() -> bool:
@@ -79,6 +86,141 @@ func ai_type() -> String:
 func start_flee() -> void:
 	flee = 0.55
 
+# ------------------------------------------------------------
+# 状态效果（异常状态）：容器 + 施加/结算 API
+# ------------------------------------------------------------
+
+func has_status(id: String) -> bool:
+	return statuses.has(id)
+
+## 施加状态：层数叠加、时长刷新、DoT 伤害取较大值；status_resist 只减免时长
+func apply_status(id: String, stacks: int = 1, duration_override: float = 0.0,
+		power: float = 0.0, dur_mult: float = 1.0) -> void:
+	var cfg: Dictionary = Config.status_cfg(id)
+	if cfg.is_empty() or hp <= 0.0 or flee > 0.0:
+		return
+	var add_stacks := maxi(1, stacks)
+	var dur := duration_override if duration_override > 0.0 else float(cfg.duration)
+	dur *= maxf(0.0, dur_mult) * (1.0 - status_resist)
+	if dur <= 0.0:
+		return
+	var tick := float(cfg.get("tick", 0.0))
+	var is_new := not statuses.has(id)
+	if statuses.has(id):
+		var st: Dictionary = statuses[id]
+		st.stacks = mini(int(cfg.stack_max), int(st.stacks) + add_stacks)
+		st.remaining = maxf(float(st.remaining), dur)
+		st.power = maxf(float(st.power), power)
+		if tick > 0.0:
+			st.tick_t = minf(float(st.tick_t), tick)
+	else:
+		statuses[id] = {
+			"stacks": mini(int(cfg.stack_max), add_stacks),
+			"remaining": dur, "tick_t": tick, "power": power,
+		}
+	queue_redraw()
+	if is_new:
+		_status_trigger_feedback(id, cfg, add_stacks)
+
+## 状态首次触发反馈：状态色粒子 + 飘字 + 扩散环 + EventBus 事件（音效由 Sfx 订阅节流播放）
+func _status_trigger_feedback(id: String, cfg: Dictionary, stacks: int) -> void:
+	var col := Color(String(cfg.get("color", "#ffffff")))
+	Burst.spawn(get_parent(), global_position, col, 8, 150.0)
+	FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -radius - 18.0),
+		"%s%s" % [String(cfg.get("ico", "")), String(cfg.get("name", id))], col, 12)
+	_status_flash_t = 0.35
+	_status_flash_color = col
+	EventBus.status_applied.emit(id, stacks, global_position)
+
+## 结算一次命中携带的状态载荷（由 player._roll_damage 打包，子弹/近战/爆炸共用）
+func apply_hit_roll(roll: Dictionary) -> void:
+	if roll.is_empty() or hp <= 0.0 or flee > 0.0:
+		return
+	var dur_mult := float(roll.get("dur_mult", 1.0))
+	var power := float(roll.get("status_power", 0.0))
+	var sid := String(roll.get("status", ""))
+	if sid != "" and GameRng.chance(float(roll.get("status_chance", 0.0))):
+		apply_status(sid, int(roll.get("status_stacks", 1)),
+			float(roll.get("status_dur", 0.0)), power, dur_mult)
+	var on_hit: Variant = roll.get("on_hit", {})
+	if typeof(on_hit) != TYPE_DICTIONARY:
+		return
+	for id in on_hit:
+		if GameRng.chance(float(on_hit[id])):
+			apply_status(String(id), 1, 0.0, power, dur_mult)
+
+## 状态减速/定身：取所有状态中最低移速倍率
+func _status_speed_mult() -> float:
+	var mult := 1.0
+	for id in statuses:
+		mult = minf(mult, float(Config.status_cfg(id).get("speed_mult", 1.0)))
+	return mult
+
+## 状态易伤：冰冻目标受到额外伤害
+func _damage_taken_mult() -> float:
+	var mult := 1.0
+	for id in statuses:
+		mult *= float(Config.status_cfg(id).get("dmg_taken_mult", 1.0))
+	return mult
+
+func _status_signature() -> int:
+	var sig := 0
+	for id in statuses:
+		sig = (sig * 31 + hash(String(id)) + int(statuses[id].stacks)) & 0x7FFFFFFF
+	return sig
+
+## 每帧推进状态时长与 DoT 跳伤；到期清除
+func _tick_statuses(delta: float) -> void:
+	if statuses.is_empty():
+		return
+	var expired: Array = []
+	for id in statuses:
+		var st: Dictionary = statuses[id]
+		st.remaining = float(st.remaining) - delta
+		if float(st.remaining) <= 0.0:
+			expired.append(id)
+			continue
+		var cfg: Dictionary = Config.status_cfg(id)
+		var tick := float(cfg.get("tick", 0.0))
+		if tick <= 0.0:
+			continue
+		st.tick_t = float(st.tick_t) - delta
+		if float(st.tick_t) <= 0.0:
+			st.tick_t = tick
+			_apply_dot(String(id), cfg, st)
+	for id in expired:
+		statuses.erase(id)
+
+## DoT 跳伤：优先按最大生命百分比（中毒），否则按施加时伤害 × dot_scale × 层数
+func _apply_dot(id: String, cfg: Dictionary, st: Dictionary) -> void:
+	var stacks := int(st.stacks)
+	var tick_dmg := 0.0
+	var pct := float(cfg.get("dot_max_hp_pct", 0.0))
+	if pct > 0.0:
+		tick_dmg = max_hp * pct * float(stacks)
+	else:
+		tick_dmg = float(st.power) * float(cfg.get("dot_scale", 0.0)) * float(stacks)
+	if tick_dmg <= 0.0:
+		return
+	FloatingText.spawn(get_parent(), global_position + Vector2(
+		GameRng.range_f(-8.0, 8.0), -radius - 6.0),
+		str(maxi(1, roundi(tick_dmg))), Color(cfg.color), 11)
+	take_damage(tick_dmg, false, true)
+
+## 中毒传染（瘟疫之心）：死亡时把中毒扩散给附近敌人
+func _spread_poison() -> void:
+	if not statuses.has("poison"):
+		return
+	var st: Dictionary = statuses.poison
+	var stacks := maxi(1, int(st.stacks) / 2)
+	var dur := maxf(0.5, float(st.remaining) * 0.5)
+	var power := float(st.power) * 0.5
+	for other in Combat.enemies_near(global_position, 110.0 + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or other.is_queued_for_deletion():
+			continue
+		if global_position.distance_to(other.global_position) <= 110.0 + other.radius:
+			other.apply_status("poison", stacks, dur, power, 1.0)
+
 func _ready() -> void:
 	add_to_group("enemies")
 
@@ -88,6 +230,9 @@ func _physics_process(delta: float) -> void:
 	flash_t = maxf(0.0, flash_t - delta)
 	bar_t = maxf(0.0, bar_t - delta)
 	touch_cd = maxf(0.0, touch_cd - delta)
+	if _status_flash_t > 0.0:
+		_status_flash_t = maxf(0.0, _status_flash_t - delta)
+		queue_redraw()
 	# ---- 退场淡出，期间跳过一切行为 ----
 	if flee > 0.0:
 		flee -= delta
@@ -95,9 +240,16 @@ func _physics_process(delta: float) -> void:
 		if flee <= 0.0:
 			queue_free()
 		return
+	# 状态效果：先结算 DoT/到期，再决定 AI；被 DoT 击杀则本帧不再行动
+	_tick_statuses(delta)
+	if hp <= 0.0:
+		return
 	if player == null or not is_instance_valid(player):
 		return
 	wob += delta * 6.0
+	var spd := speed
+	if not statuses.is_empty():
+		spd *= _status_speed_mult()   # 空容器快路径：240 敌群逐帧零开销
 	var to_p: Vector2 = player.global_position - global_position
 	var d := to_p.length()
 	var ux := to_p / maxf(d, 0.001)
@@ -110,13 +262,13 @@ func _physics_process(delta: float) -> void:
 		elif d < kd - 50.0:
 			mv = -ux
 		var side := sin(wob) * 0.6
-		mv = (mv + Vector2(-ux.y, ux.x) * side) * speed
+		mv = (mv + Vector2(-ux.y, ux.x) * side) * spd
 		shoot_cd -= delta
 		if shoot_cd <= 0.0 and d < 620.0:
 			shoot_cd = float(cfg.shoot_cd)
 			_fire_shooter(ux.angle())
 	elif is_boss():
-		mv = ux * speed
+		mv = ux * spd
 		ring_cd -= delta
 		if not enraged and hp < max_hp * 0.5:
 			enraged = true
@@ -143,7 +295,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		# 追击型；runner（ai="runner"）带轻微抖动冲刺感
 		var wobble := (1.0 + 0.12 * sin(wob * 2.0)) if ai_type() == "runner" else 1.0
-		mv = ux * speed * wobble
+		mv = ux * spd * wobble
 	global_position += mv * delta
 	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
 	global_position = global_position.clamp(
@@ -183,8 +335,12 @@ func _physics_process(delta: float) -> void:
 	Combat.update_enemy_position(self)
 	# 仅在视觉状态（闪白/血条）变化时重绘，位置由节点变换承担
 	var vis := 1 if flash_t > 0.0 else (2 if (bar_t > 0.0 and hp < max_hp) else 0)
-	if vis != _vis_state:
+	var sig := 0
+	if not statuses.is_empty():
+		sig = _status_signature()
+	if vis != _vis_state or sig != _status_sig:
 		_vis_state = vis
+		_status_sig = sig
 		queue_redraw()
 
 func _fire_shooter(ang: float) -> void:
@@ -231,16 +387,22 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 	b.player = player
 	get_parent().add_child(b)
 
-func take_damage(dmg: float, crit: bool) -> void:
+func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	if hp <= 0.0 or flee > 0.0:
 		return
-	hp -= dmg
-	flash_t = 0.09
+	var final_dmg := dmg * _damage_taken_mult()
+	hp -= final_dmg
 	bar_t = 0.9
 	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
+	if dot:
+		# DoT 跳伤：不播放受击音效/粒子，避免大规模燃烧时刷屏
+		if hp <= 0.0:
+			die()
+		return
+	flash_t = 0.09
 	Sfx.play("enemy_hit")
 	FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -radius - 4.0),
-		str(roundi(dmg)) + ("!" if crit else ""), Color("ffd24a") if crit else Color.WHITE,
+		str(roundi(final_dmg)) + ("!" if crit else ""), Color("ffd24a") if crit else Color.WHITE,
 		16 if crit else 12)
 	Burst.spawn(get_parent(), global_position, color, 3, 90.0)
 	if hp <= 0.0:
@@ -256,6 +418,9 @@ func die() -> void:
 		queue_free()
 		return
 	Burst.spawn(get_parent(), global_position, color, 10, 150.0)
+	# 瘟疫之心：中毒目标死亡时向周围传染
+	if player and is_instance_valid(player) and float(player.stats.get("status_spread", 0.0)) >= 1.0:
+		_spread_poison()
 	_drop_loot()
 	# 吸血：每击杀回复 lifesteal（原型 killEnemy）
 	if player and is_instance_valid(player) and player.stats.lifesteal > 0.0:
@@ -286,6 +451,8 @@ func _draw() -> void:
 	var sc := 1.0 + (0.12 if flash_t > 0.0 else 0.0)
 	var rr := radius * sc
 	var fill := Color.WHITE if flash_t > 0.0 else color
+	if flash_t <= 0.0 and (statuses.has("freeze") or statuses.has("stun")):
+		fill = fill.lerp(Color("9fdcff"), 0.45)
 	var outline := Color(0.0, 0.0, 0.0, 0.35)
 	match shape:
 		"circle":
@@ -301,6 +468,29 @@ func _draw() -> void:
 	var er := radius * 0.16
 	draw_circle(Vector2(-radius * 0.3, -radius * 0.15), er, Color("241013"))
 	draw_circle(Vector2(radius * 0.3, -radius * 0.15), er, Color("241013"))
+	# 状态效果：定身环 + 顶部状态色点（最多 4 个）
+	if not statuses.is_empty():
+		if statuses.has("freeze") or statuses.has("stun"):
+			draw_arc(Vector2.ZERO, rr + 4.0, 0.0, TAU, 32, Color(0.56, 0.85, 1.0, 0.85), 2.5, true)
+		var count := mini(statuses.size(), 4)
+		var pip_x := -float(count - 1) * 5.0
+		var idx := 0
+		for id in statuses:
+			if idx >= count:
+				break
+			var pip_col := Color(String(Config.status_cfg(String(id)).get("color", "#ffffff")))
+			var pip_pos := Vector2(pip_x + float(idx) * 10.0, -radius - 18.0)
+			draw_circle(pip_pos, 3.0, pip_col)
+			var stacks := int(statuses[id].stacks)
+			if stacks > 1:
+				draw_string(ThemeDB.fallback_font, Vector2(pip_pos.x - 5.0, pip_pos.y - 5.0),
+					str(stacks), HORIZONTAL_ALIGNMENT_CENTER, 10.0, 9, Color(1.0, 1.0, 1.0, 0.9))
+			idx += 1
+	# 状态触发彩色扩散环（向外扩散并淡出）
+	if _status_flash_t > 0.0:
+		var fk := _status_flash_t / 0.35
+		draw_arc(Vector2.ZERO, rr + (1.0 - fk) * 16.0, 0.0, TAU, 32,
+			Color(_status_flash_color.r, _status_flash_color.g, _status_flash_color.b, fk * 0.85), 2.5, true)
 	# 血条（受击后短暂显示）
 	if bar_t > 0.0 and hp < max_hp:
 		var bw := maxf(26.0, radius * 2.0)

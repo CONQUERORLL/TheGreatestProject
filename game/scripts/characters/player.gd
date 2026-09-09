@@ -21,6 +21,9 @@ func _ready() -> void:
 		"crit_mult": c.crit_mult, "speed_mult": c.speed_mult,
 		"base_speed": c.base_speed,
 		"pickup_range": c.pickup_range, "harvesting": c.harvesting, "lifesteal": c.lifesteal,
+		"status_chance": 0.0, "status_dmg_mult": 0.0, "status_dur_mult": 0.0, "status_spread": 0.0,
+		"on_hit_burn": 0.0, "on_hit_poison": 0.0, "on_hit_freeze": 0.0,
+		"on_hit_slow": 0.0, "on_hit_stun": 0.0, "on_hit_bleed": 0.0,
 	}
 	# 角色（Registry 注册表）：stats 可只覆盖部分字段（创意工坊自定义角色）
 	var ch: Dictionary = Registry.get_character(GameState.character_id)
@@ -93,7 +96,7 @@ func try_fire(w: Dictionary) -> void:
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
 	var b := BulletScene.instantiate()
-	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang, c, _roll_damage(c.dmg))
+	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang, c, _roll_damage(c.dmg, c))
 	get_parent().add_child(b)
 
 func _melee_slash(c: Dictionary, ang: float) -> void:
@@ -108,21 +111,67 @@ func _melee_slash(c: Dictionary, ang: float) -> void:
 		if d < c["range"] + e.radius:
 			var da := wrapf((e.global_position - global_position).angle() - ang, -PI, PI)
 			if absf(da) < c.swing_arc / 2.0:
-				var roll := _roll_damage(c.dmg)
+				var roll := _roll_damage(c.dmg, c)
 				e.take_damage(roll.dmg, roll.crit)
+				e.apply_hit_roll(roll)
 
-func _roll_damage(base: float) -> Dictionary:
+func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 	# 伤害 = 基础 × 伤害加成 × 暴击倍率（对应原型 rollDamage）
+	# 同时打包状态载荷：武器自带 status + 道具 on_hit_* 概率，命中后由 Enemy.apply_hit_roll 结算
 	var dmg: float = base * stats.dmg_mult
 	var crit := GameRng.chance(stats.crit_ch)
 	if crit:
 		dmg *= stats.crit_mult
-	return { "dmg": dmg, "crit": crit }
+	var global_ch := float(stats.status_chance)
+	var on_hit := {}
+	for sid in Config.STATUS:
+		var base_ch := float(stats.get("on_hit_" + String(sid), 0.0))
+		if base_ch > 0.0:
+			on_hit[String(sid)] = clampf(base_ch + global_ch, 0.0, 1.0)
+	return {
+		"dmg": dmg, "crit": crit,
+		"status": String(wcfg.get("status", "")),
+		"status_chance": clampf(float(wcfg.get("status_chance", 1.0)) + float(stats.status_chance), 0.0, 1.0),
+		"status_stacks": int(wcfg.get("status_stacks", 1)),
+		"status_dur": float(wcfg.get("status_duration", 0.0)),
+		"status_power": dmg * (1.0 + float(stats.status_dmg_mult)),
+		"dur_mult": 1.0 + float(stats.status_dur_mult),
+		"on_hit": on_hit,
+	}
+
+## 当前构筑可施加的状态来源：{status_id: {"chance": float, "count": int}}
+## 武器自带 status（与 status_chance 相加）+ 道具 on_hit_*（独立概率合并），供 HUD/暂停页图例
+func status_sources() -> Dictionary:
+	var out: Dictionary = {}
+	var global_ch := float(stats.status_chance)
+	for w in weapons:
+		var cfg: Dictionary = Registry.weapons.get(w.type, {})
+		var sid := String(cfg.get("status", ""))
+		if sid == "" or not Config.STATUS.has(sid):
+			continue
+		var ch := clampf(float(cfg.get("status_chance", 1.0)) + global_ch, 0.0, 1.0)
+		var e: Dictionary = out.get(sid, { "chance": 0.0, "count": 0 })
+		e.chance = maxf(float(e.chance), ch)
+		e.count = int(e.count) + 1
+		out[sid] = e
+	for sid2 in Config.STATUS:
+		var base_ch := float(stats.get("on_hit_" + String(sid2), 0.0))
+		if base_ch <= 0.0:
+			continue
+		var ch2 := clampf(base_ch + global_ch, 0.0, 1.0)
+		var e2: Dictionary = out.get(String(sid2), { "chance": 0.0, "count": 0 })
+		e2.chance = 1.0 - (1.0 - float(e2.chance)) * (1.0 - ch2)
+		e2.count = int(e2.count) + 1
+		out[String(sid2)] = e2
+	return out
 
 ## 应用升级效果（数据驱动：effects 键 = stats 键，创意工坊自定义升级直接生效）
 ## 特例：heal_flat = 最大生命+立即回复同值；heal_pct = 立即回复最大生命百分比
 func apply_upgrade(id: String) -> void:
 	var u: Dictionary = Registry.upgrades.get(id, {})
+	if u.is_empty():
+		return
+	CodexData.unlock("upgrade", id)
 	for k in u.get("effects", {}):
 		var v: float = float(u.effects[k])
 		match k:
@@ -140,6 +189,7 @@ func apply_upgrade(id: String) -> void:
 func apply_item(id: String) -> void:
 	if not Registry.items.has(id):
 		return
+	CodexData.unlock("item", id)
 	items_owned[id] = int(items_owned.get(id, 0)) + 1
 	var it: Dictionary = Registry.items[id]
 	for k in it.get("effects", {}):
@@ -180,6 +230,13 @@ func _sanitize_stats() -> void:
 	stats.regen = maxf(0.0, float(stats.regen))
 	stats.harvesting = maxf(-0.99, float(stats.harvesting))
 	stats.lifesteal = maxf(0.0, float(stats.lifesteal))
+	stats.status_chance = clampf(float(stats.status_chance), 0.0, 1.0)
+	stats.status_dmg_mult = maxf(0.0, float(stats.status_dmg_mult))
+	stats.status_dur_mult = maxf(0.0, float(stats.status_dur_mult))
+	stats.status_spread = clampf(float(stats.status_spread), 0.0, 1.0)
+	for sid in Config.STATUS:
+		var key := "on_hit_" + String(sid)
+		stats[key] = clampf(float(stats.get(key, 0.0)), 0.0, 1.0)
 
 func take_damage(raw: float) -> void:
 	if iframes > 0.0:

@@ -8,6 +8,7 @@ var crit := false
 var radius := 4.0
 var splash := 0.0
 var col := Color("ffe08a")
+var roll_data: Dictionary = {}
 
 func _ready() -> void:
 	add_to_group("player_bullets")
@@ -17,6 +18,7 @@ func setup(pos: Vector2, ang: float, wcfg: Dictionary, roll: Dictionary) -> void
 	velocity = Vector2.from_angle(ang) * float(wcfg.bspeed)
 	dmg = roll.dmg
 	crit = roll.crit
+	roll_data = roll
 	splash = float(wcfg.get("splash", 0.0))
 	radius = 7.0 if splash > 0.0 else 4.0
 	life = float(wcfg.get("bullet_life", 1.1))
@@ -33,16 +35,17 @@ func _physics_process(delta: float) -> void:
 		var hit: Node2D = collision.enemy
 		global_position = collision.position
 		if splash > 0.0:
-			Explosion.spawn(get_parent(), global_position, splash, dmg, crit)
+			Explosion.spawn(get_parent(), global_position, splash, dmg, crit, roll_data)
 		else:
 			hit.take_damage(dmg, crit)
+			hit.apply_hit_roll(roll_data)
 		queue_free()
 		return
 	global_position = next
 	var world := Rect2(0.0, 0.0, Config.WORLD.w, Config.WORLD.h)
 	if life <= 0.0 or not world.has_point(global_position):
 		if splash > 0.0:
-			Explosion.spawn(get_parent(), global_position, splash, dmg, crit)
+			Explosion.spawn(get_parent(), global_position, splash, dmg, crit, roll_data)
 		queue_free()
 
 func _draw() -> void:

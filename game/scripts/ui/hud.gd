@@ -25,6 +25,9 @@ var _stats_t := 0.0   # 左下属性行刷新节流（0.2s 一次，属性不逐
 @onready var _vignette: ColorRect = $Vignette
 
 var _score_text: Label   # 无尽模式积分（代码追加到右上角）
+var _status_panel: PanelContainer   # 右侧异常状态图例（仅显示当前构筑可施加的状态）
+var _status_box: VBoxContainer
+var _status_key := ""   # 来源签名：武器/道具/加成变化才重建
 
 func _ready() -> void:
 	_style_bar(_hp_bar, Color("ef6b5e"))
@@ -36,6 +39,7 @@ func _ready() -> void:
 	_score_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_score_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_top_right.add_child(_score_text)
+	_build_status_legend()
 
 func get_wave_text() -> String:
 	return _wave_text.text
@@ -94,6 +98,7 @@ func _process(delta: float) -> void:
 		_stats_label.text = "伤害 x%.2f ｜ 攻速 x%.2f ｜ 暴击 %d%%\n护甲 %d ｜ 闪避 %d%% ｜ 移速 x%.2f ｜ 回复 %.1f/s" % [
 			s.dmg_mult, s.as_mult, roundi(s.crit_ch * 100.0), int(s.armor),
 			roundi(s.dodge * 100.0), s.speed_mult, s.regen]
+		_refresh_status_legend()
 	# 武器槽：分组 key 变化才重建（避免每帧建节点）
 	var groups := {}
 	for w in player.weapons:
@@ -157,3 +162,102 @@ func _style_bar(bar: ProgressBar, fill_color: Color) -> void:
 	fill.set_corner_radius_all(7)
 	bar.add_theme_stylebox_override("background", bg)
 	bar.add_theme_stylebox_override("fill", fill)
+
+## 右侧异常状态图例：标题 + 每种可施加状态（图标/名称/命中率/层数上限）+ 强化加成
+func _build_status_legend() -> void:
+	_status_panel = PanelContainer.new()
+	_status_panel.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+	_status_panel.offset_left = -190.0
+	_status_panel.offset_right = -14.0
+	_status_panel.offset_top = 0.0
+	_status_panel.offset_bottom = 0.0
+	_status_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_status_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_status_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_panel.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.094, 0.106, 0.129, 0.72)
+	style.border_color = Color("3a4150")
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 10.0
+	style.content_margin_right = 10.0
+	style.content_margin_top = 8.0
+	style.content_margin_bottom = 8.0
+	_status_panel.add_theme_stylebox_override("panel", style)
+	add_child(_status_panel)
+	_status_box = VBoxContainer.new()
+	_status_box.add_theme_constant_override("separation", 2)
+	_status_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_panel.add_child(_status_box)
+
+func _refresh_status_legend() -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	var sources: Dictionary = player.status_sources()
+	var dmg_mult := float(player.stats.status_dmg_mult)
+	var dur_mult := float(player.stats.status_dur_mult)
+	var spread := float(player.stats.status_spread)
+	var key := ""
+	for sid in sources:
+		key += "%s:%.2f:%d|" % [sid, float(sources[sid].chance), int(sources[sid].count)]
+	key += "d%.2f:t%.2f:s%.2f" % [dmg_mult, dur_mult, spread]
+	if key == _status_key:
+		return
+	_status_key = key
+	for c in _status_box.get_children():
+		_status_box.remove_child(c)
+		c.queue_free()
+	if sources.is_empty() and dmg_mult <= 0.0 and dur_mult <= 0.0:
+		_status_panel.visible = false
+		return
+	_status_panel.visible = true
+	var head := Label.new()
+	head.text = "异常状态"
+	head.add_theme_font_size_override("font_size", 12)
+	head.add_theme_color_override("font_color", Color("e8b84b"))
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_box.add_child(head)
+	for sid in Config.STATUS:
+		var key_sid := String(sid)
+		if not sources.has(key_sid):
+			continue
+		var st_cfg: Dictionary = Config.STATUS[sid]
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var ico := Label.new()
+		ico.text = String(st_cfg.get("ico", "❓"))
+		ico.add_theme_font_size_override("font_size", 13)
+		ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(ico)
+		var nm := Label.new()
+		nm.text = String(st_cfg.get("name", key_sid))
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nm.add_theme_font_size_override("font_size", 12)
+		nm.add_theme_color_override("font_color", Color(String(st_cfg.get("color", "#9aa3b2"))))
+		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(nm)
+		var val := Label.new()
+		var chance := roundi(float(sources[key_sid].chance) * 100.0)
+		var stack_max := int(st_cfg.get("stack_max", 1))
+		val.text = ("%d%% ×%d" % [chance, stack_max]) if stack_max > 1 else ("%d%%" % chance)
+		val.add_theme_font_size_override("font_size", 12)
+		val.add_theme_color_override("font_color", Color("f2e7c7"))
+		val.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(val)
+		_status_box.add_child(row)
+	if dmg_mult > 0.0 or dur_mult > 0.0 or (sources.has("poison") and spread >= 1.0):
+		var parts: Array = []
+		if dmg_mult > 0.0:
+			parts.append("伤害 +%d%%" % roundi(dmg_mult * 100.0))
+		if dur_mult > 0.0:
+			parts.append("时长 +%d%%" % roundi(dur_mult * 100.0))
+		if sources.has("poison") and spread >= 1.0:
+			parts.append("中毒传染")
+		var bonus := Label.new()
+		bonus.text = " · ".join(parts)
+		bonus.add_theme_font_size_override("font_size", 11)
+		bonus.add_theme_color_override("font_color", Color("9aa3b2"))
+		bonus.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_status_box.add_child(bonus)

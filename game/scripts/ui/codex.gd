@@ -1,0 +1,942 @@
+extends Control
+## 图鉴：状态 / 武器 / 道具 / 升级 / 敌人 五类百科
+## 数据全部来自 Config + Registry（创意工坊内容自动出现）
+## 支持名称搜索 + 全部/已解锁/未解锁筛选；未解锁条目灰态并显示解锁条件
+## 打开：open()；Esc / 手柄 B：_close() 并发 closed 信号（由主菜单接回焦点）
+
+signal closed
+
+const TABS := [
+	{ "id": "status", "name": "状态", "ico": "🔥" },
+	{ "id": "weapon", "name": "武器", "ico": "🔫" },
+	{ "id": "item", "name": "道具", "ico": "🧩" },
+	{ "id": "upgrade", "name": "升级", "ico": "✨" },
+	{ "id": "enemy", "name": "敌人", "ico": "👾" },
+	{ "id": "achieve", "name": "成就", "ico": "🏆" },
+]
+
+const AI_NAMES := { "chaser": "追击", "runner": "冲刺", "shooter": "远程", "boss": "BOSS 弹幕" }
+const SHAPE_NAMES := { "circle": "圆形", "square": "方形", "diamond": "菱形" }
+const LOCK_HINTS := {
+	"status": "在战斗中触发一次该状态即可解锁",
+	"weapon": "获得一次该武器即可解锁（开局武器 / 商店购买 / 进化）",
+	"item": "获得一次该道具即可解锁（商店购买 / 开局携带）",
+	"upgrade": "选择一次该升级即可解锁（升级三选一 / 商店）",
+	"enemy": "遭遇一次该敌人即可解锁（任意波次出现）",
+}
+const CAT_COLORS := {
+	"status": Color("ef8354"), "weapon": Color("e8b84b"), "item": Color("6fbf73"),
+	"upgrade": Color("7aa2f7"), "enemy": Color("d9534f"),
+}
+
+var _tab_group := ButtonGroup.new()
+var _tab_btns: Array = []
+var _list_group := ButtonGroup.new()
+var _list_btns: Array = []
+var _list_box: VBoxContainer
+var _detail: VBoxContainer
+var _close_btn: Button
+var _tab := "status"
+var _selected_id := "burn"
+var _search_edit: LineEdit
+var _count_label: Label
+var _achieve_bar: ProgressBar
+var _filter_group := ButtonGroup.new()
+var _filter_btns: Array = []
+var _filter := "all"     # all / unlocked / locked
+var _query := ""
+
+func _ready() -> void:
+	set_anchors_preset(Control.PRESET_FULL_RECT)
+	visible = false
+	_build()
+
+func open() -> void:
+	visible = true
+	_rebuild_list()
+	_focus_selected()
+
+## 从解锁 toast 直达条目：切到对应分类、清空搜索/筛选并选中目标
+func open_entry(cat: String, id: String) -> void:
+	var tab := cat
+	var known := false
+	for spec in TABS:
+		if String(spec.id) == tab:
+			known = true
+			break
+	if not known:
+		tab = "status"
+	_filter = "all"
+	_query = ""
+	if _search_edit != null:
+		_search_edit.text = ""
+	for b in _filter_btns:
+		b.button_pressed = String(b.get_meta("filter", "")) == "all"
+	_selected_id = id
+	visible = true
+	_select_tab(tab, false)
+	_select_entry(_selected_id)
+	_focus_selected()
+	Haptics.rumble(0.1, 0.0, 0.04)
+
+func _close() -> void:
+	visible = false
+	closed.emit()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not visible or not event.is_action_pressed("ui_cancel"):
+		return
+	# 搜索框有内容时，第一次 Esc 先清空搜索，再按才关闭
+	if _search_edit != null and _search_edit.has_focus() and _search_edit.text != "":
+		_search_edit.text = ""
+		_on_search_changed("")
+	else:
+		_close()
+	get_viewport().set_input_as_handled()
+
+func _build() -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0.03, 0.04, 0.06, 0.82)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(1100.0, 660.0)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color("181c24")
+	sb.border_color = Color("2c3340")
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(12)
+	sb.content_margin_left = 18.0
+	sb.content_margin_right = 18.0
+	sb.content_margin_top = 14.0
+	sb.content_margin_bottom = 14.0
+	panel.add_theme_stylebox_override("panel", sb)
+	center.add_child(panel)
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 8)
+	panel.add_child(root)
+	var title := Label.new()
+	title.text = "📖 图 鉴"
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(title)
+	var tip := Label.new()
+	tip.text = "状态 / 武器 / 道具 / 升级 / 敌人 / 成就 · 搜索 + 解锁筛选 · 未解锁条目灰态 · Esc / 手柄 B 返回"
+	tip.add_theme_font_size_override("font_size", 12)
+	tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(tip)
+	# 顶部分类标签
+	var tab_row := HBoxContainer.new()
+	tab_row.add_theme_constant_override("separation", 8)
+	root.add_child(tab_row)
+	for spec in TABS:
+		var tid := String(spec.id)
+		var tb := Button.new()
+		tb.toggle_mode = true
+		tb.button_group = _tab_group
+		tb.text = "%s %s" % [String(spec.ico), String(spec.name)]
+		tb.custom_minimum_size = Vector2(150.0, 40.0)
+		tb.set_meta("tab", tid)
+		tb.add_theme_font_size_override("font_size", 15)
+		tb.pressed.connect(func() -> void: _select_tab(tid))
+		tab_row.add_child(tb)
+		_tab_btns.append(tb)
+	for i in _tab_btns.size():
+		var tb2: Button = _tab_btns[i]
+		if i > 0:
+			tb2.focus_neighbor_left = tb2.get_path_to(_tab_btns[i - 1])
+		if i < _tab_btns.size() - 1:
+			tb2.focus_neighbor_right = tb2.get_path_to(_tab_btns[i + 1])
+	# 左列表（搜索/筛选 + 列表） + 右详情
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 16)
+	hb.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(hb)
+	var left_box := VBoxContainer.new()
+	left_box.custom_minimum_size = Vector2(240.0, 0.0)
+	left_box.add_theme_constant_override("separation", 6)
+	left_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hb.add_child(left_box)
+	_search_edit = LineEdit.new()
+	_search_edit.placeholder_text = "搜索名称…"
+	_search_edit.clear_button_enabled = true
+	_search_edit.custom_minimum_size = Vector2(0.0, 32.0)
+	_search_edit.text_changed.connect(_on_search_changed)
+	left_box.add_child(_search_edit)
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 4)
+	left_box.add_child(filter_row)
+	for spec in [["all", "全部"], ["unlocked", "已解锁"], ["locked", "未解锁"]]:
+		var fid := String(spec[0])
+		var fb := Button.new()
+		fb.toggle_mode = true
+		fb.button_group = _filter_group
+		fb.text = String(spec[1])
+		fb.custom_minimum_size = Vector2(74.0, 30.0)
+		fb.add_theme_font_size_override("font_size", 12)
+		fb.set_meta("filter", fid)
+		fb.button_pressed = fid == _filter
+		fb.pressed.connect(func() -> void: _set_filter(fid))
+		filter_row.add_child(fb)
+		_filter_btns.append(fb)
+	for i in _filter_btns.size():
+		var fb2: Button = _filter_btns[i]
+		if i > 0:
+			fb2.focus_neighbor_left = fb2.get_path_to(_filter_btns[i - 1])
+		if i < _filter_btns.size() - 1:
+			fb2.focus_neighbor_right = fb2.get_path_to(_filter_btns[i + 1])
+	_count_label = Label.new()
+	_count_label.add_theme_font_size_override("font_size", 12)
+	_count_label.add_theme_color_override("font_color", Color("9aa3b2"))
+	_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left_box.add_child(_count_label)
+	_achieve_bar = _bar(0.0, 1.0, Color("e8b84b"), 0.0, 10.0)
+	_achieve_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_achieve_bar.visible = false
+	left_box.add_child(_achieve_bar)
+	var left_scroll := ScrollContainer.new()
+	left_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	left_box.add_child(left_scroll)
+	_list_box = VBoxContainer.new()
+	_list_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list_box.add_theme_constant_override("separation", 6)
+	left_scroll.add_child(_list_box)
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	hb.add_child(right_scroll)
+	_detail = VBoxContainer.new()
+	_detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_detail.add_theme_constant_override("separation", 6)
+	right_scroll.add_child(_detail)
+	_close_btn = Button.new()
+	_close_btn.text = "返 回（Esc）"
+	_close_btn.custom_minimum_size = Vector2(0.0, 44.0)
+	_close_btn.pressed.connect(_close)
+	root.add_child(_close_btn)
+	_select_tab("status", false)
+
+## 切换分类；focus=true 时把焦点交给该分类首个条目（手柄导航）
+func _select_tab(tab_id: String, focus := true) -> void:
+	_tab = tab_id
+	for tb in _tab_btns:
+		if String(tb.get_meta("tab")) == tab_id:
+			tb.button_pressed = true
+			break
+	var entries := _entries_for(tab_id)
+	var found := false
+	for e in entries:
+		if String(e.id) == _selected_id:
+			found = true
+			break
+	if not found and not entries.is_empty():
+		_selected_id = String(entries[0].id)
+	_rebuild_list()
+	if focus:
+		_focus_selected()
+	Haptics.rumble(0.1, 0.0, 0.04)
+
+func _select_entry(id: String) -> void:
+	_selected_id = id
+	for b in _list_btns:
+		if String(b.get_meta("id")) == id:
+			b.button_pressed = true
+			break
+	_refresh(id)
+	Haptics.rumble(0.1, 0.0, 0.04)
+
+func _focus_selected() -> void:
+	for b in _list_btns:
+		if String(b.get_meta("id")) == _selected_id:
+			b.grab_focus()
+			return
+	if not _list_btns.is_empty():
+		_list_btns[0].grab_focus()
+
+## 当前分类的条目清单：{ id, ico, name, accent }
+func _entries_for(tab_id: String) -> Array:
+	var out: Array = []
+	match tab_id:
+		"status":
+			for sid in Config.STATUS:
+				var st: Dictionary = Config.STATUS[sid]
+				out.append({ "id": String(sid), "ico": String(st.get("ico", "❓")),
+					"name": String(st.get("name", sid)),
+					"accent": Color(String(st.get("color", "#e8b84b"))) })
+		"weapon":
+			for id in Registry.weapons:
+				var w: Dictionary = Registry.weapons[id]
+				out.append({ "id": String(id), "ico": String(w.get("ico", "🔧")),
+					"name": String(w.get("name", id)),
+					"accent": Config.rarity_color(String(w.get("rarity", "common"))) })
+		"item":
+			for it in Registry.item_list():
+				out.append({ "id": String(it.get("id", "")), "ico": String(it.get("ico", "🧩")),
+					"name": String(it.get("name", "")),
+					"accent": Config.rarity_color(String(it.get("rarity", "common"))) })
+		"upgrade":
+			for up in Registry.upgrade_list():
+				out.append({ "id": String(up.get("id", "")), "ico": String(up.get("ico", "✨")),
+					"name": String(up.get("name", "")),
+					"accent": Config.rarity_color(String(up.get("rarity", "common"))) })
+		"enemy":
+			for id in Registry.enemies:
+				var e: Dictionary = Registry.enemies[id]
+				out.append({ "id": String(id), "ico": "👾",
+					"name": String(e.get("name", id)),
+					"accent": Color(String(e.get("color", "#d9534f"))) })
+		"achieve":
+			out.append({ "id": "_stats", "ico": "📊", "name": "统计总览",
+				"accent": Color("e8b84b") })
+			for id in CodexData.ACHIEVEMENTS:
+				var a: Dictionary = CodexData.ACHIEVEMENTS[id]
+				var aid := String(id)
+				out.append({ "id": aid, "ico": String(a.get("ico", "🏆")),
+					"name": String(a.get("name", aid)),
+					"accent": Color("e8b84b") if CodexData.achievement_unlocked(aid)
+						else Color("5a6270") })
+	return out
+
+## 条目是否已达成：成就页用成就状态，其余用图鉴解锁状态；统计总览恒亮
+func _entry_unlocked(id: String) -> bool:
+	if _tab == "achieve":
+		return id == "_stats" or CodexData.achievement_unlocked(id)
+	return CodexData.is_unlocked(_tab, id)
+
+func _rebuild_list() -> void:
+	for c in _list_box.get_children():
+		_list_box.remove_child(c)
+		c.queue_free()
+	_list_btns.clear()
+	var all_entries := _entries_for(_tab)
+	if _tab == "achieve":
+		_count_label.text = "已达成 %d/%d" % [CodexData.unlocked_achievement_count(),
+			CodexData.ACHIEVEMENTS.size()]
+		if _achieve_bar != null:
+			_achieve_bar.visible = true
+			_achieve_bar.max_value = float(maxi(1, CodexData.ACHIEVEMENTS.size()))
+			_achieve_bar.value = float(CodexData.unlocked_achievement_count())
+	else:
+		_count_label.text = "已解锁 %d/%d" % [CodexData.unlocked_count(_tab), all_entries.size()]
+		if _achieve_bar != null:
+			_achieve_bar.visible = false
+	var shown: Array = []
+	for e in all_entries:
+		var eid := String(e.id)
+		var is_unlocked := _entry_unlocked(eid)
+		if _filter == "unlocked" and not is_unlocked:
+			continue
+		if _filter == "locked" and is_unlocked:
+			continue
+		if not _matches_entry(e, _query):
+			continue
+		shown.append(e)
+	# 选中项被筛掉时，落到首个可见条目
+	var keep := false
+	for e in shown:
+		if String(e.id) == _selected_id:
+			keep = true
+			break
+	if not keep and not shown.is_empty():
+		_selected_id = String(shown[0].id)
+	for e in shown:
+		var eid := String(e.id)
+		var locked := not _entry_unlocked(eid)
+		var b := Button.new()
+		b.toggle_mode = true
+		b.button_group = _list_group
+		b.custom_minimum_size = Vector2(214.0, 40.0)
+		b.text = ("🔒 " if locked else "%s " % String(e.ico)) + String(e.name)
+		b.add_theme_font_size_override("font_size", 14)
+		var col: Color = Color("5a6270") if locked else e.accent
+		b.add_theme_color_override("font_color", col)
+		b.add_theme_color_override("font_hover_color", col)
+		b.add_theme_color_override("font_pressed_color", col)
+		b.add_theme_color_override("font_focus_color", col)
+		b.set_meta("id", eid)
+		b.pressed.connect(func() -> void: _select_entry(eid))
+		if eid == _selected_id:
+			b.button_pressed = true
+		_list_box.add_child(b)
+		_list_btns.append(b)
+	if shown.is_empty():
+		_list_box.add_child(_empty("没有匹配的条目"))
+		_clear_detail("没有匹配的条目")
+		return
+	for i in _list_btns.size():
+		var lb: Button = _list_btns[i]
+		if i > 0:
+			lb.focus_neighbor_top = lb.get_path_to(_list_btns[i - 1])
+		if i < _list_btns.size() - 1:
+			lb.focus_neighbor_bottom = lb.get_path_to(_list_btns[i + 1])
+	# 手柄焦点链：列表 ↑ → 当前筛选按钮 ↑ → 当前分类标签
+	var active_filter: Button = _active_filter_btn()
+	var active_tab: Button = null
+	for tb in _tab_btns:
+		if String(tb.get_meta("tab")) == _tab:
+			active_tab = tb
+			break
+	if active_filter != null:
+		if active_tab != null:
+			active_filter.focus_neighbor_top = active_filter.get_path_to(active_tab)
+			active_tab.focus_neighbor_bottom = active_tab.get_path_to(active_filter)
+		if _search_edit != null:
+			_search_edit.focus_neighbor_bottom = _search_edit.get_path_to(active_filter)
+		if not _list_btns.is_empty():
+			var first: Button = _list_btns[0]
+			active_filter.focus_neighbor_bottom = active_filter.get_path_to(first)
+			first.focus_neighbor_top = first.get_path_to(active_filter)
+	if _close_btn != null and not _list_btns.is_empty():
+		_close_btn.focus_neighbor_top = _close_btn.get_path_to(_list_btns[_list_btns.size() - 1])
+	_refresh(_selected_id)
+
+func _matches_entry(e: Dictionary, q: String) -> bool:
+	if q == "":
+		return true
+	if String(e.name).to_lower().find(q) >= 0:
+		return true
+	return String(e.id).to_lower().find(q) >= 0
+
+func _clear_detail(text: String) -> void:
+	for c in _detail.get_children():
+		_detail.remove_child(c)
+		c.queue_free()
+	_detail.add_child(_empty(text))
+
+func _active_filter_btn() -> Button:
+	for b in _filter_btns:
+		if String(b.get_meta("filter", "")) == _filter:
+			return b
+	return _filter_btns[0] if not _filter_btns.is_empty() else null
+
+func _set_filter(fid: String) -> void:
+	_filter = fid
+	for b in _filter_btns:
+		if String(b.get_meta("filter", "")) == fid:
+			b.button_pressed = true
+			break
+	_rebuild_list()
+	_focus_selected()
+	Haptics.rumble(0.1, 0.0, 0.04)
+
+func _on_search_changed(text: String) -> void:
+	_query = text.strip_edges().to_lower()
+	_rebuild_list()
+
+func _refresh(id: String) -> void:
+	for c in _detail.get_children():
+		_detail.remove_child(c)
+		c.queue_free()
+	if _tab == "achieve":
+		if id == "_stats":
+			_detail_stats()
+		else:
+			_detail_achievement(id)
+		return
+	if id == "" or not CodexData.is_unlocked(_tab, id):
+		_detail_locked(id)
+		return
+	match _tab:
+		"status": _detail_status(id)
+		"weapon": _detail_weapon(id)
+		"item": _detail_item(id)
+		"upgrade": _detail_upgrade(id)
+		"enemy": _detail_enemy(id)
+
+# ---------------- 成就 / 统计详情 ----------------
+
+func _detail_achievement(id: String) -> void:
+	var a: Dictionary = CodexData.ACHIEVEMENTS.get(id, {})
+	if a.is_empty():
+		return
+	var unlocked := CodexData.achievement_unlocked(id)
+	var accent: Color = Color("e8b84b") if unlocked else Color("5a6270")
+	_detail.add_child(_header(String(a.get("ico", "🏆")), String(a.get("name", id)), accent,
+		String(a.get("desc", ""))))
+	_detail.add_child(_section("进度"))
+	var cur := CodexData.achievement_progress(id)
+	var tgt := CodexData.achievement_target(id)
+	_detail.add_child(_bar(float(cur), float(tgt), Color("e8b84b")))
+	_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(String(a.get("stat", "")), "进度")),
+		"%d / %d" % [cur, tgt]))
+	_detail.add_child(_stat_row("奖励", "✦ %d 土豆精华%s" % [CodexData.achievement_reward(id),
+		"（已发放）" if unlocked else "（达成后发放）"]))
+	_detail.add_child(_stat_row("状态", "✅ 已达成" if unlocked else "未达成 · 继续战斗即可推进"))
+
+func _detail_stats() -> void:
+	_detail.add_child(_header("📊", "统计总览", Color("e8b84b"),
+		"跨局累计数据 · 随存档持久化（user://codex.json）"))
+	_detail.add_child(_section("完成度"))
+	_detail.add_child(_progress_row("成就",
+		float(CodexData.unlocked_achievement_count()), float(CodexData.ACHIEVEMENTS.size()),
+		Color("e8b84b")))
+	for cat in CodexData.CATEGORIES:
+		var cat_col: Color = CAT_COLORS.get(cat, Color("9aa3b2"))
+		_detail.add_child(_progress_row(String(CodexData.CAT_NAMES.get(cat, cat)),
+			float(CodexData.unlocked_count(String(cat))),
+			float(CodexData.total_entries(String(cat))), cat_col))
+	_detail.add_child(_section("战斗"))
+	for key in ["kills", "boss_kills", "waves", "best_wave", "status_triggers"]:
+		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
+			str(CodexData.stat(key))))
+	_detail.add_child(_section("成长与收集"))
+	for key in ["runs", "evolutions", "purchases", "best_score"]:
+		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
+			str(CodexData.stat(key))))
+	_detail.add_child(_section("图鉴解锁"))
+	for cat in CodexData.CATEGORIES:
+		_detail.add_child(_stat_row(String(CodexData.CAT_NAMES.get(cat, cat)),
+			"%d / %d" % [CodexData.unlocked_count(String(cat)),
+				CodexData.total_entries(String(cat))]))
+	_detail.add_child(_stat_row("图鉴奖励", "✦ %d 精华" % CodexData.unlock_essence_total()))
+	_detail.add_child(_section("成就"))
+	_detail.add_child(_stat_row("已达成", "%d / %d" % [CodexData.unlocked_achievement_count(),
+		CodexData.ACHIEVEMENTS.size()]))
+	_detail.add_child(_stat_row("成就奖励", "✦ %d 精华" % CodexData.achievement_essence_total()))
+	_detail.add_child(_section("下一目标"))
+	var next_id := _next_achievement_id()
+	if next_id == "":
+		_detail.add_child(_empty("全部成就已达成 🎉"))
+	else:
+		var na: Dictionary = CodexData.ACHIEVEMENTS[next_id]
+		var np := CodexData.achievement_progress(next_id)
+		var nt := CodexData.achievement_target(next_id)
+		_detail.add_child(_stat_row("%s %s" % [String(na.get("ico", "🏆")),
+			String(na.get("name", next_id))], "还差 %d" % maxi(0, nt - np)))
+		_detail.add_child(_bar(float(np), float(nt), Color("e8b84b"), 560.0, 14.0))
+
+## 最接近达成的未完成成就（用于"下一目标"图表）
+func _next_achievement_id() -> String:
+	var best := ""
+	var best_ratio := -1.0
+	for id in CodexData.ACHIEVEMENTS:
+		var aid := String(id)
+		if CodexData.achievement_unlocked(aid):
+			continue
+		var tgt := CodexData.achievement_target(aid)
+		var ratio := float(CodexData.achievement_progress(aid)) / float(maxi(1, tgt))
+		if ratio > best_ratio:
+			best_ratio = ratio
+			best = aid
+	return best
+
+## 未解锁条目：灰态占位 + 解锁条件提示（避免直接剧透数值）
+func _detail_locked(id: String) -> void:
+	var entry: Dictionary = {}
+	for e in _entries_for(_tab):
+		if String(e.id) == id:
+			entry = e
+			break
+	var name_s := String(entry.get("name", id))
+	_detail.add_child(_header("🔒", name_s, Color("5a6270"), "尚未解锁 · 图鉴条目"))
+	_detail.add_child(_section("解锁条件"))
+	var hint: Label = _empty(String(LOCK_HINTS.get(_tab, "在游戏中首次接触即可解锁")))
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.custom_minimum_size = Vector2(560.0, 0.0)
+	_detail.add_child(hint)
+	if CodexData.unlock_reward(_tab) > 0:
+		_detail.add_child(_stat_row("解锁奖励",
+			"✦ %d 土豆精华" % CodexData.unlock_reward(_tab)))
+
+# ---------------- 状态详情 ----------------
+
+func _detail_status(sid: String) -> void:
+	var st: Dictionary = Config.STATUS.get(sid, {})
+	if st.is_empty():
+		return
+	var col := Color(String(st.get("color", "#e8b84b")))
+	_detail.add_child(_header(String(st.get("ico", "❓")), String(st.get("name", sid)), col,
+		String(st.get("desc", ""))))
+	_detail.add_child(_section("状态数值"))
+	_detail.add_child(_stat_row("持续时长", "%.1f 秒" % float(st.get("duration", 0.0))))
+	var tick := float(st.get("tick", 0.0))
+	_detail.add_child(_stat_row("跳伤间隔", ("每 %.1f 秒" % tick) if tick > 0.0 else "无持续伤害"))
+	var pct := float(st.get("dot_max_hp_pct", 0.0))
+	var scale := float(st.get("dot_scale", 0.0))
+	var tick_desc := "无"
+	if pct > 0.0:
+		tick_desc = "最大生命 %.1f%% × 层数" % (pct * 100.0)
+	elif scale > 0.0:
+		tick_desc = "施加伤害 × %.2f × 层数" % scale
+	_detail.add_child(_stat_row("每跳伤害", tick_desc))
+	_detail.add_child(_stat_row("层数上限", "×%d" % int(st.get("stack_max", 1))))
+	var fx: Array = []
+	var spd := float(st.get("speed_mult", 1.0))
+	if spd <= 0.001:
+		fx.append("定身")
+	elif spd < 1.0:
+		fx.append("移速 x%.2f" % spd)
+	var dt := float(st.get("dmg_taken_mult", 1.0))
+	if dt > 1.0:
+		fx.append("受到伤害 +%d%%" % roundi((dt - 1.0) * 100.0))
+	_detail.add_child(_stat_row("附加效果", " · ".join(fx) if not fx.is_empty() else "无"))
+	var src: Dictionary = Registry.status_sources(sid)
+	var wlist: Array = src.get("weapons", [])
+	var ilist: Array = src.get("items", [])
+	var blist: Array = src.get("boosts", [])
+	_detail.add_child(_section("施加来源 · 武器（%d）" % wlist.size()))
+	if wlist.is_empty():
+		_detail.add_child(_empty("暂无武器可施加该状态"))
+	for w in wlist:
+		var right := "命中 %d%%" % roundi(float(w.get("chance", 1.0)) * 100.0)
+		if int(w.get("stacks", 1)) > 1:
+			right += " · %d 层" % int(w.get("stacks", 1))
+		_detail.add_child(_row(String(w.get("ico", "🔧")), String(w.get("name", w.get("id", ""))),
+			Config.rarity_color(String(w.get("rarity", "common"))), String(w.get("desc", "")), right))
+	_detail.add_child(_section("施加来源 · 道具（%d）" % ilist.size()))
+	if ilist.is_empty():
+		_detail.add_child(_empty("暂无道具可施加该状态"))
+	for it in ilist:
+		_detail.add_child(_row(String(it.get("ico", "🧩")), String(it.get("name", it.get("id", ""))),
+			Config.rarity_color(String(it.get("rarity", "common"))), String(it.get("desc", "")),
+			"命中 %d%%" % roundi(float(it.get("chance", 0.0)) * 100.0)))
+	_detail.add_child(_section("强化来源 · 道具/升级（%d）" % blist.size()))
+	if blist.is_empty():
+		_detail.add_child(_empty("暂无强化来源"))
+	for b in blist:
+		var eff: Dictionary = b.get("effects", {})
+		var parts: Array = []
+		if eff.has("status_chance"):
+			parts.append("命中 +%d%%" % roundi(float(eff["status_chance"]) * 100.0))
+		if eff.has("status_dmg_mult"):
+			parts.append("伤害 +%d%%" % roundi(float(eff["status_dmg_mult"]) * 100.0))
+		if eff.has("status_dur_mult"):
+			parts.append("时长 +%d%%" % roundi(float(eff["status_dur_mult"]) * 100.0))
+		if eff.has("status_spread"):
+			parts.append("中毒传染")
+		_detail.add_child(_row(String(b.get("ico", "✨")),
+			"[%s] %s" % [String(b.get("kind", "强化")), String(b.get("name", b.get("id", "")))],
+			Config.rarity_color(String(b.get("rarity", "common"))), String(b.get("desc", "")),
+			" · ".join(parts)))
+
+# ---------------- 武器详情 ----------------
+
+func _detail_weapon(id: String) -> void:
+	if not Registry.weapons.has(id):
+		return
+	var w: Dictionary = Registry.weapons[id]
+	var accent := Config.rarity_color(String(w.get("rarity", "common")))
+	_detail.add_child(_header(String(w.get("ico", "🔧")), String(w.get("name", id)), accent,
+		String(w.get("desc", ""))))
+	_detail.add_child(_section("基础属性"))
+	_detail.add_child(_stat_row("稀有度", Config.rarity_name(String(w.get("rarity", "common")))))
+	var melee := String(w.get("attack_type", "projectile")) == "melee"
+	_detail.add_child(_stat_row("攻击类型", "近战" if melee else "远程"))
+	_detail.add_child(_stat_row("基础伤害", "%.1f" % float(w.get("dmg", 0.0))))
+	_detail.add_child(_stat_row("冷却", "%.2f 秒" % float(w.get("cd", 0.0))))
+	if melee:
+		_detail.add_child(_stat_row("范围 / 扇角", "%.0f / %.2f 弧度"
+			% [float(w.get("range", 0.0)), float(w.get("swing_arc", 0.0))]))
+	else:
+		_detail.add_child(_stat_row("弹速 / 弹丸", "%.0f / %d"
+			% [float(w.get("bspeed", 0.0)), int(w.get("pellets", 1))]))
+		if float(w.get("splash", 0.0)) > 0.0:
+			_detail.add_child(_stat_row("爆炸半径", "%.0f" % float(w.get("splash", 0.0))))
+	_detail.add_child(_stat_row("商店价格", "%d ◆" % int(w.get("price", 30))))
+	var sid := String(w.get("status", ""))
+	if sid != "" and Config.STATUS.has(sid):
+		var st: Dictionary = Config.STATUS[sid]
+		_detail.add_child(_section("施加状态"))
+		_detail.add_child(_row(String(st.get("ico", "❓")), String(st.get("name", sid)),
+			Color(String(st.get("color", "#e8b84b"))), String(st.get("desc", "")),
+			"命中 %d%% · %d 层" % [roundi(float(w.get("status_chance", 1.0)) * 100.0),
+				int(w.get("status_stacks", 1))]))
+	var need := int(w.get("evolve_need", 0))
+	if need > 0 and Registry.weapons.has(String(w.get("evolve_to", ""))):
+		var evo: Dictionary = Registry.weapons[String(w.get("evolve_to"))]
+		_detail.add_child(_section("进化"))
+		_detail.add_child(_row(String(evo.get("ico", "🔧")), String(evo.get("name", "")),
+			Config.rarity_color(String(evo.get("rarity", "common"))), String(evo.get("desc", "")),
+			"持有 %d 把自动进化" % need))
+
+# ---------------- 道具 / 升级详情 ----------------
+
+func _detail_item(id: String) -> void:
+	if not Registry.items.has(id):
+		return
+	_detail_effects_entry(Registry.items[id], "道具")
+
+func _detail_upgrade(id: String) -> void:
+	if not Registry.upgrades.has(id):
+		return
+	_detail_effects_entry(Registry.upgrades[id], "升级")
+
+func _detail_effects_entry(data: Dictionary, kind: String) -> void:
+	var accent := Config.rarity_color(String(data.get("rarity", "common")))
+	_detail.add_child(_header(String(data.get("ico", "🧩")), String(data.get("name", "")), accent,
+		String(data.get("desc", ""))))
+	_detail.add_child(_section("基础信息"))
+	_detail.add_child(_stat_row("类别", kind))
+	_detail.add_child(_stat_row("稀有度", Config.rarity_name(String(data.get("rarity", "common")))))
+	_detail.add_child(_stat_row("价格", "%d ◆" % int(data.get("price", 30))))
+	_detail.add_child(_section("效果"))
+	var lines := _effect_lines(data.get("effects", {}))
+	if lines.is_empty():
+		_detail.add_child(_empty("无属性效果"))
+	for ln in lines:
+		var l := Label.new()
+		l.text = "· " + String(ln)
+		l.add_theme_font_size_override("font_size", 13)
+		l.add_theme_color_override("font_color", Color("d8dde6"))
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_detail.add_child(l)
+	var eff: Dictionary = data.get("effects", {})
+	var related: Array = []
+	for sid in Config.STATUS:
+		if float(eff.get("on_hit_" + String(sid), 0.0)) > 0.0:
+			related.append(String(sid))
+	if not related.is_empty():
+		_detail.add_child(_section("关联状态"))
+		for sid2 in related:
+			var st: Dictionary = Config.STATUS[sid2]
+			_detail.add_child(_row(String(st.get("ico", "❓")), String(st.get("name", sid2)),
+				Color(String(st.get("color", "#e8b84b"))), String(st.get("desc", "")),
+				"命中 %d%%" % roundi(float(eff["on_hit_" + sid2]) * 100.0)))
+
+## effects 字典 → 中文效果行（图鉴/升级/道具共用）
+func _effect_lines(effects: Dictionary) -> Array:
+	var out: Array = []
+	for k in effects:
+		var key := String(k)
+		var v := float(effects[k])
+		match key:
+			"max_hp": out.append("最大生命 +%.0f" % v)
+			"regen": out.append("生命回复 +%.1f / 秒" % v)
+			"armor": out.append("护甲 +%.0f" % v)
+			"dodge": out.append("闪避 +%d%%" % roundi(v * 100.0))
+			"dmg_mult": out.append("伤害 +%d%%" % roundi(v * 100.0))
+			"as_mult": out.append("攻速 +%d%%" % roundi(v * 100.0))
+			"crit_ch": out.append("暴击率 +%d%%" % roundi(v * 100.0))
+			"crit_mult": out.append("暴击伤害 +%d%%" % roundi(v * 100.0))
+			"speed_mult": out.append("移速 +%d%%" % roundi(v * 100.0))
+			"base_speed": out.append("基础移速 +%.0f" % v)
+			"pickup_range": out.append("拾取范围 +%.0f" % v)
+			"harvesting": out.append("收获率 +%d%%" % roundi(v * 100.0))
+			"lifesteal": out.append("击杀回复 +%.0f" % v)
+			"heal_flat": out.append("最大生命 +%.0f（并立即回复）" % v)
+			"heal_pct": out.append("立即回复最大生命 %d%%" % roundi(v * 100.0))
+			"status_chance": out.append("异常命中率 +%d%%" % roundi(v * 100.0))
+			"status_dmg_mult": out.append("状态伤害 +%d%%" % roundi(v * 100.0))
+			"status_dur_mult": out.append("异常时长 +%d%%" % roundi(v * 100.0))
+			"status_spread": out.append("中毒目标死亡时传染")
+			_:
+				if key.begins_with("on_hit_"):
+					var sid3 := key.trim_prefix("on_hit_")
+					var st2: Dictionary = Config.status_cfg(sid3)
+					if not st2.is_empty():
+						out.append("命中 %d%% 施加%s" % [roundi(v * 100.0), String(st2.get("name", sid3))])
+					else:
+						out.append("%s +%d%%" % [key, roundi(v * 100.0)])
+				else:
+					out.append("%s +%.2f" % [key, v])
+	return out
+
+# ---------------- 敌人详情 ----------------
+
+func _detail_enemy(id: String) -> void:
+	if not Registry.enemies.has(id):
+		return
+	var e: Dictionary = Registry.enemies[id]
+	var accent := Color(String(e.get("color", "#d9534f")))
+	var boss := _enemy_is_boss(e)
+	_detail.add_child(_header("👾", String(e.get("name", id)), accent, "BOSS" if boss else "普通敌人"))
+	_detail.add_child(_section("基础属性"))
+	_detail.add_child(_stat_row("生命", "%.0f" % float(e.get("hp", 0.0))))
+	_detail.add_child(_stat_row("移速", "%.0f" % float(e.get("speed", 0.0))))
+	_detail.add_child(_stat_row("接触伤害", "%.0f" % float(e.get("dmg", 0.0))))
+	var shape := String(e.get("shape", "circle"))
+	_detail.add_child(_stat_row("半径 / 形状", "%.0f / %s"
+		% [float(e.get("r", 0.0)), String(SHAPE_NAMES.get(shape, shape))]))
+	var ai := String(e.get("ai", "chaser"))
+	_detail.add_child(_stat_row("AI 行为", String(AI_NAMES.get(ai, ai))))
+	_detail.add_child(_stat_row("经验 / 材料", "%d / %d" % [int(e.get("xp", 0)), int(e.get("mat", 0))]))
+	_detail.add_child(_stat_row("红心掉率", "%d%%" % roundi(float(e.get("heart_chance", 0.0)) * 100.0)))
+	_detail.add_child(_stat_row("状态抗性", "%d%%" % roundi(float(e.get("status_resist", 0.0)) * 100.0)))
+	_detail.add_child(_section("出现波次"))
+	_detail.add_child(_stat_row("常规", _enemy_waves(id)))
+	if boss:
+		var btitle := String(Config.BOSS_TITLES.get(id, ""))
+		if btitle != "":
+			_detail.add_child(_stat_row("BOSS 称号", btitle))
+
+func _enemy_is_boss(e: Dictionary) -> bool:
+	return bool(e.get("is_boss", false)) or String(e.get("ai", "")) == "boss"
+
+## 敌人出现波次：内置刷怪表 1~10 波 + 事件/BOSS/精英池兜底说明
+func _enemy_waves(id: String) -> String:
+	var waves: Array = []
+	for w in range(1, Config.WAVES_TOTAL + 1):
+		for entry in Registry.wave_composition(w):
+			if typeof(entry) == TYPE_DICTIONARY and String(entry.get("item", "")) == id:
+				waves.append(str(w))
+				break
+	if not waves.is_empty():
+		return "第 %s 波" % ", ".join(waves)
+	if id == "chest_guard":
+		return "宝箱守卫事件波"
+	for entry2 in Config.ELITE_POOL:
+		if typeof(entry2) == TYPE_DICTIONARY and String(entry2.get("item", "")) == id:
+			return "精英替换池（第 4 波起）"
+	if Config.BOSS_POOL.has(id):
+		return "BOSS 轮换池（第 10 波 / 无尽每 10 波）"
+	if Registry.enemies.has(id) and _enemy_is_boss(Registry.enemies[id]):
+		return "BOSS（创意工坊 / 特殊事件）"
+	return "特殊事件 / 创意工坊"
+
+# ---------------- 通用小部件 ----------------
+
+func _header(ico: String, name: String, accent: Color, subtitle: String) -> HBoxContainer:
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var ico_l := Label.new()
+	ico_l.text = ico
+	ico_l.add_theme_font_size_override("font_size", 28)
+	ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	head.add_child(ico_l)
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 1)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var nm := Label.new()
+	nm.text = name
+	nm.add_theme_font_size_override("font_size", 21)
+	nm.add_theme_color_override("font_color", accent)
+	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(nm)
+	if subtitle != "":
+		var sub := Label.new()
+		sub.text = subtitle
+		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sub.custom_minimum_size = Vector2(560.0, 0.0)
+		sub.add_theme_font_size_override("font_size", 12)
+		sub.add_theme_color_override("font_color", Color("9aa3b2"))
+		sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		box.add_child(sub)
+	head.add_child(box)
+	return head
+
+func _section(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 14)
+	l.add_theme_color_override("font_color", Color("e8b84b"))
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+func _stat_row(name: String, value: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var n := Label.new()
+	n.text = name
+	n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	n.add_theme_font_size_override("font_size", 13)
+	n.add_theme_color_override("font_color", Color("9aa3b2"))
+	n.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(n)
+	var v := Label.new()
+	v.text = value
+	v.add_theme_font_size_override("font_size", 13)
+	v.add_theme_color_override("font_color", Color("f2e7c7"))
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(v)
+	return row
+
+func _bar(cur: float, maxv: float, color: Color, width := 560.0, height := 18.0) -> ProgressBar:
+	var bar := ProgressBar.new()
+	bar.max_value = float(maxi(1, roundi(maxv)))
+	bar.value = clampf(cur, 0.0, bar.max_value)
+	bar.show_percentage = false
+	bar.custom_minimum_size = Vector2(width, height)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = color
+	fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("fill", fill)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color("2c3340")
+	track.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("background", track)
+	return bar
+
+## 图表行：名称 + 进度条 + 数值（完成度 / 下一目标）
+func _progress_row(name_text: String, cur: float, maxv: float, color: Color) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var l := Label.new()
+	l.text = name_text
+	l.custom_minimum_size = Vector2(104.0, 0.0)
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color("9aa3b2"))
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(l)
+	var bar := _bar(cur, maxv, color, 0.0, 14.0)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(bar)
+	var v := Label.new()
+	v.text = "%d/%d" % [int(cur), int(maxv)]
+	v.custom_minimum_size = Vector2(64.0, 0.0)
+	v.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	v.add_theme_font_size_override("font_size", 13)
+	v.add_theme_color_override("font_color", Color("f2e7c7"))
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(v)
+	return row
+
+func _row(ico: String, title: String, title_color: Color, desc: String, right: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var ico_l := Label.new()
+	ico_l.text = ico
+	ico_l.custom_minimum_size = Vector2(28.0, 0.0)
+	ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ico_l.add_theme_font_size_override("font_size", 16)
+	ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(ico_l)
+	var mid := VBoxContainer.new()
+	mid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mid.add_theme_constant_override("separation", 1)
+	mid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var name_l := Label.new()
+	name_l.text = title
+	name_l.add_theme_font_size_override("font_size", 14)
+	name_l.add_theme_color_override("font_color", title_color)
+	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mid.add_child(name_l)
+	if desc != "":
+		var desc_l := Label.new()
+		desc_l.text = desc
+		desc_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_l.custom_minimum_size = Vector2(430.0, 0.0)
+		desc_l.add_theme_font_size_override("font_size", 11)
+		desc_l.add_theme_color_override("font_color", Color("9aa3b2"))
+		desc_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		mid.add_child(desc_l)
+	row.add_child(mid)
+	if right != "":
+		var right_l := Label.new()
+		right_l.text = right
+		right_l.add_theme_font_size_override("font_size", 13)
+		right_l.add_theme_color_override("font_color", Color("f2e7c7"))
+		right_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		right_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(right_l)
+	return row
+
+func _empty(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 12)
+	l.add_theme_color_override("font_color", Color("5a6270"))
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l

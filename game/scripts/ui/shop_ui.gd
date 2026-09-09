@@ -183,6 +183,13 @@ func _refresh_left() -> void:
 	_left_box.add_child(_stat_row("回复", "%.1f / 秒" % float(s.regen)))
 	_left_box.add_child(_stat_row("收获率", "+%d%%" % roundi(float(s.harvesting) * 100.0)))
 	_left_box.add_child(_stat_row("吸血", "%.0f / 击杀" % float(s.lifesteal)))
+	var status_hit := 0.0
+	for sid in Config.STATUS:
+		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
+	if float(s.status_dmg_mult) > 0.0 or float(s.status_dur_mult) > 0.0 or status_hit > 0.0:
+		_left_box.add_child(_stat_row("异常强化", "伤害 +%d%%｜时长 +%d%%｜命中 +%d%%"
+			% [roundi(float(s.status_dmg_mult) * 100.0), roundi(float(s.status_dur_mult) * 100.0),
+			roundi(status_hit * 100.0)]))
 	# 角色特性
 	var sep := ColorRect.new()
 	sep.color = Color("2c3340")

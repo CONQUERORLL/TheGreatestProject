@@ -10,6 +10,10 @@ signal wave_ended(wave: int)
 
 signal enemy_killed(enemy_type: String)
 signal boss_killed
+signal status_applied(status_id: String, stacks: int, pos: Vector2)
+
+signal codex_unlocked(category: String, id: String)
+signal achievement_unlocked(id: String)
 
 signal player_damaged(amount: float)
 signal player_died

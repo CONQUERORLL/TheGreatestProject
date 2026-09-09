@@ -1,8 +1,11 @@
 extends Node
-## 设置 autoload：分辨率 / 窗口模式 / 帧率 / 主音量 / 按键绑定
+## 设置 autoload：分辨率 / 窗口模式 / 帧率 / 主音量 + 音效/音乐独立音量 / 按键绑定
 ## 持久化到 user://settings.cfg；启动时自动应用。重绑定即时生效并写入磁盘。
 
 const CFG_PATH := "user://settings.cfg"
+
+const BUS_SFX := "SFX"
+const BUS_MUSIC := "Music"
 
 const MODE_WINDOWED := 0     # 窗口
 const MODE_BORDERLESS := 1   # 无边框窗口
@@ -61,10 +64,13 @@ var res_h := 720
 var mode := MODE_WINDOWED
 var fps := 60
 var master_vol := 1.0
+var sfx_vol := 1.0
+var music_vol := 0.8
 var _last_nonzero_master := 1.0
 var _binds := {}   # action -> Array[描述符 Dictionary]
 
 func _ready() -> void:
+	ensure_audio_buses()
 	load_config()
 	apply_all()
 
@@ -81,6 +87,8 @@ func load_config() -> void:
 	master_vol = clampf(float(cfg.get_value("audio", "master", 1.0)), 0.0, 1.0)
 	if master_vol > 0.0001:
 		_last_nonzero_master = master_vol
+	sfx_vol = clampf(float(cfg.get_value("audio", "sfx", 1.0)), 0.0, 1.0)
+	music_vol = clampf(float(cfg.get_value("audio", "music", 0.8)), 0.0, 1.0)
 	_binds.clear()
 	if cfg.has_section("input"):
 		for action in ACTION_ORDER:
@@ -98,6 +106,8 @@ func save_config() -> void:
 	cfg.set_value("display", "mode", mode)
 	cfg.set_value("game", "fps", fps)
 	cfg.set_value("audio", "master", master_vol)
+	cfg.set_value("audio", "sfx", sfx_vol)
+	cfg.set_value("audio", "music", music_vol)
 	for action in _binds:
 		cfg.set_value("input", action, JSON.stringify(_binds[action]))
 	cfg.save(CFG_PATH)
@@ -130,10 +140,29 @@ func apply_fps() -> void:
 	Engine.max_fps = fps
 
 func apply_audio() -> void:
+	ensure_audio_buses()
 	if AudioServer.get_bus_count() <= 0:
 		return
-	AudioServer.set_bus_mute(0, master_vol <= 0.0001)
-	AudioServer.set_bus_volume_db(0, linear_to_db(maxf(master_vol, 0.0001)))
+	_apply_bus_volume("Master", master_vol)
+	_apply_bus_volume(BUS_SFX, sfx_vol)
+	_apply_bus_volume(BUS_MUSIC, music_vol)
+
+## 运行时创建 SFX / Music 总线（不依赖 BusLayout 资源，保持零外部资源）
+func ensure_audio_buses() -> void:
+	for bus_name in [BUS_SFX, BUS_MUSIC]:
+		if AudioServer.get_bus_index(bus_name) != -1:
+			continue
+		var idx := AudioServer.bus_count
+		AudioServer.add_bus(idx)
+		AudioServer.set_bus_name(idx, bus_name)
+		AudioServer.set_bus_send(idx, "Master")
+
+func _apply_bus_volume(bus_name: String, vol: float) -> void:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx < 0:
+		return
+	AudioServer.set_bus_mute(idx, vol <= 0.0001)
+	AudioServer.set_bus_volume_db(idx, linear_to_db(maxf(vol, 0.0001)))
 
 func apply_input() -> void:
 	for action in _binds:
@@ -168,6 +197,16 @@ func set_master(v: float) -> void:
 	master_vol = clampf(v, 0.0, 1.0)
 	if master_vol > 0.0001:
 		_last_nonzero_master = master_vol
+	save_config()
+	apply_audio()
+
+func set_sfx(v: float) -> void:
+	sfx_vol = clampf(v, 0.0, 1.0)
+	save_config()
+	apply_audio()
+
+func set_music(v: float) -> void:
+	music_vol = clampf(v, 0.0, 1.0)
 	save_config()
 	apply_audio()
 

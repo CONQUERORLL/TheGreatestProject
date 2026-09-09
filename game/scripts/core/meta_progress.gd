@@ -24,6 +24,7 @@ const TALENTS := {
 var essence := 0            # 当前土豆精华
 var total_earned := 0       # 历史累计（展示用）
 var talent_levels := {}     # id -> 已购等级
+var _path := SAVE_PATH      # 测试可切换到隔离路径
 
 func _ready() -> void:
 	_load()
@@ -82,6 +83,14 @@ func grant_run_essence(score: int, wave: int, endless: bool) -> int:
 	_save()
 	return amount
 
+## 成就奖励等外部来源发放精华（与局末结算共用累计口径）
+func grant_essence(amount: int) -> void:
+	if amount <= 0:
+		return
+	essence += amount
+	total_earned += amount
+	_save()
+
 # ---------------- 开局应用 ----------------
 
 ## 新局开始时应用全部天赋（main 新局分支调用；player 属性已就绪）
@@ -111,9 +120,9 @@ func _load() -> void:
 	essence = 0
 	total_earned = 0
 	talent_levels = {}
-	if not FileAccess.file_exists(SAVE_PATH):
+	if not FileAccess.file_exists(_path):
 		return
-	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	var f := FileAccess.open(_path, FileAccess.READ)
 	if f == null:
 		return
 	var json := JSON.new()
@@ -134,13 +143,25 @@ func _load() -> void:
 					talent_levels[id] = lv
 
 func _save() -> void:
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var dir := _path.get_base_dir()
+	var dir_err := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
+		push_warning("MetaProgress: 无法创建目录 " + dir)
+		return
+	var f := FileAccess.open(_path, FileAccess.WRITE)
 	if f == null:
-		push_warning("MetaProgress: 无法写入 " + SAVE_PATH)
+		push_warning("MetaProgress: 无法写入 " + _path)
 		return
 	f.store_string(JSON.stringify({
 		"essence": essence, "total_earned": total_earned, "talents": talent_levels }))
 	f.close()
+
+## 仅供自动化测试：改用隔离路径（避免测试结算覆盖本机 user://meta_progress.json）
+func set_storage_path_for_tests(path: String) -> void:
+	_path = path
+
+func reset_storage_path_after_tests() -> void:
+	_path = SAVE_PATH
 
 ## 仅供自动化测试重置
 func reset_for_tests() -> void:

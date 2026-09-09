@@ -54,6 +54,8 @@ func record(score: int, wave: int, char_name: String, kills: int, run_time: floa
 	if board.size() > MAX_ENTRIES:
 		board = board.slice(0, MAX_ENTRIES)
 	_boards[date_key] = board
+	if date_key == "":
+		entries = board   # 无尽榜内存视图与 _boards 同步（get_list/best_score 读取）
 	_save()
 	var rank := board.find(entry) + 1
 	return rank if rank > 0 else 0

@@ -15,6 +15,11 @@ const EFFECT_FIELDS := [
 	["armor", "护甲", 1.0], ["dodge", "闪避率", 0.01],
 	["pickup_range", "拾取范围", 5.0], ["regen", "生命回复/秒", 0.1],
 	["harvesting", "材料获取倍率", 0.01], ["lifesteal", "击杀回血", 1.0],
+	["status_chance", "异常命中率", 0.01], ["status_dmg_mult", "状态伤害倍率", 0.05],
+	["status_dur_mult", "异常时长倍率", 0.05], ["status_spread", "中毒传染(0/1)", 1.0],
+	["on_hit_burn", "命中点燃概率", 0.05], ["on_hit_poison", "命中中毒概率", 0.05],
+	["on_hit_bleed", "命中流血概率", 0.05], ["on_hit_freeze", "命中冰冻概率", 0.05],
+	["on_hit_slow", "命中减速概率", 0.05], ["on_hit_stun", "命中眩晕概率", 0.05],
 ]
 
 ## 编辑器字段表：[键, 标签, 类型, 默认, 最小, 最大, 步长(choice 时为选项数组)]
@@ -34,6 +39,10 @@ const FIELD_DEFS := {
 		["range", "近战距离", "f", 82.0, 1.0, 400.0, 5.0],
 		["swing_arc", "近战弧度", "f", 1.5, 0.05, 6.28, 0.05],
 		["shake", "震屏强度", "f", 0.0, 0.0, 10.0, 0.1],
+		["status", "状态效果", "choice", "", ["", "burn", "poison", "bleed", "freeze", "slow", "stun"]],
+		["status_chance", "状态触发概率", "f", 1.0, 0.0, 1.0, 0.05],
+		["status_stacks", "状态层数", "i", 1, 1, 10, 1],
+		["status_duration", "状态时长（0=默认）", "f", 0.0, 0.0, 30.0, 0.5],
 		["sfx", "音效 ID", "text", "shoot_pistol"],
 		["price", "商店售价", "i", 30, 0, 300, 5],
 		["shop_weight", "商店出现权重", "f", 1.0, 0.0, 5.0, 0.1],
@@ -70,6 +79,7 @@ const FIELD_DEFS := {
 		["shoot_cd", "射击间隔（射手秒）", "f", 0.0, 0.0, 10.0, 0.1],
 		["ring_count", "环形弹数（BOSS）", "i", 0, 0, 40, 2],
 		["ring_cd", "环形弹幕间隔（BOSS 秒）", "f", 0.0, 0.0, 10.0, 0.1],
+		["status_resist", "状态抗性（0~0.95）", "f", 0.0, 0.0, 0.95, 0.05],
 	],
 	"characters": [
 		["id", "ID（英文唯一）", "text", "my_character"],

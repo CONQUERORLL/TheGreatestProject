@@ -238,12 +238,20 @@ func _read_path(path: String) -> Dictionary:
 		"speed_mult": Vector2(0.01, 10_000.0), "base_speed": Vector2(1.0, 100_000.0),
 		"pickup_range": Vector2(0.0, 1_000_000.0), "harvesting": Vector2(-0.99, 1_000.0),
 		"lifesteal": Vector2(0.0, 1_000_000.0),
+		"status_chance": Vector2(0.0, 1.0), "status_dmg_mult": Vector2(0.0, 1_000.0),
+		"status_dur_mult": Vector2(0.0, 1_000.0), "status_spread": Vector2(0.0, 1.0),
+		"on_hit_burn": Vector2(0.0, 1.0), "on_hit_poison": Vector2(0.0, 1.0),
+		"on_hit_freeze": Vector2(0.0, 1.0), "on_hit_slow": Vector2(0.0, 1.0),
+		"on_hit_stun": Vector2(0.0, 1.0), "on_hit_bleed": Vector2(0.0, 1.0),
 	}
 	for key in stat_limits:
+		# 旧版本存档没有状态字段：缺失按默认值恢复，出现时仍严格校验
+		if not pl.stats.has(key):
+			continue
 		var limits: Vector2 = stat_limits[key]
 		if not _number_in_range(pl.stats.get(key), limits.x, limits.y):
 			return {}
-	if float(pl.hp) > float(pl.stats.max_hp):
+	if float(pl.hp) > float(pl.stats.get("max_hp", 0.0)):
 		return {}
 	# 6 基础槽 + 1 军火专家天赋槽；玩家可能购买天赋后存 7 把再读档
 	if pl.weapons.is_empty() or pl.weapons.size() > Config.WEAPON_SLOTS + 1:
@@ -272,6 +280,13 @@ func _sanitize_stats(stats: Dictionary) -> void:
 	stats.regen = maxf(0.0, float(stats.regen))
 	stats.harvesting = maxf(-0.99, float(stats.harvesting))
 	stats.lifesteal = maxf(0.0, float(stats.lifesteal))
+	stats.status_chance = clampf(float(stats.status_chance), 0.0, 1.0)
+	stats.status_dmg_mult = maxf(0.0, float(stats.status_dmg_mult))
+	stats.status_dur_mult = maxf(0.0, float(stats.status_dur_mult))
+	stats.status_spread = clampf(float(stats.status_spread), 0.0, 1.0)
+	for sid in Config.STATUS:
+		var status_key := "on_hit_" + String(sid)
+		stats[status_key] = clampf(float(stats.get(status_key, 0.0)), 0.0, 1.0)
 
 func _write_json_atomic(path: String, data: Dictionary) -> bool:
 	var dir := path.get_base_dir()

@@ -7,6 +7,8 @@ var wave_manager: Node
 
 var _panel: ScrollContainer
 var _god := false
+var _status_label: Label
+var _status_t := 0.0
 
 const STAT_FIELDS := [
 	{ "k": "max_hp", "n": "最大生命", "min": 1.0, "max": 99999.0, "step": 1.0 },
@@ -21,6 +23,15 @@ const STAT_FIELDS := [
 	{ "k": "regen", "n": "回复/秒", "min": 0.0, "max": 999.0, "step": 0.5 },
 	{ "k": "harvesting", "n": "收获加成", "min": 0.0, "max": 99.0, "step": 0.1 },
 	{ "k": "lifesteal", "n": "吸血", "min": 0.0, "max": 99.0, "step": 0.1 },
+	{ "k": "status_chance", "n": "异常命中率", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "status_dmg_mult", "n": "状态伤害倍率", "min": 0.0, "max": 10.0, "step": 0.1 },
+	{ "k": "status_dur_mult", "n": "异常时长倍率", "min": 0.0, "max": 10.0, "step": 0.1 },
+	{ "k": "on_hit_burn", "n": "命中点燃", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "on_hit_poison", "n": "命中中毒", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "on_hit_bleed", "n": "命中流血", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "on_hit_freeze", "n": "命中冰冻", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "on_hit_slow", "n": "命中减速", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "on_hit_stun", "n": "命中眩晕", "min": 0.0, "max": 1.0, "step": 0.05 },
 ]
 
 func _ready() -> void:
@@ -45,9 +56,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			_kill_all()
 			get_viewport().set_input_as_handled()
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if _god and is_instance_valid(player):
 		player.hp = player.stats.max_hp
+	if not visible:
+		return
+	_status_t -= delta
+	if _status_t <= 0.0:
+		_status_t = 0.5
+		_refresh_status()
 
 # ---------------- 构建 ----------------
 
@@ -76,6 +93,13 @@ func _build() -> void:
 	title.add_theme_font_size_override("font_size", 14)
 	title.add_theme_color_override("font_color", Color("e8b84b"))
 	box.add_child(title)
+	_status_label = Label.new()
+	_status_label.add_theme_font_size_override("font_size", 12)
+	_status_label.add_theme_color_override("font_color", Color("9aa3b2"))
+	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(_status_label)
+	_refresh_status()
 	# 属性区
 	box.add_child(_section("属性调整（实时生效）"))
 	for f in STAT_FIELDS:
@@ -283,12 +307,32 @@ func _label(t: String) -> Label:
 func _sync_values() -> void:
 	if not is_instance_valid(player):
 		return
+	_refresh_status()
 	for child in _panel.get_child(0).get_children():
 		if child is HBoxContainer and child.get_child_count() >= 2:
 			var sb = child.get_child(1)
 			if sb is SpinBox and sb.has_meta("key"):
 				var k: String = sb.get_meta("key")
 				sb.value = float(player.stats.get(k, 0.0))
+
+## 平台/收集进度速览（真机验证 Steam 是否被识别）
+func _refresh_status() -> void:
+	if _status_label == null:
+		return
+	var pa = get_node_or_null("/root/PlatformAchievements")
+	var backend := "未接入"
+	var pending := 0
+	if pa != null:
+		backend = String(pa.backend_name()) if pa.is_available() else "未接入"
+		pending = pa.pending_count()
+	var seen := 0
+	var total := 0
+	for cat in CodexData.CATEGORIES:
+		seen += CodexData.unlocked_count(String(cat))
+		total += CodexData.total_entries(String(cat))
+	_status_label.text = "平台成就：%s · 待上报 %d · 图鉴 %d/%d · 成就 %d/%d" % [
+		backend, pending, seen, total,
+		CodexData.unlocked_achievement_count(), CodexData.ACHIEVEMENTS.size()]
 
 func _kill_all() -> void:
 	var count := 0

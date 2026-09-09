@@ -33,12 +33,20 @@ const STAT_LIMITS := {
 	"speed_mult": Vector2(0.01, 100.0), "base_speed": Vector2(1.0, 2000.0),
 	"pickup_range": Vector2(0.0, 5000.0), "harvesting": Vector2(-0.99, 10.0),
 	"lifesteal": Vector2(0.0, 10000.0),
+	"status_chance": Vector2(0.0, 1.0), "status_dmg_mult": Vector2(0.0, 10.0),
+	"status_dur_mult": Vector2(0.0, 10.0), "status_spread": Vector2(0.0, 1.0),
+	"on_hit_burn": Vector2(0.0, 1.0), "on_hit_poison": Vector2(0.0, 1.0),
+	"on_hit_freeze": Vector2(0.0, 1.0), "on_hit_slow": Vector2(0.0, 1.0),
+	"on_hit_stun": Vector2(0.0, 1.0), "on_hit_bleed": Vector2(0.0, 1.0),
 }
 const EFFECT_LIMITS := {
 	"max_hp": 10000.0, "regen": 1000.0, "armor": 1000.0, "dodge": 0.95,
 	"dmg_mult": 10.0, "as_mult": 10.0, "crit_ch": 1.0, "crit_mult": 10.0,
 	"speed_mult": 10.0, "base_speed": 2000.0, "pickup_range": 5000.0,
 	"harvesting": 10.0, "lifesteal": 10000.0, "heal_flat": 10000.0, "heal_pct": 1.0,
+	"status_chance": 1.0, "status_dmg_mult": 10.0, "status_dur_mult": 10.0,
+	"status_spread": 1.0, "on_hit_burn": 1.0, "on_hit_poison": 1.0,
+	"on_hit_freeze": 1.0, "on_hit_slow": 1.0, "on_hit_stun": 1.0, "on_hit_bleed": 1.0,
 }
 
 func _ready() -> void:
@@ -92,6 +100,64 @@ func item_list() -> Array:
 func upgrade_list() -> Array:
 	return upgrades.values()
 
+## 状态图鉴数据源：某状态的施加/强化来源（遍历 Registry，mod 内容自动出现）
+## 返回 { "weapons": [...], "items": [...], "boosts": [...] }
+##   weapons：{ id, ico, name, desc, rarity, chance, stacks }
+##   items：  { id, ico, name, desc, rarity, chance }
+##   boosts： { id, ico, name, desc, rarity, kind, effects }
+func status_sources(sid: String) -> Dictionary:
+	var apply_weapons: Array = []
+	for id in weapons:
+		var w: Dictionary = weapons[id]
+		if String(w.get("status", "")) != sid:
+			continue
+		apply_weapons.append({
+			"id": id, "ico": w.get("ico", "🔧"), "name": w.get("name", id),
+			"desc": w.get("desc", ""), "rarity": w.get("rarity", "common"),
+			"chance": float(w.get("status_chance", 1.0)),
+			"stacks": int(w.get("status_stacks", 1)),
+		})
+	var apply_items: Array = []
+	var boosts: Array = []
+	for id in items:
+		var it: Dictionary = items[id]
+		var eff: Dictionary = it.get("effects", {})
+		if float(eff.get("on_hit_" + sid, 0.0)) > 0.0:
+			apply_items.append({
+				"id": id, "ico": it.get("ico", "🧩"), "name": it.get("name", id),
+				"desc": it.get("desc", ""), "rarity": it.get("rarity", "common"),
+				"chance": float(eff["on_hit_" + sid]),
+			})
+		var b := _status_boost_effects(eff, sid)
+		if not b.is_empty():
+			boosts.append({
+				"id": id, "ico": it.get("ico", "🧩"), "name": it.get("name", id),
+				"desc": it.get("desc", ""), "rarity": it.get("rarity", "common"),
+				"kind": "道具", "effects": b,
+			})
+	for id in upgrades:
+		var up: Dictionary = upgrades[id]
+		var b2 := _status_boost_effects(up.get("effects", {}), sid)
+		if b2.is_empty():
+			continue
+		boosts.append({
+			"id": id, "ico": up.get("ico", "✨"), "name": up.get("name", id),
+			"desc": up.get("desc", ""), "rarity": up.get("rarity", "common"),
+			"kind": "升级", "effects": b2,
+		})
+	return { "weapons": apply_weapons, "items": apply_items, "boosts": boosts }
+
+## 强化键筛选：通用异常强化对全部状态生效；status_spread 只对中毒有意义
+func _status_boost_effects(eff: Dictionary, sid: String) -> Dictionary:
+	var out: Dictionary = {}
+	for k in ["status_chance", "status_dmg_mult", "status_dur_mult"]:
+		var v := float(eff.get(k, 0.0))
+		if v != 0.0:
+			out[k] = v
+	if sid == "poison" and float(eff.get("status_spread", 0.0)) > 0.0:
+		out["status_spread"] = float(eff["status_spread"])
+	return out
+
 ## 商店武器权重池：mod 武器默认 shop_weight=1.0
 func shop_weapon_pool() -> Array:
 	var pool: Array = []
@@ -133,7 +199,8 @@ func register_weapon(data: Dictionary) -> bool:
 		data["attack_type"] = "melee" if data.has("range") and data.has("swing_arc") else "projectile"
 	_apply_defaults(data, {"ico": "🔧", "desc": "", "rarity": "common", "sfx": "shoot_pistol",
 		"bspeed": 540.0, "pellets": 1, "arc": 0.0, "spread": 0.0, "splash": 0.0,
-		"bullet_life": 1.1, "shake": 0.0, "price": 30, "shop_weight": 1.0})
+		"bullet_life": 1.1, "shake": 0.0, "price": 30, "shop_weight": 1.0,
+		"status": "", "status_chance": 1.0, "status_stacks": 1, "status_duration": 0.0})
 	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity", "sfx", "attack_type"]):
 		return _reject("武器", data, "文本字段类型非法")
 	if data.attack_type == "spread":   # 兼容早期清单命名
@@ -145,6 +212,14 @@ func register_weapon(data: Dictionary) -> bool:
 		return _reject("武器", data, "attack_type 非法")
 	if data.rarity not in Config.RARITIES:
 		return _reject("武器", data, "rarity 非法")
+	if typeof(data.status) != TYPE_STRING:
+		return _reject("武器", data, "status 必须是字符串")
+	if String(data.status) != "" and not Config.STATUS.has(String(data.status)):
+		return _reject("武器", data, "status 状态 id 未注册：%s" % data.status)
+	if not _number_in_range(data.get("status_chance"), 0.0, 1.0) \
+			or not _positive_integer(data.get("status_stacks")) or int(data.status_stacks) > 10 \
+			or not _number_in_range(data.get("status_duration"), 0.0, 30.0):
+		return _reject("武器", data, "状态参数超出范围（chance 0~1 / stacks 1~10 / duration 0~30）")
 	for key in ["cd", "dmg", "price", "shop_weight", "shake"]:
 		if not _finite_number(data.get(key)):
 			return _reject("武器", data, "%s 必须是有限数值" % key)
@@ -206,7 +281,8 @@ func register_enemy(data: Dictionary) -> bool:
 	if not _valid(data, "敌人", ["id", "name", "hp", "speed", "dmg", "r"]):
 		return false
 	_apply_defaults(data, {"xp": 1, "mat": 1, "color": "#d9534f",
-		"shape": "circle", "ai": "chaser", "heart_chance": Config.HEAL_DROP_CHANCE})
+		"shape": "circle", "ai": "chaser", "heart_chance": Config.HEAL_DROP_CHANCE,
+		"status_resist": 0.0})
 	if not _string_fields(data, ["id", "name", "color", "shape", "ai"]):
 		return _reject("敌人", data, "文本字段类型非法")
 	if data.has("is_boss") and typeof(data.is_boss) != TYPE_BOOL:
@@ -232,6 +308,8 @@ func register_enemy(data: Dictionary) -> bool:
 	for key in ["hp", "speed", "dmg", "r", "xp", "mat", "heart_chance"]:
 		if not _finite_number(data.get(key)):
 			return _reject("敌人", data, "%s 必须是有限数值" % key)
+	if not _number_in_range(data.get("status_resist"), 0.0, 0.95):
+		return _reject("敌人", data, "status_resist 必须是 0~0.95 的数值")
 	# BOSS 允许超高血量（无尽后期/自定义数值）；普通敌人维持 5000 上限
 	var hp_max := 1.0e9 if ai == "boss" else 5000.0
 	if float(data.hp) <= 0.0 or float(data.hp) > hp_max \

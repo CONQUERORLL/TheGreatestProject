@@ -1,8 +1,29 @@
 extends Node2D
 ## 主场景：竞技场绘制 + 相机震动 + 横幅/结算 UI + 波次调度入口
+## + 状态触发打击感（顿帧/震屏）+ BGM 阶段切换 + 图鉴武器登记
 
 var shake := 0.0
 var banner_t := 0.0
+
+## 状态触发打击感：顿帧（Engine.time_scale）+ 震屏，全局节流防高频状态刷屏
+const HIT_STOP_SCALE := 0.18
+const HIT_STOP_MS := 45
+const STATUS_JUICE_CD_MS := 180
+var _hit_stop_until_ms := 0
+var _hit_stop_on := false
+var _status_juice_cd := 0
+var _status_juice_count := 0   # 测试观测：状态打击感触发次数
+var _codex_scan_t := 0.0
+
+## 图鉴/成就解锁 toast：右上角轻量提示，队列化（最多 4 条，1.15s/条）
+var _toast_panel: PanelContainer
+var _toast_label: Label
+var _toast_queue: Array = []
+var _toast_t := 0.0
+var _toast_count := 0   # 测试观测：toast 累计次数
+var _toast_target: Array = []   # 当前 toast 指向的图鉴条目 [category, id]
+var _codex: Control = null      # 局内图鉴（点击 toast 时懒加载）
+var _codex_phase_before := -1   # 打开图鉴前暂停的阶段（-1 = 未暂停）
 
 @onready var player: CharacterBody2D = $Player
 @onready var camera: Camera2D = $Player/Camera
@@ -39,6 +60,10 @@ func _ready() -> void:
 	EventBus.boss_killed.connect(_on_boss_killed)
 	EventBus.banner_requested.connect(_on_banner)
 	EventBus.wave_ended.connect(_on_wave_ended)
+	EventBus.wave_started.connect(_on_wave_started)
+	EventBus.status_applied.connect(_on_status_applied)
+	EventBus.codex_unlocked.connect(_on_codex_unlocked)
+	EventBus.achievement_unlocked.connect(_on_achievement_unlocked)
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
 	wave_manager.player = player
 	level_up_ui.player = player
@@ -70,8 +95,14 @@ func _ready() -> void:
 		wave_manager.start_wave(1)
 		if not initial_save_ok:
 			EventBus.banner_requested.emit("存档失败", "新局尚未写入存档", 2.0)
+	# BGM：战斗按波次切曲，商店/读档回商店档时切舒缓曲（菜单音乐由 main_menu 负责）
+	if GameState.phase == GameState.Phase.SHOP:
+		Music.play_track("shop", 0.5)
+	else:
+		Music.play_track(Music.track_for_wave(wave_manager.wave), 0.5)
 	_build_pause_menu()
 	_build_end_menus()
+	_build_toast()
 	queue_redraw()
 
 func _process(delta: float) -> void:
@@ -84,6 +115,18 @@ func _process(delta: float) -> void:
 		banner_t -= delta
 		if banner_t <= 0.0:
 			_hide_banner()
+	# 顿帧恢复用真实时间判定（Engine.time_scale 不影响）
+	if _hit_stop_on and Time.get_ticks_msec() >= _hit_stop_until_ms:
+		_end_hit_stop()
+	# 图鉴：定期登记玩家当前武器（商店购买/进化/读档/调试等所有来源统一覆盖）
+	_codex_scan_t -= delta
+	if _codex_scan_t <= 0.0:
+		_codex_scan_t = 0.5
+		_scan_codex_weapons()
+	if _toast_t > 0.0:
+		_toast_t -= delta
+		if _toast_t <= 0.0:
+			_next_toast()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause"):
@@ -130,6 +173,145 @@ func _on_screen_shake(amount: float) -> void:
 	shake = maxf(shake, amount)
 	Haptics.rumble_from_shake(amount)   # 战斗震动随震屏强度联动
 
+## 状态首次触发：震屏 + 顿帧 + 图鉴解锁（180ms 全局节流，火焰喷射器也不会糊屏）
+func _on_status_applied(status_id: String, _stacks: int, _pos: Vector2) -> void:
+	CodexData.unlock("status", status_id)
+	var now := Time.get_ticks_msec()
+	if now < _status_juice_cd:
+		return
+	_status_juice_cd = now + STATUS_JUICE_CD_MS
+	_status_juice_count += 1
+	_on_screen_shake(2.2)
+	_trigger_hit_stop(HIT_STOP_MS, HIT_STOP_SCALE)
+
+func _trigger_hit_stop(duration_ms: int, scale: float) -> void:
+	if duration_ms <= 0:
+		return
+	_hit_stop_until_ms = maxi(_hit_stop_until_ms, Time.get_ticks_msec() + duration_ms)
+	if not _hit_stop_on:
+		_hit_stop_on = true
+		Engine.time_scale = clampf(scale, 0.05, 1.0)
+
+func _end_hit_stop() -> void:
+	if not _hit_stop_on:
+		return
+	_hit_stop_on = false
+	Engine.time_scale = 1.0
+
+func _scan_codex_weapons() -> void:
+	for w in player.weapons:
+		CodexData.unlock("weapon", String(w.type))
+
+func _on_codex_unlocked(cat: String, id: String) -> void:
+	_enqueue_toast("📖 图鉴解锁", "%s %s · ✦%d" % [CodexData.display_icon(cat, id),
+		CodexData.display_name(cat, id), CodexData.unlock_reward(cat)], cat, id)
+
+func _on_achievement_unlocked(id: String) -> void:
+	_enqueue_toast("🏆 成就达成", "%s %s · ✦%d 精华" % [CodexData.display_icon("achieve", id),
+		CodexData.display_name("achieve", id), CodexData.achievement_reward(id)], "achieve", id)
+
+func _enqueue_toast(title: String, body: String, cat := "", id := "") -> void:
+	_toast_count += 1
+	if _toast_panel == null or _toast_queue.size() >= 4:
+		return
+	_toast_queue.append({ "title": title, "body": body, "cat": cat, "id": id })
+	if not _toast_panel.visible:
+		_next_toast()
+
+func _next_toast() -> void:
+	if _toast_panel == null:
+		return
+	if _toast_queue.is_empty():
+		_toast_panel.visible = false
+		return
+	var item: Dictionary = _toast_queue.pop_front()
+	_toast_target = [String(item.get("cat", "")), String(item.get("id", ""))]
+	var hint := "  ›" if String(item.get("cat", "")) != "" else ""
+	_toast_label.text = "%s%s\n%s" % [String(item.get("title", "")), hint,
+		String(item.get("body", ""))]
+	_toast_panel.visible = true
+	_toast_t = 1.15
+	_toast_panel.modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(_toast_panel, "modulate:a", 1.0, 0.12)
+
+func _build_toast() -> void:
+	_toast_panel = PanelContainer.new()
+	_toast_panel.anchor_left = 1.0
+	_toast_panel.anchor_right = 1.0
+	_toast_panel.offset_left = -340.0
+	_toast_panel.offset_right = -16.0
+	_toast_panel.offset_top = 76.0
+	_toast_panel.offset_bottom = 134.0
+	_toast_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_toast_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_toast_panel.gui_input.connect(_on_toast_gui_input)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.09, 0.11, 0.15, 0.92)
+	sb.border_color = Color("e8b84b")
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 12.0
+	sb.content_margin_top = 8.0
+	sb.content_margin_bottom = 8.0
+	_toast_panel.add_theme_stylebox_override("panel", sb)
+	_toast_label = Label.new()
+	_toast_label.add_theme_font_size_override("font_size", 13)
+	_toast_label.add_theme_color_override("font_color", Color("f2e7c7"))
+	_toast_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_toast_panel.add_child(_toast_label)
+	_toast_panel.visible = false
+	$UI.add_child(_toast_panel)
+
+## 点击 toast → 直达图鉴对应条目（鼠标 / 触屏）
+func _on_toast_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		_open_toast_target()
+	elif event is InputEventScreenTouch and event.pressed:
+		_open_toast_target()
+
+## 局内打开图鉴：暂停战斗，关闭后恢复原阶段
+func _open_toast_target() -> void:
+	if _toast_target.size() < 2 or String(_toast_target[0]) == "":
+		return
+	var cat := String(_toast_target[0])
+	var id := String(_toast_target[1])
+	_toast_target = []
+	if _toast_panel != null:
+		_toast_panel.visible = false
+	_toast_t = 0.0
+	_ensure_codex()
+	if _codex == null:
+		return
+	_codex_phase_before = -1
+	if GameState.phase == GameState.Phase.PLAYING or GameState.phase == GameState.Phase.INTRO:
+		_codex_phase_before = GameState.phase
+		GameState.set_phase(GameState.Phase.PAUSED)
+	_codex.open_entry(cat, id)
+
+func _ensure_codex() -> void:
+	if _codex != null:
+		return
+	_codex = preload("res://scenes/ui/codex.tscn").instantiate()
+	$UI.add_child(_codex)
+	_codex.closed.connect(_on_codex_closed)
+
+func _on_codex_closed() -> void:
+	if _codex_phase_before != -1:
+		GameState.set_phase(_codex_phase_before)
+		_codex_phase_before = -1
+	_next_toast()
+
+## 每波开始：BOSS 波切激烈曲，普通波切战斗曲
+func _on_wave_started(w: int) -> void:
+	Music.play_track(Music.track_for_wave(w), 0.35)
+
+func _exit_tree() -> void:
+	Engine.time_scale = 1.0   # 双保险：切场景/测试结束不残留慢动作
+
 func _on_enemy_killed(type: String) -> void:
 	GameState.kills += 1
 	if GameState.endless or GameState.daily:
@@ -143,6 +325,7 @@ func _on_wave_ended(w: int) -> void:
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
 	shop_ui.open(w)
+	Music.play_track("shop", 0.4)
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
 	shop_ui._refresh()   # 回收后刷新材料显示
@@ -153,11 +336,14 @@ func _on_wave_ended(w: int) -> void:
 		Sfx.play("victory")
 		EventBus.banner_requested.emit("⚔ 武器进化！",
 			" · ".join(evolved), 3.0)
+		CodexData.add_stat("evolutions", evolved.size())
 		shop_ui._refresh()   # 武器栏已变化
 	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
 func _on_player_died() -> void:
+	Music.play_track("defeat", 0.6)
+	CodexData.set_stat_max("best_score", GameState.score)
 	if SaveRun.current_run_owns_slot:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
 	GameState.set_phase(GameState.Phase.GAME_OVER)
@@ -210,6 +396,7 @@ func _on_boss_killed() -> void:
 	if GameState.daily:
 		# 每日挑战：通关结算入今日榜（BOSS 击破加分 ×2）
 		GameState.add_score(Config.boss_kill_score(wave_manager.wave) * 2)
+		CodexData.set_stat_max("best_score", GameState.score)
 		GameState.set_phase(GameState.Phase.VICTORY)
 		EventBus.run_ended.emit(true)
 		var ch_v: Dictionary = Registry.get_character(GameState.character_id)
@@ -219,6 +406,7 @@ func _on_boss_killed() -> void:
 		victory_label.text = "今日挑战完成！· 积分 %d%s" % [GameState.score,
 			" · 今日第 %d 名" % rank_v if rank_v > 0 else ""]
 		victory_label.visible = true
+		Music.play_track("victory", 0.6)
 		Sfx.play("victory")
 		_victory_menu.visible = true
 		_victory_continue.visible = false   # 每日挑战无"继续无尽"
@@ -228,12 +416,14 @@ func _on_boss_killed() -> void:
 				break
 		return
 	# 标准模式通关：存档保留到玩家作出选择（继续无尽会改写为无尽档）
+	CodexData.set_stat_max("best_score", GameState.score)
 	GameState.set_phase(GameState.Phase.VICTORY)
 	EventBus.run_ended.emit(true)
 	# 局外成长：通关结算土豆精华（按波次折算）
 	var earned_v := MetaProgress.grant_run_essence(0, wave_manager.wave, false)
 	victory_label.text = "通关！· 获得 ✦%d 精华" % earned_v
 	victory_label.visible = true
+	Music.play_track("victory", 0.6)
 	Sfx.play("victory")
 	_victory_menu.visible = true
 	_victory_continue.grab_focus()   # 继续无尽（默认焦点）
@@ -457,6 +647,49 @@ func _refresh_pause_content() -> void:
 	_pause_left.add_child(_pause_stat_row("回复", "%.1f / 秒" % float(s.regen)))
 	_pause_left.add_child(_pause_stat_row("收获率", "+%d%%" % roundi(float(s.harvesting) * 100.0)))
 	_pause_left.add_child(_pause_stat_row("吸血", "%.0f / 击杀" % float(s.lifesteal)))
+	var status_hit := 0.0
+	for sid in Config.STATUS:
+		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
+	if float(s.status_dmg_mult) > 0.0 or float(s.status_dur_mult) > 0.0 or status_hit > 0.0:
+		_pause_left.add_child(_pause_stat_row("异常强化", "伤害 +%d%%｜时长 +%d%%｜命中 +%d%%"
+			% [roundi(float(s.status_dmg_mult) * 100.0), roundi(float(s.status_dur_mult) * 100.0),
+			roundi(status_hit * 100.0)]))
+	# 状态图例：6 种异常说明 + 当前构筑已激活的高亮
+	var legend_t := Label.new()
+	legend_t.text = "状态图例"
+	legend_t.add_theme_font_size_override("font_size", 13)
+	legend_t.add_theme_color_override("font_color", Color("e8b84b"))
+	legend_t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_left.add_child(legend_t)
+	var sources: Dictionary = player.status_sources()
+	for sid in Config.STATUS:
+		var st_cfg: Dictionary = Config.STATUS[sid]
+		var active := sources.has(String(sid))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var ico := Label.new()
+		ico.text = String(st_cfg.get("ico", "❓"))
+		ico.add_theme_font_size_override("font_size", 13)
+		ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(ico)
+		var st_name := Label.new()
+		st_name.text = ("● " if active else "○ ") + String(st_cfg.get("name", sid))
+		st_name.custom_minimum_size = Vector2(64.0, 0.0)
+		st_name.add_theme_font_size_override("font_size", 12)
+		st_name.add_theme_color_override("font_color",
+			Color(String(st_cfg.get("color", "#9aa3b2"))) if active else Color("5a6270"))
+		st_name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(st_name)
+		var desc := Label.new()
+		desc.text = String(st_cfg.get("desc", ""))
+		desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc.add_theme_font_size_override("font_size", 11)
+		desc.add_theme_color_override("font_color", Color("9aa3b2") if active else Color("4a5260"))
+		desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(desc)
+		_pause_left.add_child(row)
 	var sep := ColorRect.new()
 	sep.color = Color("2c3340")
 	sep.custom_minimum_size = Vector2(0.0, 1.0)
