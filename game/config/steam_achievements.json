@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "app_id": 0,
+  "notes": "Copy each entry into Steamworks Partner Site > App Admin > Stats and Achievements. API names must remain unchanged.",
+  "achievements": [
+    {
+      "id": "first_blood",
+      "api_name": "ACH_FIRST_BLOOD",
+      "name": "初次击杀",
+      "description": "击败第一个敌人",
+      "stat": "kills",
+      "target": 1,
+      "hidden": false,
+      "icon": "achievement_first_blood"
+    },
+    {
+      "id": "slayer_100",
+      "api_name": "ACH_SLAYER_100",
+      "name": "百人斩",
+      "description": "累计击败 100 个敌人",
+      "stat": "kills",
+      "target": 100,
+      "hidden": false,
+      "icon": "achievement_slayer_100"
+    },
+    {
+      "id": "slayer_1000",
+      "api_name": "ACH_SLAYER_1000",
+      "name": "千人斩",
+      "description": "累计击败 1000 个敌人",
+      "stat": "kills",
+      "target": 1000,
+      "hidden": false,
+      "icon": "achievement_slayer_1000"
+    },
+    {
+      "id": "survivor_5",
+      "api_name": "ACH_SURVIVOR_5",
+      "name": "站稳脚跟",
+      "description": "单局推进到第 5 波",
+      "stat": "best_wave",
+      "target": 5,
+      "hidden": false,
+      "icon": "achievement_survivor_5"
+    },
+    {
+      "id": "clear_10",
+      "api_name": "ACH_CLEAR_10",
+      "name": "通关达人",
+      "description": "推进到第 10 波（标准通关线）",
+      "stat": "best_wave",
+      "target": 10,
+      "hidden": false,
+      "icon": "achievement_clear_10"
+    },
+    {
+      "id": "boss_hunter",
+      "api_name": "ACH_BOSS_HUNTER",
+      "name": "BOSS 猎手",
+      "description": "击破 1 个 BOSS",
+      "stat": "boss_kills",
+      "target": 1,
+      "hidden": false,
+      "icon": "achievement_boss_hunter"
+    },
+    {
+      "id": "boss_10",
+      "api_name": "ACH_BOSS_10",
+      "name": "BOSS 克星",
+      "description": "累计击破 10 个 BOSS",
+      "stat": "boss_kills",
+      "target": 10,
+      "hidden": false,
+      "icon": "achievement_boss_10"
+    },
+    {
+      "id": "evolver",
+      "api_name": "ACH_EVOLVER",
+      "name": "进化时刻",
+      "description": "完成 1 次武器进化",
+      "stat": "evolutions",
+      "target": 1,
+      "hidden": false,
+      "icon": "achievement_evolver"
+    },
+    {
+      "id": "status_master",
+      "api_name": "ACH_STATUS_MASTER",
+      "name": "状态大师",
+      "description": "累计触发 100 次异常状态",
+      "stat": "status_triggers",
+      "target": 100,
+      "hidden": false,
+      "icon": "achievement_status_master"
+    },
+    {
+      "id": "shopper",
+      "api_name": "ACH_SHOPPER",
+      "name": "购物达人",
+      "description": "累计商店购买 50 次",
+      "stat": "purchases",
+      "target": 50,
+      "hidden": false,
+      "icon": "achievement_shopper"
+    },
+    {
+      "id": "veteran",
+      "api_name": "ACH_VETERAN",
+      "name": "老兵",
+      "description": "累计开始 10 局游戏",
+      "stat": "runs",
+      "target": 10,
+      "hidden": false,
+      "icon": "achievement_veteran"
+    },
+    {
+      "id": "endless_20",
+      "api_name": "ACH_ENDLESS_20",
+      "name": "炼狱行者",
+      "description": "单局推进到第 20 波（无尽）",
+      "stat": "best_wave",
+      "target": 20,
+      "hidden": false,
+      "icon": "achievement_endless_20"
+    }
+  ]
+}

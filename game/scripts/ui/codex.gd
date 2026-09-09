@@ -45,6 +45,7 @@ var _filter_group := ButtonGroup.new()
 var _filter_btns: Array = []
 var _filter := "all"     # all / unlocked / locked
 var _query := ""
+var _page_tween: Tween = null
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -80,6 +81,7 @@ func open_entry(cat: String, id: String) -> void:
 	Haptics.rumble(0.1, 0.0, 0.04)
 
 func _close() -> void:
+	Sfx.play("ui_back")
 	visible = false
 	closed.emit()
 
@@ -145,6 +147,7 @@ func _build() -> void:
 		tb.set_meta("tab", tid)
 		tb.add_theme_font_size_override("font_size", 15)
 		tb.pressed.connect(func() -> void: _select_tab(tid))
+		_wire_hover_sfx(tb)
 		tab_row.add_child(tb)
 		_tab_btns.append(tb)
 	for i in _tab_btns.size():
@@ -183,6 +186,7 @@ func _build() -> void:
 		fb.set_meta("filter", fid)
 		fb.button_pressed = fid == _filter
 		fb.pressed.connect(func() -> void: _set_filter(fid))
+		_wire_hover_sfx(fb)
 		filter_row.add_child(fb)
 		_filter_btns.append(fb)
 	for i in _filter_btns.size():
@@ -221,11 +225,13 @@ func _build() -> void:
 	_close_btn.text = "返 回（Esc）"
 	_close_btn.custom_minimum_size = Vector2(0.0, 44.0)
 	_close_btn.pressed.connect(_close)
+	_wire_hover_sfx(_close_btn)
 	root.add_child(_close_btn)
 	_select_tab("status", false)
 
 ## 切换分类；focus=true 时把焦点交给该分类首个条目（手柄导航）
 func _select_tab(tab_id: String, focus := true) -> void:
+	var previous_tab := _tab
 	_tab = tab_id
 	for tb in _tab_btns:
 		if String(tb.get_meta("tab")) == tab_id:
@@ -241,6 +247,9 @@ func _select_tab(tab_id: String, focus := true) -> void:
 		_selected_id = String(entries[0].id)
 	_rebuild_list()
 	if focus:
+		Sfx.play("ui_page")
+		_animate_page(1.0 if _tab_index(tab_id) >= _tab_index(previous_tab) else -1.0)
+	if focus:
 		_focus_selected()
 	Haptics.rumble(0.1, 0.0, 0.04)
 
@@ -251,6 +260,8 @@ func _select_entry(id: String) -> void:
 			b.button_pressed = true
 			break
 	_refresh(id)
+	Sfx.play("ui_click")
+	_animate_page(1.0)
 	Haptics.rumble(0.1, 0.0, 0.04)
 
 func _focus_selected() -> void:
@@ -363,6 +374,7 @@ func _rebuild_list() -> void:
 		b.add_theme_color_override("font_focus_color", col)
 		b.set_meta("id", eid)
 		b.pressed.connect(func() -> void: _select_entry(eid))
+		_wire_hover_sfx(b)
 		if eid == _selected_id:
 			b.button_pressed = true
 		_list_box.add_child(b)
@@ -424,6 +436,8 @@ func _set_filter(fid: String) -> void:
 			b.button_pressed = true
 			break
 	_rebuild_list()
+	Sfx.play("ui_click")
+	_animate_page(1.0)
 	_focus_selected()
 	Haptics.rumble(0.1, 0.0, 0.04)
 
@@ -488,7 +502,7 @@ func _detail_stats() -> void:
 		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
 			str(CodexData.stat(key))))
 	_detail.add_child(_section("成长与收集"))
-	for key in ["runs", "evolutions", "purchases", "best_score"]:
+	for key in ["runs", "victories", "evolutions", "purchases", "best_score"]:
 		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
 			str(CodexData.stat(key))))
 	_detail.add_child(_section("图鉴解锁"))
@@ -940,3 +954,28 @@ func _empty(text: String) -> Label:
 	l.add_theme_color_override("font_color", Color("5a6270"))
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
+
+func _wire_hover_sfx(control: Control) -> void:
+	control.mouse_entered.connect(func() -> void: Sfx.play("ui_hover"))
+
+func _tab_index(tab_id: String) -> int:
+	for i in TABS.size():
+		if String(TABS[i].id) == tab_id:
+			return i
+	return 0
+
+func _animate_page(direction: float) -> void:
+	if _detail == null:
+		return
+	if _page_tween != null and _page_tween.is_valid():
+		_page_tween.kill()
+	_detail.modulate.a = 0.0
+	_detail.scale = Vector2(0.985, 0.985)
+	_detail.pivot_offset = _detail.size * 0.5
+	_detail.rotation = 0.008 * direction
+	_page_tween = create_tween()
+	_page_tween.set_parallel(true)
+	_page_tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_page_tween.tween_property(_detail, "modulate:a", 1.0, 0.16)
+	_page_tween.tween_property(_detail, "scale", Vector2.ONE, 0.16)
+	_page_tween.tween_property(_detail, "rotation", 0.0, 0.16)

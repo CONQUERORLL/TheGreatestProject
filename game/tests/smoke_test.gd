@@ -42,6 +42,39 @@ func _ready() -> void:
 	if PlatformAchievements == null or PlatformAchievements.is_available():
 		_fail("PlatformAchievements 未注册或 headless 误检测到 Steam 后端")
 		return
+	if not PlatformAchievements.steam_config_valid() \
+			or PlatformAchievements.steam_definitions().size() != 12:
+		_fail("Steamworks 12 项成就配置未完整对齐")
+		return
+	var steam_defs: Dictionary = PlatformAchievements.steam_definitions()
+	for achievement_id in CodexData.ACHIEVEMENTS:
+		var aid := String(achievement_id)
+		if not steam_defs.has(aid) \
+				or String(steam_defs[aid].get("api_name", "")) \
+					!= String(PlatformAchievements.STEAM_IDS.get(aid, "")):
+			_fail("Steamworks API Name 映射错误（%s）" % aid)
+			return
+	for category in CodexData.UNLOCK_REWARDS:
+		var unlock_reward := CodexData.unlock_reward(String(category))
+		if unlock_reward < 4 or unlock_reward > 7:
+			_fail("图鉴奖励超出平衡范围（%s=%d）" % [String(category), unlock_reward])
+			return
+	for achievement_id in CodexData.ACHIEVEMENTS:
+		if CodexData.achievement_reward(String(achievement_id)) <= 0:
+			_fail("成就奖励必须为正数（%s）" % String(achievement_id))
+			return
+	if not CodexData.achievement_reward("first_blood") \
+			< CodexData.achievement_reward("slayer_100") \
+			or not CodexData.achievement_reward("slayer_100") \
+				< CodexData.achievement_reward("slayer_1000") \
+			or not CodexData.achievement_reward("survivor_5") \
+				< CodexData.achievement_reward("clear_10") \
+			or not CodexData.achievement_reward("clear_10") \
+				< CodexData.achievement_reward("endless_20") \
+			or not CodexData.achievement_reward("boss_hunter") \
+				< CodexData.achievement_reward("boss_10"):
+		_fail("成就奖励未保持阶梯递进")
+		return
 	var forwarded_before: int = PlatformAchievements.forwarded_count()
 	EventBus.achievement_unlocked.emit("first_blood")
 	if PlatformAchievements.forwarded_count() <= forwarded_before \
@@ -59,12 +92,30 @@ func _ready() -> void:
 		_fail("平台成就离线队列未从磁盘恢复")
 		return
 	PlatformAchievements.set_backend_for_tests("steam")
+	if not PlatformAchievements.steam_stats_ready():
+		_fail("注入 Steam 后端未进入统计就绪态")
+		return
 	PlatformAchievements._flush_pending()
 	if PlatformAchievements.pending_count() != 0 \
-			or not _forwarded_call(PlatformAchievements.test_calls(), "ACH_FIRST_BLOOD"):
+			or not _forwarded_call(PlatformAchievements.test_calls(), "ACH_FIRST_BLOOD") \
+			or not _store_stats_call(PlatformAchievements.test_calls()):
 		_fail("平台成就未在后端可用时补发（calls=%s）" % str(PlatformAchievements.test_calls()))
 		return
 	PlatformAchievements.set_backend_for_tests("")   # 还原真实检测（headless 无 SDK）
+	# 胜利统计：事件累加后写盘，再从磁盘恢复；旧格式缺少 victories 时默认为 0
+	var victories_before: int = CodexData.stat("victories")
+	EventBus.run_ended.emit(true)
+	EventBus.run_ended.emit(false)
+	if CodexData.stat("victories") != victories_before + 1:
+		_fail("胜利统计累加错误（%d -> %d）"
+			% [victories_before, CodexData.stat("victories")])
+		return
+	CodexData._save_now()
+	CodexData.reset_for_tests()
+	CodexData._load()
+	if CodexData.stat("victories") != victories_before + 1:
+		_fail("胜利统计保存/加载失败（%d）" % CodexData.stat("victories"))
+		return
 	if Music.current_track() != "battle":
 		_fail("战斗 BGM 未随主场景启动（%s）" % Music.current_track())
 		return
@@ -602,7 +653,9 @@ func _check_items() -> void:
 		_fail("武器 roll 经 apply_hit_roll 未施加燃烧")
 		return
 	# 状态触发反馈：首次施加生成粒子+飘字+彩色环，并发 status_applied 信号（叠层不重复）
-	if not Sfx._streams.has("status_burn") or not Sfx._streams.has("status_stun"):
+	if not Sfx._streams.has("status_burn") or not Sfx._streams.has("status_stun") \
+			or not Sfx._streams.has("ui_click") or not Sfx._streams.has("ui_hover") \
+			or not Sfx._streams.has("ui_page") or not Sfx._streams.has("ui_back"):
 		_fail("状态触发音效未注册")
 		return
 	e_stat.statuses.clear()
@@ -1344,6 +1397,15 @@ func _check_items() -> void:
 	if wtext.find("基础伤害") < 0 or wtext.find("进化") < 0:
 		_fail("图鉴武器详情缺字段（%s）" % wtext.substr(0, 60))
 		return
+	if menu._codex._page_tween == null or not menu._codex._page_tween.is_valid():
+		_fail("图鉴详情未创建翻页 Tween")
+		return
+	await get_tree().create_timer(0.24).timeout
+	if absf(menu._codex._detail.modulate.a - 1.0) > 0.01 \
+			or menu._codex._detail.scale != Vector2.ONE \
+			or absf(menu._codex._detail.rotation) > 0.0001:
+		_fail("图鉴翻页动画未恢复最终状态")
+		return
 	# 道具页 / 升级页：数量对齐注册表，道具显示关联状态
 	menu._codex._select_tab("item")
 	if menu._codex._list_btns.size() != Registry.items.size():
@@ -1742,6 +1804,12 @@ func _forwarded_call(calls: Array, api: String) -> bool:
 	for c in calls:
 		if c is Array and c.size() >= 2 \
 				and String(c[0]) == "setAchievement" and String(c[1]) == api:
+			return true
+	return false
+
+func _store_stats_call(calls: Array) -> bool:
+	for c in calls:
+		if c is Array and not c.is_empty() and String(c[0]) == "storeStats":
 			return true
 	return false
 

@@ -14,42 +14,43 @@ const CAT_NAMES := {
 
 ## 图鉴首次解锁奖励（土豆精华）：收集越多，局外天赋成型越快
 const UNLOCK_REWARDS := {
-	"status": 6, "weapon": 10, "item": 8, "upgrade": 6, "enemy": 8,
+	"status": 4, "weapon": 7, "item": 5, "upgrade": 4, "enemy": 6,
 }
 
 ## 成就定义：stat 计数器达到 target 即达成（desc 同时用于图鉴详情）
 ## reward = 达成后一次性发放的土豆精华（MetaProgress），Steam 成就可另订阅 EventBus.achievement_unlocked
 const ACHIEVEMENTS := {
 	"first_blood": { "name": "初次击杀", "ico": "🩸", "desc": "击败第一个敌人",
-		"stat": "kills", "target": 1, "reward": 10 },
+		"stat": "kills", "target": 1, "reward": 6 },
 	"slayer_100": { "name": "百人斩", "ico": "⚔", "desc": "累计击败 100 个敌人",
-		"stat": "kills", "target": 100, "reward": 30 },
+		"stat": "kills", "target": 100, "reward": 20 },
 	"slayer_1000": { "name": "千人斩", "ico": "💀", "desc": "累计击败 1000 个敌人",
-		"stat": "kills", "target": 1000, "reward": 150 },
+		"stat": "kills", "target": 1000, "reward": 90 },
 	"survivor_5": { "name": "站稳脚跟", "ico": "🛡", "desc": "单局推进到第 5 波",
-		"stat": "best_wave", "target": 5, "reward": 20 },
+		"stat": "best_wave", "target": 5, "reward": 12 },
 	"clear_10": { "name": "通关达人", "ico": "👑", "desc": "推进到第 10 波（标准通关线）",
-		"stat": "best_wave", "target": 10, "reward": 60 },
+		"stat": "best_wave", "target": 10, "reward": 36 },
 	"boss_hunter": { "name": "BOSS 猎手", "ico": "🎯", "desc": "击破 1 个 BOSS",
-		"stat": "boss_kills", "target": 1, "reward": 25 },
+		"stat": "boss_kills", "target": 1, "reward": 16 },
 	"boss_10": { "name": "BOSS 克星", "ico": "💥", "desc": "累计击破 10 个 BOSS",
-		"stat": "boss_kills", "target": 10, "reward": 120 },
+		"stat": "boss_kills", "target": 10, "reward": 72 },
 	"evolver": { "name": "进化时刻", "ico": "🔱", "desc": "完成 1 次武器进化",
-		"stat": "evolutions", "target": 1, "reward": 40 },
+		"stat": "evolutions", "target": 1, "reward": 24 },
 	"status_master": { "name": "状态大师", "ico": "🔥", "desc": "累计触发 100 次异常状态",
-		"stat": "status_triggers", "target": 100, "reward": 50 },
+		"stat": "status_triggers", "target": 100, "reward": 30 },
 	"shopper": { "name": "购物达人", "ico": "🛒", "desc": "累计商店购买 50 次",
-		"stat": "purchases", "target": 50, "reward": 40 },
+		"stat": "purchases", "target": 50, "reward": 24 },
 	"veteran": { "name": "老兵", "ico": "🎖", "desc": "累计开始 10 局游戏",
-		"stat": "runs", "target": 10, "reward": 30 },
+		"stat": "runs", "target": 10, "reward": 18 },
 	"endless_20": { "name": "炼狱行者", "ico": "🌋", "desc": "单局推进到第 20 波（无尽）",
-		"stat": "best_wave", "target": 20, "reward": 200 },
+		"stat": "best_wave", "target": 20, "reward": 120 },
 }
 
 const STAT_NAMES := {
 	"kills": "累计击杀", "boss_kills": "BOSS 击破", "waves": "累计清波",
 	"best_wave": "最远波次", "status_triggers": "状态触发", "runs": "累计局数",
 	"evolutions": "武器进化", "purchases": "商店购买", "best_score": "最高积分",
+	"victories": "胜利局数",
 }
 
 var _seen: Dictionary = {}          # category -> { id: true }
@@ -69,6 +70,7 @@ func _ready() -> void:
 	EventBus.run_started.connect(_on_run_started)
 	EventBus.status_applied.connect(_on_status_applied)
 	EventBus.item_purchased.connect(_on_item_purchased)
+	EventBus.run_ended.connect(_on_run_ended)
 	# 旧档可能只记了统计、没记成就；延后到本帧末补判，此时 MetaProgress autoload 已就绪可发奖励
 	call_deferred("_check_achievements")
 	call_deferred("_check_unlock_rewards")
@@ -275,6 +277,10 @@ func _on_status_applied(_id: String, _stacks: int, _pos: Vector2) -> void:
 
 func _on_item_purchased(_id: String) -> void:
 	add_stat("purchases")
+
+func _on_run_ended(victory: bool) -> void:
+	if victory:
+		add_stat("victories")
 
 # ---------------- 持久化 ----------------
 

@@ -322,16 +322,21 @@ func _refresh_status() -> void:
 	var pa = get_node_or_null("/root/PlatformAchievements")
 	var backend := "未接入"
 	var pending := 0
+	var steam_config := "配置缺失"
+	var steam_status := "未接入"
 	if pa != null:
 		backend = String(pa.backend_name()) if pa.is_available() else "未接入"
 		pending = pa.pending_count()
+		steam_config = "配置 OK" if pa.steam_config_valid() else "配置缺失"
+		if pa.has_method("steam_status"):
+			steam_status = String(pa.steam_status())
 	var seen := 0
 	var total := 0
 	for cat in CodexData.CATEGORIES:
 		seen += CodexData.unlocked_count(String(cat))
 		total += CodexData.total_entries(String(cat))
-	_status_label.text = "平台成就：%s · 待上报 %d · 图鉴 %d/%d · 成就 %d/%d" % [
-		backend, pending, seen, total,
+	_status_label.text = "平台成就：%s · %s · %s · 待上报 %d · 图鉴 %d/%d · 成就 %d/%d" % [
+		backend, steam_config, steam_status, pending, seen, total,
 		CodexData.unlocked_achievement_count(), CodexData.ACHIEVEMENTS.size()]
 
 func _kill_all() -> void:
