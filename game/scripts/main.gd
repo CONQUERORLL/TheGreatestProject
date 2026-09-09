@@ -81,6 +81,11 @@ func _ready() -> void:
 	touch.name = "TouchControls"
 	$UI.add_child(touch)
 	touch.pause_requested.connect(toggle_pause)
+	# 桌面鼠标点触移动（单击走向点击点 / 长按拖动跟随光标）
+	var mouse_move := preload("res://scripts/ui/mouse_move.gd").new()
+	mouse_move.name = "MouseMove"
+	$UI.add_child(mouse_move)
+	mouse_move.player = player
 	if restored_wave > 0:
 		if SaveRun.restored_checkpoint == SaveRun.CHECKPOINT_WAVE_START:
 			wave_manager.start_wave(restored_wave)

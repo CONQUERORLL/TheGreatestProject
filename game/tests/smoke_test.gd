@@ -706,6 +706,40 @@ func _check_items() -> void:
 		_fail("touch_move 未驱动玩家移动")
 		return
 	print("SMOKE: items track/sell + pause panel + touch layer OK")
+	# 桌面鼠标点触移动：单击朝目标移动 → 到达停下；拖动更新方向；键盘接管取消
+	var mm: Control = _main.get_node("UI/MouseMove")
+	if mm == null or mm.player != p2:
+		_fail("缺少 MouseMove 鼠标移动层或未绑定玩家")
+		return
+	var saved_pos: Vector2 = p2.global_position
+	var saved_vel: Vector2 = p2.velocity
+	mm._start(saved_pos + Vector2(240.0, 0.0))
+	mm._process(0.016)
+	if GameState.mouse_move.x <= 0.5 or absf(GameState.mouse_move.y) > 0.01:
+		_fail("鼠标单击未产生朝目标移动输入（%s）" % str(GameState.mouse_move))
+		return
+	mm._holding = true
+	mm._target = saved_pos + Vector2(0.0, 240.0)   # 模拟拖动更新目标
+	mm._process(0.016)
+	if GameState.mouse_move.y <= 0.5 or absf(GameState.mouse_move.x) > 0.01:
+		_fail("鼠标拖动未更新移动方向（%s）" % str(GameState.mouse_move))
+		return
+	mm._target = saved_pos + Vector2(6.0, 0.0)     # 目标进入到达半径
+	mm._process(0.016)
+	if mm._active or GameState.mouse_move != Vector2.ZERO:
+		_fail("鼠标移动到达目标后未停下")
+		return
+	mm._start(saved_pos + Vector2(240.0, 0.0))
+	Input.action_press("move_left")
+	mm._process(0.016)
+	Input.action_release("move_left")
+	if mm._active or GameState.mouse_move != Vector2.ZERO:
+		_fail("键盘输入未取消鼠标移动")
+		return
+	p2.global_position = saved_pos
+	p2.velocity = saved_vel
+	mm._cancel()
+	print("SMOKE: mouse move OK")
 	# ---- 三槽存档验证：自动档入槽1 → 槽间隔离 → 篡改恢复一致 → 清档 + 损档容错 ----
 	for i: int in [2, 3]:   # 清其他槽残留，不动槽 1 的自动存档
 		GameState.slot_id = i
