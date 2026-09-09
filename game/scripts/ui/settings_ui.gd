@@ -1,5 +1,5 @@
 extends Control
-## 设置界面：画面（分辨率/窗口模式/帧率）+ 音量 + 按键绑定（即时重绑定）+ 手柄按键说明
+## 设置界面：画面（分辨率/窗口模式/帧率）+ 主/音效/音乐音量 + 按键绑定（即时重绑定）+ 手柄说明
 ## 全部改动即时生效并写入 user://settings.cfg（Settings autoload）
 
 var _bind_rows: Dictionary = {}   # action -> { "label": Label, "btn": Button }
@@ -111,22 +111,30 @@ func _build_display(box: VBoxContainer) -> void:
 
 func _build_audio(box: VBoxContainer) -> void:
 	box.add_child(_section("音量"))
+	_volume_row(box, "主音量", Settings.master_vol, Settings.set_master)
+	_volume_row(box, "音效", Settings.sfx_vol, Settings.set_sfx)
+	_volume_row(box, "音乐", Settings.music_vol, Settings.set_music)
+
+## 单条音量滑杆：label + 滑杆 + 百分比；拖动即时应用并持久化
+func _volume_row(box: VBoxContainer, label_text: String, value: float, setter: Callable) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	box.add_child(row)
-	row.add_child(_field_label("主音量"))
+	var name_l := _field_label(label_text)
+	name_l.custom_minimum_size = Vector2(72.0, 0.0)
+	row.add_child(name_l)
 	var slider := HSlider.new()
 	slider.min_value = 0.0
 	slider.max_value = 100.0
 	slider.step = 5.0
-	slider.value = Settings.master_vol * 100.0
+	slider.value = value * 100.0
 	slider.custom_minimum_size = Vector2(300.0, 30.0)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var val_l := Label.new()
 	val_l.text = "%d%%" % int(slider.value)
 	val_l.custom_minimum_size = Vector2(56.0, 0.0)
 	slider.value_changed.connect(func(v: float) -> void:
-		Settings.set_master(v / 100.0)
+		setter.call(v / 100.0)
 		val_l.text = "%d%%" % int(v))
 	row.add_child(slider)
 	row.add_child(val_l)

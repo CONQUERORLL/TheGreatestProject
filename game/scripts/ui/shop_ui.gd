@@ -2,7 +2,7 @@ extends Control
 ## 商店 UI（波末清场后由 main 打开；节点全部代码构建，见 godot-game-ui 技能）
 ## 功能：4 格商品（武器/道具/升级属性，来自 Registry）+ 锁定 + 刷新 + 回血 + 下一波
 ## 布局：左侧角色属性面板 ｜ 中间商品 ｜ 右侧已购道具（可按 50% 购入价出售）
-## 卡面按稀有度着色：common 白 / rare 蓝 / epic 紫 / legendary 红
+## 卡面按稀有度着色：common 白 / rare 蓝 / epic 紫 / mythic 金 / legendary 红
 ## 输入：鼠标 + 手柄焦点导航（卡片行 ↓ 动作区，动作区 ↑ 第一张可购卡）
 
 var player  # characters/player.gd 引用，由 main 注入
@@ -11,6 +11,8 @@ var goods: Array = []    # 商品 [{kind, wtype/id, ico, name, desc, rarity, bas
 
 var _reroll_cost := 0
 var _wave := 0
+var _save_dirty := false    # 有未落盘的商店操作
+var _save_pending := false  # 合并写定时器已排队
 
 var _title: Label
 var _mat: Label
@@ -156,13 +158,12 @@ func _refresh_left() -> void:
 	var ch: Dictionary = Registry.get_character(GameState.character_id)
 	var head := HBoxContainer.new()
 	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var ico := Label.new()
-	ico.text = ch.get("ico", "🧑")
-	ico.add_theme_font_size_override("font_size", 22)
-	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	head.add_child(ico)
+	var av := CharacterAvatar.new()
+	av.setup(GameState.character_id, 44.0)
+	head.add_child(av)
 	var nm := Label.new()
 	nm.text = " %s" % ch.get("name", "?")
+	nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nm.add_theme_font_size_override("font_size", 17)
 	nm.add_theme_color_override("font_color", Color("e8b84b"))
 	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -170,7 +171,7 @@ func _refresh_left() -> void:
 	_left_box.add_child(head)
 	var s: Dictionary = player.stats
 	_left_box.add_child(_stat_row("生命", "%d / %d" % [roundi(player.hp), roundi(s.max_hp)]))
-	_left_box.add_child(_stat_row("武器", "%d / %d" % [player.weapons.size(), Config.WEAPON_SLOTS]))
+	_left_box.add_child(_stat_row("武器", "%d / %d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
 	_left_box.add_child(_stat_row("伤害", "x%.2f" % float(s.dmg_mult)))
 	_left_box.add_child(_stat_row("攻速", "x%.2f" % float(s.as_mult)))
 	_left_box.add_child(_stat_row("移速", "%.0f" % float(s.base_speed * s.speed_mult)))
@@ -182,6 +183,13 @@ func _refresh_left() -> void:
 	_left_box.add_child(_stat_row("回复", "%.1f / 秒" % float(s.regen)))
 	_left_box.add_child(_stat_row("收获率", "+%d%%" % roundi(float(s.harvesting) * 100.0)))
 	_left_box.add_child(_stat_row("吸血", "%.0f / 击杀" % float(s.lifesteal)))
+	var status_hit := 0.0
+	for sid in Config.STATUS:
+		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
+	if float(s.status_dmg_mult) > 0.0 or float(s.status_dur_mult) > 0.0 or status_hit > 0.0:
+		_left_box.add_child(_stat_row("异常强化", "伤害 +%d%%｜时长 +%d%%｜命中 +%d%%"
+			% [roundi(float(s.status_dmg_mult) * 100.0), roundi(float(s.status_dur_mult) * 100.0),
+			roundi(status_hit * 100.0)]))
 	# 角色特性
 	var sep := ColorRect.new()
 	sep.color = Color("2c3340")
@@ -243,23 +251,27 @@ func _refresh_right() -> void:
 func _sell(id: String) -> void:
 	var got: int = player.sell_item(id)
 	if got > 0:
-		GameState.materials += got
+		GameState.add_materials(got)
 		Haptics.rumble(0.2, 0.0, 0.06)
 		Sfx.play("ui_select")
 		_refresh()
-		SaveRun.save(_wave + 1, player)   # 出售后即时重存
+		_save_checkpoint()   # 出售后即时重存
 
 # ---------------- 开关与商品 ----------------
 
-## 打开商店（原型 openShop：刷新费 = 8 + wave*3，重掷商品）
+## 打开商店（原型 openShop：刷新费 = 8 + wave*3 × 砍价折扣，重掷商品）
 func open(shop_wave: int) -> void:
 	_wave = shop_wave
-	_reroll_cost = Config.shop_reroll_cost(_wave)
+	_reroll_cost = _discounted_reroll(Config.shop_reroll_cost(_wave))
 	GameState.set_phase(GameState.Phase.SHOP)
 	_roll_goods()
 	_title.text = "商店 · 备战第 %d 波" % (_wave + 1)
 	visible = true
 	_refresh()
+	# 轻淡入过渡（0.12s，不阻塞交互）
+	modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(self, "modulate:a", 1.0, 0.12)
 	_grab_first_focus()
 
 func goods_count() -> int:
@@ -268,15 +280,21 @@ func goods_count() -> int:
 func get_reroll_cost() -> int:
 	return _reroll_cost
 
+## 砍价大师天赋：刷新费按等级折扣（最低 60 折）
+func _discounted_reroll(base: int) -> int:
+	var disc := minf(0.40, MetaProgress.effect_sum("reroll"))
+	return maxi(1, roundi(float(base) * (1.0 - disc)))
+
 ## 外部/测试接口：锁定指定格（刷新时保留；已售格不可锁）
 func set_lock(i: int, on: bool) -> void:
 	if i >= 0 and i < goods.size() and not goods[i].sold:
 		goods[i].locked = on
 
 ## 4 格商品：42% 武器格（满槽则跳过），29% 升级属性，其余道具
+## 升级/道具按稀有度加权抽取（品阶越高越稀有，权重随波次小幅提升）
 func _roll_goods() -> void:
 	goods = []
-	var weapon_full: bool = player.weapons.size() >= Config.WEAPON_SLOTS
+	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in 4:
 		goods.append(_roll_one(weapon_full))
 
@@ -289,19 +307,29 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 			"desc": c.desc, "rarity": c.rarity,
 			"base_price": Registry.weapon_price(wt), "sold": false, "locked": false }
 	if r < Config.WEAPON_SHOP_CHANCE + Config.SHOP_UPGRADE_CHANCE:
-		var u: Dictionary = GameRng.pick(Registry.upgrade_list())
+		var u: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.upgrade_list()))
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
 			"base_price": int(u.get("price", 22)), "sold": false, "locked": false }
-	var it: Dictionary = GameRng.pick(Registry.item_list())
+	var it: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.item_list()))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
 		"base_price": int(it.price), "sold": false, "locked": false }
+
+## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) }]
+func _rarity_pool(entries: Array) -> Array:
+	var pool: Array = []
+	for e in entries:
+		pool.append({ "item": e,
+			"w": Config.rarity_weight(String(e.get("rarity", "common")), _wave) })
+	return pool
 
 func _price_of(g: Dictionary) -> int:
 	return Config.shop_price(g.base_price, _wave)
 
 func _refresh() -> void:
+	# 记录当前焦点所在卡片，重建后优先原位恢复（避免焦点跳回第一张）
+	var focus_idx := _focused_card_index()
 	_mat.text = "◆ %d" % GameState.materials
 	_refresh_left()
 	_refresh_right()
@@ -313,7 +341,27 @@ func _refresh() -> void:
 	_build_goods()
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
 	if visible:
-		_grab_first_focus()
+		_grab_focus_near(focus_idx)
+
+## 当前焦点位于哪张商品卡（buy/lock 钮均可），无焦点返回 -1
+func _focused_card_index() -> int:
+	var focus := get_viewport().gui_get_focus_owner()
+	if focus == null:
+		return -1
+	for i in _goods_box.get_child_count():
+		var card: Control = _goods_box.get_child(i)
+		if focus == card.get_meta("buy_btn") or focus == card.get_meta("lock_btn"):
+			return i
+	return -1
+
+## 恢复焦点：优先原位（未禁用），否则第一张可购卡/任意卡
+func _grab_focus_near(prefer: int) -> void:
+	if prefer >= 0 and prefer < _goods_box.get_child_count():
+		var btn: Button = _goods_box.get_child(prefer).get_meta("buy_btn")
+		if btn != null and not btn.disabled:
+			btn.grab_focus()
+			return
+	_grab_first_focus()
 
 func _build_goods() -> void:
 	for c in _goods_box.get_children():
@@ -381,7 +429,7 @@ func _make_good_card(i: int) -> Control:
 	name_l.add_theme_color_override("font_color", Config.rarity_color(g.rarity))
 	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(name_l)
-	# 武器显示已拥有数量（同名武器聚合提示）
+	# 武器显示已拥有数量（同名武器聚合提示）+ 进化进度（如 3/4）
 	if g.kind == "weapon":
 		var owned := 0
 		for w in player.weapons:
@@ -389,6 +437,15 @@ func _make_good_card(i: int) -> Control:
 				owned += 1
 		if owned > 0:
 			name_l.text = "%s  x%d" % [g.name, owned]
+		# 进化提示：拥有同名武器时显示进度/预告
+		var wcfg: Dictionary = Registry.weapons.get(g.wtype, {})
+		var need := int(wcfg.get("evolve_need", 0))
+		if need > 0 and owned > 0:
+			var ex_name: String = Registry.weapons[wcfg.evolve_to].name
+			if owned >= need:
+				g.desc = "★ 波末自动进化 → %s" % ex_name
+			else:
+				g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
 	desc.text = g.desc
 	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -422,7 +479,7 @@ func _make_good_card(i: int) -> Control:
 		btn.text = "%d ◆" % price
 		# 满槽武器拦截在扣钱前（修正原型 buyGood 先扣钱后检查的坑）
 		btn.disabled = GameState.materials < price \
-			or (g.kind == "weapon" and player.weapons.size() >= Config.WEAPON_SLOTS)
+			or (g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots())
 		btn.pressed.connect(buy.bind(i))
 	row.add_child(btn)
 	panel.set_meta("buy_btn", btn)
@@ -449,9 +506,9 @@ func buy(i: int) -> void:
 	var price := _price_of(g)
 	if g.sold or GameState.materials < price:
 		return
-	if g.kind == "weapon" and player.weapons.size() >= Config.WEAPON_SLOTS:
+	if g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots():
 		return
-	GameState.materials -= price
+	GameState.add_materials(-price)
 	g.sold = true
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
 	Sfx.play("buy")
@@ -461,19 +518,21 @@ func buy(i: int) -> void:
 		player.apply_upgrade(g.id)
 	else:
 		player.apply_item(g.id)
+	var purchased_id := String(g.wtype) if g.kind == "weapon" else String(g.id)
+	EventBus.item_purchased.emit(purchased_id)
 	_refresh()
-	SaveRun.save(_wave + 1, player)   # 商店内即时重存，退出不丢购物
+	_save_checkpoint()   # 商店内即时重存，退出不丢购物
 
-## 刷新：费用 ×1.4 递增；已售格与锁定格原位保留，其余重 roll
+## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
 func reroll() -> void:
 	if GameState.materials < _reroll_cost:
 		return
-	GameState.materials -= _reroll_cost
-	_reroll_cost = roundi(_reroll_cost * 1.4)
+	GameState.add_materials(-_reroll_cost)
+	_reroll_cost = _discounted_reroll(roundi(_reroll_cost * 1.4))
 	Haptics.rumble(0.25, 0.0, 0.08)
 	Sfx.play("reroll")
 	var old := goods.duplicate(true)
-	var weapon_full: bool = player.weapons.size() >= Config.WEAPON_SLOTS
+	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	goods = []
 	for i in 4:
 		if old[i].sold or old[i].locked:
@@ -481,24 +540,41 @@ func reroll() -> void:
 		else:
 			goods.append(_roll_one(weapon_full))
 	_refresh()
-	SaveRun.save(_wave + 1, player)   # 刷新扣费后即时重存
+	_save_checkpoint()   # 刷新扣费后即时重存
 
 ## 回血：15 ◆ 回复 50% 最大生命（原型 btnHeal）
 func heal() -> void:
 	if GameState.materials < Config.SHOP_HEAL_PRICE:
 		return
-	GameState.materials -= Config.SHOP_HEAL_PRICE
+	GameState.add_materials(-Config.SHOP_HEAL_PRICE)
 	player.hp = minf(player.stats.max_hp, player.hp + player.stats.max_hp * 0.5)
 	Haptics.rumble(0.25, 0.0, 0.08)
 	Sfx.play("heal")
 	_refresh()
-	SaveRun.save(_wave + 1, player)   # 回血扣费后即时重存
+	_save_checkpoint()   # 回血扣费后即时重存
 
-## 下一波：关商店 → 下一波 intro（原型 btnNextWave）；隐藏自动释放手柄焦点
+## 存档合并写：商店内连续购买/刷新/回血只落一次盘（0.4s 内合并），
+## 下一波/返回主菜单前强制落盘，最多丢 0.4s 内的最后一步操作
+func _save_checkpoint() -> bool:
+	_save_dirty = true
+	if not _save_pending:
+		_save_pending = true
+		get_tree().create_timer(0.4).timeout.connect(_flush_save)
+	return true
+
+func _flush_save() -> void:
+	_save_pending = false
+	if not _save_dirty:
+		return
+	_save_dirty = false
+	if not SaveRun.save(_wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+		EventBus.banner_requested.emit("存档失败", "进度未写入，请检查磁盘空间", 2.0)
+
+## 下一波：强制落盘后关闭商店并进入 intro。
 func next_wave() -> void:
+	_flush_save()
 	visible = false
 	goods = []
-	SaveRun.save(_wave + 1, player)   # 新波开始前存档
 	wave_manager.start_wave(_wave + 1)
 
 func _grab_first_focus() -> void:

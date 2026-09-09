@@ -8,14 +8,17 @@ var crit := false
 var life := 0.28
 var max_life := 0.28
 var applied := false
+var status_roll: Dictionary = {}
 
-static func spawn(parent: Node, pos: Vector2, radius: float, damage: float, is_crit: bool) -> void:
+static func spawn(parent: Node, pos: Vector2, radius: float, damage: float, is_crit: bool,
+		roll: Dictionary = {}) -> void:
 	var ex := Explosion.new()
 	ex.position = pos
 	ex.z_index = 12
 	ex.max_r = radius
 	ex.dmg = damage
 	ex.crit = is_crit
+	ex.status_roll = roll
 	parent.add_child(ex)
 
 func _ready() -> void:
@@ -26,17 +29,20 @@ func _process(delta: float) -> void:
 	if not applied:
 		applied = true
 		if GameState.is_running():
-			for e in get_tree().get_nodes_in_group("enemies"):
+			for e in Combat.enemies_near(global_position, max_r + Combat.MAX_ENTITY_RADIUS):
 				if e.flee > 0.0:
 					continue
 				if global_position.distance_to(e.global_position) < max_r + e.radius:
 					e.take_damage(dmg, crit)
+					e.apply_hit_roll(status_roll)
 		# 原型 explode：橙色粒子迸发 14 粒 / 速度 200
 		Burst.spawn(get_parent(), global_position, Color("ff9a3c"), 14, 200.0)
 		EventBus.screen_shake.emit(5.0)
 		queue_redraw()
 	if life <= 0.0:
 		queue_free()
+		return
+	queue_redraw()
 
 func _draw() -> void:
 	var r := max_r * (1.0 - life / max_life)

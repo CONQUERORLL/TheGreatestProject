@@ -10,6 +10,7 @@
         "id": "laser",
         "name": "激光枪",
         "ico": "✨",
+        "attack_type": "projectile",
         "cd": 0.32,
         "dmg": 9.0,
         "bspeed": 720.0,

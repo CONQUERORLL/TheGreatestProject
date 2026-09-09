@@ -1,18 +1,20 @@
 extends Control
-## 主菜单 + 开局向导（分步）：开始游戏 → ① 角色 → ② 初始武器 → ③ 初始道具 → ④ 难度 → 进入游戏
+## 主菜单 + 开局向导（分步）：开始游戏 → ① 角色 → ② 初始武器 → ③ 初始道具 → ④ 难度 → ⑤ 模式 → 进入游戏
 ## 选项全部来自 Registry 注册表（创意工坊内容自动出现）；鼠标 + 手柄均可操作
-## Esc / 手柄 B：向导内返回上一步，首页退出
+## Esc / 手柄 B：向导内返回上一步，首页退出；首页含无尽炼积分排行榜入口
 
 var _g_diff := ButtonGroup.new()
 var _g_char := ButtonGroup.new()
 var _g_weapon := ButtonGroup.new()
 var _g_item := ButtonGroup.new()
+var _g_mode := ButtonGroup.new()
 
 # 缓存向导每步选中 id（ButtonGroup 按钮跨步骤被释放后 get_pressed_button 返回 null）
 var _sel_char := "potato"
 var _sel_weapon := "pistol"
 var _sel_item := ""
 var _sel_diff := "normal"
+var _sel_endless := false   # 第 5 步：标准模式 / 无尽炼狱
 
 var _home: Control
 var _wizard: Control
@@ -25,14 +27,28 @@ var _back_press_ms := 0   # 首页返回键上次按下时刻（双击退出防�
 var _back_hint: Label
 var _slots_panel: Control     # 选槽弹窗（开始新局 / 继续共用）
 var _slots_title: Label
+var _slots_tip: Label
 var _slot_btns: Array = []    # 3 个槽位 Button（下标 0~2 = 槽 1~3）
 var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）| "continue" = 读取
 var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
+var _lb_panel: Control        # 无尽炼狱排行榜弹窗
+var _lb_rows: VBoxContainer
+var _lb_mode := "endless"     # 排行榜标签：endless 无尽总榜 / daily 今日榜
+var _lb_title: Label
+var _lb_btn_endless: Button
+var _lb_btn_daily: Button
+var _talent_panel: Control    # 天赋树弹窗
+var _talent_essence: Label    # 精华余额
+var _talent_rows: VBoxContainer
+var _daily_panel: Control     # 每日挑战详情弹窗
+var _codex                   # 图鉴（scripts/ui/codex.gd，动态引用避免跨脚本静态类型）
 
-const TOTAL_STEPS := 4
-const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度"]
+const TOTAL_STEPS := 5
+const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
 
 func _ready() -> void:
+	SaveRun.migrate_legacy_if_needed()
+	Music.play_track("menu", 0.5)
 	var bg := ColorRect.new()
 	bg.color = Color("101218")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -41,6 +57,10 @@ func _ready() -> void:
 	_build_wizard()
 	_build_back_hint()
 	_build_slots_panel()
+	_build_leaderboard_panel()
+	_build_talent_panel()
+	_build_daily_panel()
+	_build_codex()
 
 ## 底部居中提示（返回键双击退出用）
 func _build_back_hint() -> void:
@@ -79,12 +99,11 @@ func _build_slots_panel() -> void:
 	_slots_title.add_theme_font_size_override("font_size", 24)
 	_slots_title.add_theme_color_override("font_color", Color("e8b84b"))
 	box.add_child(_slots_title)
-	var tip := Label.new()
-	tip.name = "Tip"
-	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	tip.add_theme_font_size_override("font_size", 13)
-	tip.add_theme_color_override("font_color", Color("9aa3b2"))
-	box.add_child(tip)
+	_slots_tip = Label.new()
+	_slots_tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_slots_tip.add_theme_font_size_override("font_size", 13)
+	_slots_tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(_slots_tip)
 	for i in range(1, SaveRun.SLOT_COUNT + 1):
 		var b := Button.new()
 		b.custom_minimum_size = Vector2(460, 76)
@@ -105,13 +124,12 @@ func _open_slots(mode: String) -> void:
 	_confirm_slot = 0
 	_slots_panel.visible = true
 	_home.visible = false
-	var tip: Label = _slots_panel.get_node("CenterContainer/VBoxContainer/Tip")
 	if mode == "new":
 		_slots_title.text = "选 择 存 档 槽"
-		tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
+		_slots_tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
 	else:
 		_slots_title.text = "继 续 游 戏"
-		tip.text = "选择要继续的存档槽（空槽不可用）"
+		_slots_tip.text = "选择要继续的存档槽（空槽不可用）"
 	_refresh_slots()
 	# 焦点给第一个可用槽
 	for b in _slot_btns:
@@ -144,7 +162,7 @@ func _refresh_slots() -> void:
 			b.text = info + "\n（开始新局将覆盖此进度）" if has else info
 			b.remove_theme_color_override("font_color")
 
-## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间
+## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间（无尽档带 🔥 与积分）
 func _slot_label(i: int) -> String:
 	var s := SaveRun.summary(i)
 	if s.is_empty():
@@ -155,6 +173,9 @@ func _slot_label(i: int) -> String:
 	var when := String(s.get("saved_at", ""))
 	if when != "":
 		when = "\n" + when
+	if bool(s.get("endless", false)):
+		return "第 %d 槽 · 🔥 第 %d 波 %s · 积分 %d%s" % [i, int(s.get("wave", 1)),
+			String(ch.get("name", "")), int(s.get("score", 0)), when]
 	return "第 %d 槽 · 第 %d 波 %s%s" % [i, int(s.get("wave", 1)), String(ch.get("name", "")), when]
 
 func _on_slot_pressed(i: int) -> void:
@@ -168,18 +189,19 @@ func _on_slot_pressed(i: int) -> void:
 		return
 	_do_new(i)
 
-## 开新局绑定槽位：覆盖确认后清旧档，防止新局意外恢复旧进度
+## 开新局先绑定槽位并进入向导；最终确认前不清旧档，允许安全取消
 func _do_new(slot: int) -> void:
 	GameState.slot_id = slot
-	SaveRun.clear()
 	GameState.continue_pending = false
-	Haptics.rumble(0.3, 0.0, 0.1)
-	get_tree().change_scene_to_file("res://scenes/main.tscn")
+	SaveRun.current_run_owns_slot = false
+	_slots_panel.visible = false
+	_open_wizard()
 
 ## 读取指定槽继续：置标志 → main._ready 消费并恢复
 func _do_continue(slot: int) -> void:
 	GameState.slot_id = slot
 	GameState.continue_pending = true
+	SaveRun.current_run_owns_slot = false
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
 
@@ -224,6 +246,10 @@ func _home_specs() -> Array:
 	if SaveRun.any_exists():
 		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
 	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
+	specs.append(["每 日 挑 战", 220.0, func() -> void: _open_daily()])
+	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
+	specs.append(["天 赋 树", 220.0, func() -> void: _open_talents()])
+	specs.append(["图　　鉴", 220.0, func() -> void: _open_codex()])
 	specs.append(["设　　　置", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/settings.tscn")])
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
@@ -300,9 +326,14 @@ func _build_step() -> void:
 			for c: Dictionary in Registry.characters.values():
 				_options.add_child(_make_card(_g_char, c.id,
 					c.get("ico", "?"), c.name, c.get("desc", ""),
-					c.id == _sel_char, Color(c.get("color", "#e8b84b"))))
+					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id))
 		1:
 			_options.columns = 4
+			# 默认选中角色专属初始武器（角色特色绑定，玩家仍可改选）
+			var sel_ch: Dictionary = Registry.get_character(_sel_char)
+			var start_w := String(sel_ch.get("start_weapon", "pistol"))
+			if Registry.weapons.has(start_w):
+				_sel_weapon = start_w
 			for w: Dictionary in Registry.weapons.values():
 				_options.add_child(_make_card(_g_weapon, w.id,
 					w.ico, w.name, "%s\n伤害 %.0f · CD %.2fs" % [w.desc, float(w.dmg), float(w.cd)],
@@ -323,6 +354,14 @@ func _build_step() -> void:
 						d.get("desc", ""), float(d.hp_mult), float(d.dmg_mult), float(d.spawn_mult)],
 					d.id == _sel_diff,
 					Config.DIFFICULTY_COLORS.get(d.id, Color("e8b84b"))))
+		4:
+			_options.columns = 2
+			_options.add_child(_make_card(_g_mode, "standard", "🥔", "标准模式",
+				"10 波通关挑战\n击败最终 BOSS 即胜利",
+				not _sel_endless, Color("7ec850")))
+			_options.add_child(_make_card(_g_mode, "endless", "🔥", "无尽炼狱",
+				"波次无上限 · 每 10 波一轮 BOSS\n击杀累计积分 · 冲击排行榜",
+				_sel_endless, Color("e0564f")))
 	# 焦点：已选中的卡片，否则第一张
 	var focus_target: Button = null
 	for b in _options.get_children():
@@ -336,7 +375,8 @@ func _build_step() -> void:
 
 ## 选项卡片：暗底 + 稀有度/角色/难度色描边，大图标 + 色名 + 描述；选中即确认
 ## 前三步自动进入下一步，最后一步聚焦"开始游戏"防误触
-func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color) -> Button:
+## char_id 非空时卡面用程序化角色头像替代 emoji 图标
+func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color, char_id: String = "") -> Button:
 	var b := Button.new()
 	b.toggle_mode = true
 	b.button_group = group
@@ -363,12 +403,18 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	box.add_theme_constant_override("separation", 6)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	b.add_child(box)
-	var ico_l := Label.new()
-	ico_l.text = ico
-	ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ico_l.add_theme_font_size_override("font_size", 36)
-	ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(ico_l)
+	if char_id != "":
+		# 角色专属人物头像（程序化绘制）
+		var av := CharacterAvatar.new()
+		av.setup(char_id, 76.0)
+		box.add_child(av)
+	else:
+		var ico_l := Label.new()
+		ico_l.text = ico
+		ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ico_l.add_theme_font_size_override("font_size", 36)
+		ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		box.add_child(ico_l)
 	var name_l := Label.new()
 	name_l.text = title_text
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -385,15 +431,15 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	desc_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	desc_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(desc_l)
-	b.toggled.connect(func(on: bool) -> void:
-		if not on:
-			return
-		# 缓存选中 id（防止跨步骤按钮释放后丢失选择）
+	b.pressed.connect(func() -> void:
+		# pressed 在已选中的单选卡上也会触发，因此默认卡可直接确认。
+		b.button_pressed = true
 		match _step:
 			0: _sel_char = id
 			1: _sel_weapon = id
 			2: _sel_item = id
 			3: _sel_diff = id
+			4: _sel_endless = id == "endless"
 		Haptics.rumble(0.15, 0.0, 0.05)
 		if _step < TOTAL_STEPS - 1:
 			_next()
@@ -416,6 +462,23 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _codex != null and _codex.visible:
+		return   # 图鉴自行处理返回键，避免重复消费
+	# 每日挑战弹窗：Esc / 手柄 B 关闭
+	if _daily_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_daily()
+		get_viewport().set_input_as_handled()
+		return
+	# 天赋树弹窗：Esc / 手柄 B 关闭
+	if _talent_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_talents()
+		get_viewport().set_input_as_handled()
+		return
+	# 排行榜弹窗：Esc / 手柄 B 关闭
+	if _lb_panel.visible and event.is_action_pressed("ui_cancel"):
+		_close_leaderboard()
+		get_viewport().set_input_as_handled()
+		return
 	# 选槽弹窗：返回键退出覆盖确认态，再按关闭弹窗
 	if _slots_panel.visible and event.is_action_pressed("ui_cancel"):
 		if _confirm_slot != 0:
@@ -434,7 +497,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _wizard.visible and event.is_action_pressed("ui_accept"):
 		var focus := get_viewport().gui_get_focus_owner()
 		if focus is Button and focus.toggle_mode and not focus.disabled:
-			focus.button_pressed = true   # 触发 toggled 回调 → 缓存 id + 自动进下一步
+			focus.pressed.emit()
 			get_viewport().set_input_as_handled()
 		return
 	# 首页：返回键 / Esc 两秒内按两次退出（Android 返回键防误触）
@@ -454,5 +517,333 @@ func _start() -> void:
 	GameState.character_id = _sel_char
 	GameState.loadout_weapon = _sel_weapon
 	GameState.loadout_item = _sel_item
+	GameState.endless = _sel_endless
+	GameState.continue_pending = false
+	# Main 在玩家初始化后原子覆盖该槽；场景加载或写入失败时旧档仍保留。
 	Haptics.rumble(0.3, 0.0, 0.1)
 	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+# ---------------- 每日挑战（全服同局） ----------------
+
+## 今日配置卡片：日期种子决定角色/难度/BOSS，全部玩家一致
+func _build_daily_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_daily_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "📅 每日挑战"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(title)
+	var setup: Dictionary = Config.daily_setup(Time.get_date_string_from_system())
+	var ch: Dictionary = Registry.get_character(String(setup.character_id))
+	var diff: Dictionary = Registry.get_difficulty(String(setup.difficulty_id))
+	var boss_name: String = Registry.enemies.get(String(setup.boss_id), {}).get("name", "?")
+	var info := Label.new()
+	info.text = "今日阵容全服一致：\n\n%s %s ｜ %s 难度 ｜ 最终 BOSS：%s\n\n同种子同商店序列 · 死亡/通关记入今日榜" % [
+		ch.get("ico", "🧑"), ch.get("name", "?"), diff.get("name", "?"), boss_name]
+	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	info.add_theme_font_size_override("font_size", 15)
+	info.add_theme_color_override("font_color", Color("d8dde6"))
+	info.custom_minimum_size = Vector2(480.0, 0.0)
+	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(info)
+	var start := Button.new()
+	start.text = "开始今日挑战（不占存档槽）"
+	start.custom_minimum_size = Vector2(480.0, 46.0)
+	start.add_theme_font_size_override("font_size", 17)
+	start.pressed.connect(_start_daily)
+	box.add_child(start)
+	var cancel := Button.new()
+	cancel.text = "关 闭（Esc）"
+	cancel.custom_minimum_size = Vector2(480.0, 44.0)
+	cancel.pressed.connect(_close_daily)
+	box.add_child(cancel)
+
+func _open_daily() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_daily_panel.visible = true
+	_home.visible = false
+	for c in _daily_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _close_daily() -> void:
+	_daily_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+# ---------------- 图鉴 ----------------
+
+## 挂载为主菜单子节点（全屏覆盖层）；关闭时发 closed 信号，焦点回首页
+func _build_codex() -> void:
+	_codex = preload("res://scenes/ui/codex.tscn").instantiate()
+	add_child(_codex)
+	_codex.closed.connect(_on_codex_closed)
+
+func _open_codex() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_home.visible = false
+	_codex.open()
+
+func _on_codex_closed() -> void:
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+## 开始每日挑战：日期种子 + 固定阵容，直接进局（不占存档槽）
+func _start_daily() -> void:
+	var today := Time.get_date_string_from_system()
+	var setup: Dictionary = Config.daily_setup(today)
+	GameState.daily = true
+	GameState.daily_date = today
+	GameState.endless = false
+	GameState.difficulty_id = String(setup.difficulty_id)
+	GameState.character_id = String(setup.character_id)
+	GameState.loadout_weapon = ""
+	GameState.loadout_item = ""
+	GameState.slot_id = 0   # 0 = 不落盘（SaveRun 全部拒绝）
+	GameState.continue_pending = false
+	GameRng.seed_from(int(setup.seed))
+	Haptics.rumble(0.3, 0.0, 0.1)
+	get_tree().change_scene_to_file("res://scenes/main.tscn")
+
+# ---------------- 天赋树（局外成长） ----------------
+
+func _build_talent_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_talent_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = "🌟 天赋树 · 局外成长"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(title)
+	_talent_essence = Label.new()
+	_talent_essence.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_talent_essence.add_theme_font_size_override("font_size", 16)
+	_talent_essence.add_theme_color_override("font_color", Color("ffd24a"))
+	box.add_child(_talent_essence)
+	var tip := Label.new()
+	tip.text = "土豆精华：局末按积分/波次结算，永不清零 · 天赋对所有新局生效"
+	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tip.add_theme_font_size_override("font_size", 12)
+	tip.add_theme_color_override("font_color", Color("9aa3b2"))
+	box.add_child(tip)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(600.0, 360.0)
+	box.add_child(scroll)
+	_talent_rows = VBoxContainer.new()
+	_talent_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_talent_rows.add_theme_constant_override("separation", 8)
+	scroll.add_child(_talent_rows)
+	var close := Button.new()
+	close.text = "关 闭（Esc）"
+	close.custom_minimum_size = Vector2(600.0, 44.0)
+	close.pressed.connect(_close_talents)
+	box.add_child(close)
+
+func _open_talents() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_refresh_talents()
+	_talent_panel.visible = true
+	_home.visible = false
+	# 焦点给第一个可购买天赋（无则关闭按钮）
+	for c in _talent_rows.get_children():
+		if c is Button and not c.disabled:
+			c.grab_focus()
+			return
+	for c in _talent_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _close_talents() -> void:
+	_talent_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()
+			break
+
+func _refresh_talents() -> void:
+	for c in _talent_rows.get_children():
+		_talent_rows.remove_child(c)
+		c.queue_free()
+	_talent_essence.text = "◆ 土豆精华 %d（累计获得 %d）" % [MetaProgress.essence, MetaProgress.total_earned]
+	for id in MetaProgress.TALENTS:
+		var t: Dictionary = MetaProgress.TALENTS[id]
+		var lv := MetaProgress.talent_level(id)
+		var max_lv := int(t.max_lv)
+		var cost := MetaProgress.talent_cost(id)
+		var row := Button.new()
+		row.custom_minimum_size = Vector2(580.0, 64.0)
+		var full := lv >= max_lv
+		if full:
+			row.text = "%s %s　Lv %d/%d　已满级" % [t.ico, t.name, lv, max_lv]
+			row.disabled = true
+		else:
+			row.text = "%s %s　Lv %d/%d　升级：%d 精华\n%s" % [t.ico, t.name, lv, max_lv, cost, t.desc]
+			row.disabled = MetaProgress.essence < cost
+		row.pressed.connect(_on_talent_buy.bind(id))
+		_talent_rows.add_child(row)
+
+func _on_talent_buy(id: String) -> void:
+	if MetaProgress.buy_talent(id):
+		Haptics.rumble(0.25, 0.0, 0.08)
+		Sfx.play("buy")
+		_refresh_talents()
+		# 重新抓焦首个可购买项，保持手柄导航连续
+		for c in _talent_rows.get_children():
+			if c is Button and not c.disabled:
+				c.grab_focus()
+				return
+
+func _build_leaderboard_panel() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.visible = false
+	add_child(overlay)
+	_lb_panel = overlay
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	center.add_child(box)
+	_lb_title = Label.new()
+	_lb_title.text = "🔥 无尽炼狱 · 排行榜"
+	_lb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lb_title.add_theme_font_size_override("font_size", 26)
+	_lb_title.add_theme_color_override("font_color", Color("e8b84b"))
+	box.add_child(_lb_title)
+	# 标签行：无尽总榜 / 今日榜
+	var tabs := HBoxContainer.new()
+	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("separation", 10)
+	box.add_child(tabs)
+	_lb_btn_endless = Button.new()
+	_lb_btn_endless.text = "无尽总榜"
+	_lb_btn_endless.custom_minimum_size = Vector2(160.0, 38.0)
+	_lb_btn_endless.toggle_mode = true
+	_lb_btn_endless.pressed.connect(func() -> void:
+		_switch_lb_tab("endless"))
+	tabs.add_child(_lb_btn_endless)
+	_lb_btn_daily = Button.new()
+	_lb_btn_daily.text = "📅 今日榜"
+	_lb_btn_daily.custom_minimum_size = Vector2(160.0, 38.0)
+	_lb_btn_daily.toggle_mode = true
+	_lb_btn_daily.pressed.connect(func() -> void:
+		_switch_lb_tab("daily"))
+	tabs.add_child(_lb_btn_daily)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(560.0, 370.0)
+	box.add_child(scroll)
+	_lb_rows = VBoxContainer.new()
+	_lb_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lb_rows.add_theme_constant_override("separation", 6)
+	scroll.add_child(_lb_rows)
+	var close := Button.new()
+	close.text = "关 闭（Esc）"
+	close.custom_minimum_size = Vector2(560.0, 44.0)
+	close.pressed.connect(_close_leaderboard)
+	box.add_child(close)
+
+func _switch_lb_tab(tab: String) -> void:
+	_lb_mode = tab
+	_lb_btn_endless.button_pressed = tab == "endless"
+	_lb_btn_daily.button_pressed = tab == "daily"
+	Haptics.rumble(0.15, 0.0, 0.05)
+	_refresh_leaderboard()
+
+func _open_leaderboard() -> void:
+	Haptics.rumble(0.2, 0.0, 0.08)
+	_lb_btn_endless.button_pressed = _lb_mode == "endless"
+	_lb_btn_daily.button_pressed = _lb_mode == "daily"
+	_refresh_leaderboard()
+	_lb_panel.visible = true
+	_home.visible = false
+	for c in _lb_panel.get_child(1).get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 焦点给关闭按钮（手柄直达）
+			break
+
+func _close_leaderboard() -> void:
+	_lb_panel.visible = false
+	_home.visible = true
+	for c in _home.get_child(0).get_children():
+		if c is Button:
+			c.grab_focus()   # 焦点回首页第一个按钮
+			break
+
+func _refresh_leaderboard() -> void:
+	for c in _lb_rows.get_children():
+		_lb_rows.remove_child(c)
+		c.queue_free()
+	var list: Array = Leaderboard.get_list()
+	var empty_hint := "去无尽炼狱模式创造第一个纪录吧！"
+	if _lb_mode == "daily":
+		var today := Time.get_date_string_from_system()
+		list = Leaderboard.get_daily_list(today)
+		_lb_title.text = "📅 每日挑战 · 今日榜（%s）" % today
+		empty_hint = "今天的挑战还没人完成，去「每日挑战」打个样！"
+	else:
+		_lb_title.text = "🔥 无尽炼狱 · 排行榜"
+	if list.is_empty():
+		var empty := Label.new()
+		empty.text = "暂无记录\n\n" + empty_hint
+		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty.add_theme_font_size_override("font_size", 15)
+		empty.add_theme_color_override("font_color", Color("5a6270"))
+		empty.custom_minimum_size = Vector2(540.0, 200.0)
+		empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		empty.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_lb_rows.add_child(empty)
+		return
+	var medals := ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+	for i in list.size():
+		var e: Dictionary = list[i]
+		var row := Label.new()
+		row.text = "%s  %d 分 · 第 %d 波 · %s · 击杀 %d · %s" % [medals[i],
+			int(e.score), int(e.wave), String(e.char_name), int(e.kills), String(e.date)]
+		row.add_theme_font_size_override("font_size", 15)
+		row.add_theme_color_override("font_color",
+			Color("ffd24a") if i == 0 else Color("d8dde6"))
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_lb_rows.add_child(row)

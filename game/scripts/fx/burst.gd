@@ -1,13 +1,21 @@
 class_name Burst
 extends Node2D
 ## 一次性粒子迸发（命中/死亡表现；纯视觉，用全局随机即可）
+## 大规模战斗护栏：全场存活超过上限时丢弃新迸发，保帧率
+
+const MAX_LIVE := 60
 
 var parts: Array = []
 
+static var _live := 0   # 当前存活迸发数（护栏计数）
+
 func _ready() -> void:
 	add_to_group("fx")
+	_live += 1
 
 static func spawn(parent: Node, pos: Vector2, color: Color, count: int, speed: float) -> void:
+	if _live >= MAX_LIVE:
+		return   # 特效护栏
 	var b := Burst.new()
 	b.position = pos
 	b.z_index = 20
@@ -28,8 +36,9 @@ func _process(delta: float) -> void:
 		if p.life > 0.0:
 			alive = true
 			p.pos += p.vel * delta
-			p.vel *= 0.9
+			p.vel *= exp(-6.32 * delta)
 	if not alive:
+		_live -= 1
 		queue_free()
 		return
 	queue_redraw()

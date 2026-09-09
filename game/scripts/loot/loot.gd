@@ -11,6 +11,8 @@ var player  # characters/player.gd 引用，由生成方注入
 var _t := 0.0
 var _phase := 0.0
 var _collected := false
+var _bob := 0.0        # 当前浮动偏移（位置承担，避免每帧重绘）
+var _scale_settled := false
 
 func setup(kind_name: String, value: int, pos: Vector2, velocity: Vector2) -> void:
 	kind = kind_name
@@ -26,9 +28,14 @@ func _ready() -> void:
 
 func _physics_process(delta: float) -> void:
 	_t += delta
-	scale = scale.lerp(Vector2.ONE, minf(1.0, delta * 14.0))
-	if not GameState.is_running() or player == null or not is_instance_valid(player):
+	# 弹出缩放动画：到位后停笔（大规模掉落场的主要重绘来源）
+	if not _scale_settled:
+		scale = scale.lerp(Vector2.ONE, minf(1.0, delta * 14.0))
+		if scale.distance_squared_to(Vector2.ONE) < 0.0004:
+			scale = Vector2.ONE
+			_scale_settled = true
 		queue_redraw()
+	if not GameState.is_running() or player == null or not is_instance_valid(player):
 		return
 	vel *= exp(-6.0 * delta)
 	var d: float = player.global_position.distance_to(global_position)
@@ -37,10 +44,12 @@ func _physics_process(delta: float) -> void:
 		var f: float = 1800.0 * (1.0 - d / pr + 0.2)
 		vel += (player.global_position - global_position).normalized() * f * delta
 	global_position += vel * delta
+	# 浮动动画走节点位置（无需重绘）：静止掉落物零绘制开销
+	var bob := sin(_t * 3.33 + _phase) * 2.0
+	global_position.y += bob - _bob
+	_bob = bob
 	if d < float(Config.PLAYER.radius) + 12.0:
 		settle()
-		return
-	queue_redraw()
 
 ## 结算拾取（原型 settlePickup）；波末全场回收也走这里
 func settle() -> void:
@@ -52,8 +61,7 @@ func settle() -> void:
 		"xp":
 			GameState.gain_xp(val)
 		"mat":
-			GameState.materials += val
-			EventBus.materials_changed.emit(GameState.materials)
+			GameState.add_materials(val)
 		"heart":
 			if player and is_instance_valid(player):
 				player.hp = minf(player.stats.max_hp, player.hp + float(val))
@@ -62,13 +70,12 @@ func settle() -> void:
 	queue_free()
 
 func _draw() -> void:
-	var bob := sin(_t * 3.33 + _phase) * 2.0   # 原型 sin(now/300 + x) * 2
-	draw_set_transform(Vector2(0.0, bob), 0.0, Vector2.ONE)
 	match kind:
 		"xp":
 			# 绿色菱形晶体（旋转 45° 的 8×8 方块）
-			draw_set_transform(Vector2(0.0, bob), PI / 4.0, Vector2.ONE)
+			draw_set_transform(Vector2.ZERO, PI / 4.0, Vector2.ONE)
 			draw_rect(Rect2(-4.0, -4.0, 8.0, 8.0), Color("7ec850"))
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		"mat":
 			# 琥珀圆 + 高光
 			draw_circle(Vector2.ZERO, 5.0, Color("e8b84b"))
@@ -79,4 +86,3 @@ func _draw() -> void:
 			draw_circle(Vector2(2.8, -2.2), 3.4, Color("ef6b5e"))
 			draw_colored_polygon(PackedVector2Array([
 				Vector2(-5.6, -0.5), Vector2(5.6, -0.5), Vector2(0.0, 6.0)]), Color("ef6b5e"))
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

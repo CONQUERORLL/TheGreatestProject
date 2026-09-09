@@ -26,6 +26,15 @@ var loadout_weapon := "pistol"   # 初始武器（"" = 用角色默认）
 var loadout_item := ""           # 开局道具（"" = 无）
 
 var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，TouchControls 写入）
+var mouse_move := Vector2.ZERO   # 桌面鼠标点触移动输入（模拟量，MouseMove 写入）
+
+var endless := false   # 无尽炼狱模式（每 10 波 BOSS，波次无上限，积分排行）
+var score := 0         # 无尽模式积分（击杀 / BOSS 击破 / 清波奖励）
+var daily := false     # 每日挑战（当日日期做种子，全服同局：同角色/难度/商店/BOSS）
+var daily_date := ""   # 每日挑战绑定的日期（YYYY-MM-DD，跨天防护）
+
+func add_score(v: int) -> void:
+	score = maxi(0, score + v)
 
 ## 加经验并处理连升（原型 settlePickup 的 while 循环）
 func gain_xp(v: int) -> void:
@@ -43,17 +52,26 @@ func set_phase(p: Phase) -> void:
 	phase = p
 	phase_changed.emit(p)
 
+func set_materials(value: int) -> void:
+	materials = maxi(0, value)
+	EventBus.materials_changed.emit(materials)
+
+func add_materials(delta: int) -> void:
+	set_materials(materials + delta)
+
 func is_running() -> bool:
-	return phase == Phase.PLAYING or phase == Phase.INTRO
+	return phase == Phase.PLAYING
 
 func reset_run() -> void:
-	materials = 0
+	set_materials(0)
 	kills = 0
 	run_time = 0.0
 	level = 1
 	xp = 0
 	level_queue = 0
 	touch_move = Vector2.ZERO
+	mouse_move = Vector2.ZERO
+	score = 0   # endless 为本局开局选定/存档恢复的配置，不在重置之列
 
 func start_run() -> void:
 	reset_run()
