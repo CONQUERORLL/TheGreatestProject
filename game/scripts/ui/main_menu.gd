@@ -16,6 +16,13 @@ var _sel_item := ""
 var _sel_diff := "normal"
 var _sel_endless := false   # 第 5 步：标准模式 / 无尽炼狱
 
+# 手机紧凑向导：Android/iOS 上 content_scale 1.5x 后逻辑分辨率仅约 853×480，
+# 写死的 1000×620 面板 / 218×244 卡牌会溢出屏幕；手机改用小尺寸 + 自适应面板
+var _mov := false
+const WIZ_PANEL_DESK := Vector2(1000.0, 620.0)
+const CARD_DESK := Vector2(218.0, 244.0)
+const CARD_MOB := Vector2(150.0, 170.0)
+
 var _home: Control
 var _wizard: Control
 var _step_label: Label
@@ -48,6 +55,7 @@ const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具"
 
 func _ready() -> void:
 	SaveRun.migrate_legacy_if_needed()
+	_mov = OS.has_feature("mobile")
 	Music.play_track("menu", 0.5)
 	var bg := ColorRect.new()
 	bg.color = Color("101218")
@@ -282,39 +290,72 @@ func _build_wizard() -> void:
 	add_child(center)
 	_wizard = center
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(1000.0, 620.0)
+	if _mov:
+		# 手机：面板铺满屏幕（避开刘海/打孔安全区），内容滚动查看
+		panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+		var m := _wizard_margin()
+		panel.offset_left = m.x
+		panel.offset_top = m.y
+		panel.offset_right = -m.x
+		panel.offset_bottom = -m.y
+		var psb := panel.get_theme_stylebox("panel").duplicate()
+		if psb is StyleBoxFlat:
+			psb.content_margin_left = 14.0
+			psb.content_margin_right = 14.0
+			psb.content_margin_top = 12.0
+			psb.content_margin_bottom = 12.0
+			panel.add_theme_stylebox_override("panel", psb)
+	else:
+		panel.custom_minimum_size = WIZ_PANEL_DESK
 	center.add_child(panel)
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 14)
+	vbox.add_theme_constant_override("separation", 10 if _mov else 14)
 	panel.add_child(vbox)
 	_step_label = Label.new()
 	_step_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_step_label.add_theme_font_size_override("font_size", 24)
+	_step_label.add_theme_font_size_override("font_size", 18 if _mov else 24)
 	_step_label.add_theme_color_override("font_color", Color("e8b84b"))
 	vbox.add_child(_step_label)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED   # 手机纵向滚动即可，杜绝横向溢出
 	vbox.add_child(scroll)
 	_options = GridContainer.new()
 	_options.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_options.add_theme_constant_override("h_separation", 10)
-	_options.add_theme_constant_override("v_separation", 10)
+	_options.add_theme_constant_override("h_separation", 8 if _mov else 10)
+	_options.add_theme_constant_override("v_separation", 8 if _mov else 10)
 	scroll.add_child(_options)
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_theme_constant_override("separation", 24)
+	hb.add_theme_constant_override("separation", 16 if _mov else 24)
 	vbox.add_child(hb)
 	_back_btn = Button.new()
 	_back_btn.text = "上一步（Esc）"
-	_back_btn.custom_minimum_size = Vector2(160.0, 44.0)
+	_back_btn.custom_minimum_size = Vector2(132.0, 42.0) if _mov else Vector2(160.0, 44.0)
+	_back_btn.add_theme_font_size_override("font_size", 14 if _mov else 16)
 	_back_btn.pressed.connect(_prev)
 	hb.add_child(_back_btn)
 	_next_btn = Button.new()
-	_next_btn.custom_minimum_size = Vector2(200.0, 44.0)
-	_next_btn.add_theme_font_size_override("font_size", 17)
+	_next_btn.custom_minimum_size = Vector2(168.0, 42.0) if _mov else Vector2(200.0, 44.0)
+	_next_btn.add_theme_font_size_override("font_size", 15 if _mov else 17)
 	_next_btn.pressed.connect(_next)
 	hb.add_child(_next_btn)
+
+## 向导面板四周安全边距（手机避开刘海/打孔/手势条；桌面留大边距居中）
+func _wizard_margin() -> Vector2:
+	if not _mov:
+		return Vector2.ZERO
+	var scr: Vector2i = DisplayServer.screen_get_size()
+	var safe: Rect2i = DisplayServer.get_display_safe_area()
+	var vw: float = get_viewport_rect().size.x
+	var vh: float = get_viewport_rect().size.y
+	if scr.x <= 0 or scr.y <= 0 or vw <= 0:
+		return Vector2(10.0, 10.0)
+	var ml: float = float(safe.position.x) / float(scr.x) * vw
+	var mr: float = float(scr.x - (safe.position.x + safe.size.x)) / float(scr.x) * vw
+	var mt: float = float(safe.position.y) / float(scr.y) * vh
+	var mb: float = float(scr.y - (safe.position.y + safe.size.y)) / float(scr.y) * vh
+	return Vector2(maxf(ml, mr) + 8.0, maxf(mt, mb) + 8.0)
 
 func _open_wizard() -> void:
 	Haptics.rumble(0.2, 0.0, 0.08)
@@ -340,7 +381,7 @@ func _build_step() -> void:
 	_next_btn.text = "开 始 游 戏" if _step == TOTAL_STEPS - 1 else "下一步 →"
 	match _step:
 		0:
-			_options.columns = 3
+			_options.columns = 4 if _mov else 3
 			for c: Dictionary in Registry.characters.values():
 				_options.add_child(_make_card(_g_char, c.id,
 					c.get("ico", "?"), c.name, _character_card_desc(c),
@@ -412,7 +453,8 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	b.set_meta("id", id)
 	# 卡面高度容纳「特性描述 + 玩法定位」两段文本（角色步），
 	# 其余步骤内容较短，靠 VBox 居中，视觉上仍然平衡
-	b.custom_minimum_size = Vector2(218.0, 244.0)
+	b.custom_minimum_size = CARD_MOB if _mov else CARD_DESK
+	# 手机卡片保持 16:9 横排 4 列能放下；桌面为大卡 218×244
 	# 卡面样式：accent 色微底 + 描边，hover/focus 金边高亮（手柄导航可见）
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = Color(accent.r, accent.g, accent.b, 0.09)
@@ -430,25 +472,25 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	var box := VBoxContainer.new()
 	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_theme_constant_override("separation", 6)
+	box.add_theme_constant_override("separation", 3 if _mov else 6)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	b.add_child(box)
 	if char_id != "":
 		# 角色专属人物头像（程序化绘制）
 		var av := CharacterAvatar.new()
-		av.setup(char_id, 76.0)
+		av.setup(char_id, 60.0 if _mov else 76.0)
 		box.add_child(av)
 	else:
 		var ico_l := Label.new()
 		ico_l.text = ico
 		ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		ico_l.add_theme_font_size_override("font_size", 36)
+		ico_l.add_theme_font_size_override("font_size", 28 if _mov else 36)
 		ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(ico_l)
 	var name_l := Label.new()
 	name_l.text = title_text
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	name_l.add_theme_font_size_override("font_size", 17)
+	name_l.add_theme_font_size_override("font_size", 14 if _mov else 17)
 	name_l.add_theme_color_override("font_color", accent.lightened(0.15))
 	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(name_l)
@@ -456,8 +498,9 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	desc_l.text = desc
 	desc_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	desc_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc_l.custom_minimum_size = Vector2(192.0, 0.0)
-	desc_l.add_theme_font_size_override("font_size", 11)
+	# 描述宽度随卡片宽度收紧（手机 150 卡 → 134 文本宽），防止挤出卡面
+	desc_l.custom_minimum_size = Vector2((CARD_MOB.x - 16.0) if _mov else 192.0, 0.0)
+	desc_l.add_theme_font_size_override("font_size", 10 if _mov else 11)
 	desc_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	desc_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(desc_l)
