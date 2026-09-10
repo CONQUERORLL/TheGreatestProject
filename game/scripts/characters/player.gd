@@ -17,6 +17,7 @@ var iframes := 0.0
 # 注意：变量名不能用 trait —— Godot 4.7 已把 trait 列为保留关键字，
 # `var trait := ...` 会直接 Parse Error（"Expected variable name after var"）
 var char_trait: Dictionary = {}      # 当前角色特性（开局从 Registry 读取，空 = 无特性）
+var sigil := ""                      # 角色印记 id（元素 / 风格痕迹，空串 = 无印记）；开局算一次
 var _aura_t := 0.0              # 光环/战意触发计时
 var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
 var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
@@ -50,6 +51,7 @@ func _ready() -> void:
 	# 角色专属特性：stats 类在开局一次性注入（与升级/道具同一套加法语义）；
 	# 其余 kind（aura / thorns / momentum）不属于属性，由运行时逻辑在对应时机结算
 	char_trait = ch.get("trait", {})
+	sigil = Config.sigil_for(GameState.character_id)
 	if String(char_trait.get("kind", "")) == "stats":
 		for tk in char_trait.get("effects", {}):
 			var tv: Variant = char_trait.effects[tk]
@@ -243,10 +245,9 @@ func _ensure_flame_jet() -> Node2D:
 	return _flame_jet
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
-	var b := BulletScene.instantiate()
+	var b = ObjectPool.acquire("bullet", BulletScene, get_parent())
 	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang,
 		_weapon_runtime_cfg(c), _roll_damage(c.dmg, c), _trait_tint_for(c))
-	get_parent().add_child(b)
 
 ## 武器配色：状态色优先（火焰长剑橙 / 毒牙匕首绿 / 霜冻法杖冰蓝），
 ## 没有状态的纯物理武器用象牙白刀光
@@ -295,7 +296,7 @@ func _melee_slash(c: Dictionary, ang: float) -> void:
 	var s := Slash.new()
 	# 外观族 / 特性强调色 / 状态配色一起给到刀光：太刀是月牙、长鞭会甩、重锤推冲击波
 	s.setup(global_position, ang, reach, c.swing_arc,
-		String(c.get("fx", "")), _trait_tint_for(c), _weapon_color(c))
+		String(c.get("fx", "")), _trait_tint_for(c), _weapon_color(c), sigil)
 	get_parent().add_child(s)
 	# 一次性命中扇形范围内敌人（原型为 0.13s 持续检测，效果等价）
 	for e in Combat.enemies_near(global_position, reach + Combat.MAX_ENTITY_RADIUS):
@@ -332,6 +333,7 @@ func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 		"dmg": dmg, "crit": crit,
 		"status": String(wcfg.get("status", "")),
 		"fx": String(wcfg.get("fx", "")),   # 外观族：弹丸命中后的爆炸也按武器区分形态
+		"sigil": sigil,                     # 角色印记：弹丸 / 刀光 / 爆炸按「谁在用」叠加痕迹
 		"status_chance": clampf(float(wcfg.get("status_chance", 1.0)) + float(stats.status_chance), 0.0, 1.0),
 		"status_stacks": int(wcfg.get("status_stacks", 1)),
 		"status_dur": float(wcfg.get("status_duration", 0.0)),

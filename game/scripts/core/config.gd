@@ -295,12 +295,12 @@ const ENEMIES := {
 	"ice_witch": { "name": "玄冰女妖", "hp": 28.0, "speed": 58.0, "dmg": 12.0, "xp": 10, "mat": 7, "r": 16.0, "color": "#5aa8d8", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.8, "bspeed": 340.0, "heart_chance": 0.10, "status_resist": 0.40 },
 	"earth_golem": { "name": "土灵石俑", "hp": 75.0, "speed": 38.0, "dmg": 18.0, "xp": 12, "mat": 8, "r": 24.0, "color": "#ffd24a", "shape": "square", "heart_chance": 0.12, "status_resist": 0.30 },
 	"stone_titan": { "name": "山岳巨人", "hp": 140.0, "speed": 32.0, "dmg": 24.0, "xp": 16, "mat": 12, "r": 30.0, "color": "#c8a030", "shape": "square", "heart_chance": 0.18, "status_resist": 0.40 },
-	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "status_resist": 0.70, "heart_chance": 1.0 },
+	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "death_skill": "ring", "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "death_skill": "miasma", "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "death_skill": "rebirth", "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "death_skill": "shockwave", "status_resist": 0.70, "heart_chance": 1.0 },
 }
 
 ## BOSS 轮换池：标准第 10 波 / 无尽每 10 波，按种子随机轮换（每日挑战全服同 BOSS）
@@ -366,6 +366,52 @@ static func daily_setup(date_str: String) -> Dictionary:
 		"boss_id": String(pool[(h >> 11) % pool.size()]),
 	}
 
+# ============================================================
+# 解锁系统（内容逐层解锁）：角色 / 武器的开局选择门槛。
+# 条件由 CodexData 的「累计统计」实时推导 —— 解锁即永久，无需单独持久化解锁态。
+# 未列入下表的内容默认已解锁（含开局基础内容与创意工坊 mod）。
+# stat 键必须落在 UNLOCK_STAT_KEYS 白名单内（对应 CodexData 的累计计数器）。
+# ============================================================
+const CHARACTER_UNLOCKS := {
+	# ---- 五行门派（按门派主题：元素 / 状态 / 剑道 / 推进） ----
+	"pyromancer": { "stat": "reactions", "target": 10, "hint": "累计触发 10 次五行反应" },
+	"druid": { "stat": "status_triggers", "target": 25, "hint": "累计触发 25 次异常状态" },
+	"swordmaster": { "stat": "kills", "target": 200, "hint": "累计击杀 200 个敌人" },
+	"tidecaller": { "stat": "status_triggers", "target": 50, "hint": "累计触发 50 次异常状态" },
+	"geomancer": { "stat": "best_wave", "target": 6, "hint": "单局推进到第 6 波" },
+	# ---- 进阶角色（按推进里程碑） ----
+	"gunner": { "stat": "kills", "target": 80, "hint": "累计击杀 80 个敌人" },
+	"artillery": { "stat": "boss_kills", "target": 1, "hint": "击破 1 个 BOSS" },
+	"monk": { "stat": "best_wave", "target": 8, "hint": "单局推进到第 8 波" },
+	"ascetic": { "stat": "runs", "target": 3, "hint": "累计开始 3 局游戏" },
+	"alchemist": { "stat": "status_triggers", "target": 40, "hint": "累计触发 40 次异常状态" },
+	"warlord": { "stat": "victories", "target": 1, "hint": "通关 1 次" },
+}
+
+const WEAPON_UNLOCKS := {
+	"thunder_gong": { "stat": "kills", "target": 40, "hint": "累计击杀 40 个敌人" },
+	"tar_whip": { "stat": "status_triggers", "target": 10, "hint": "累计触发 10 次异常状态" },
+	"ember_fan": { "stat": "status_triggers", "target": 20, "hint": "累计触发 20 次异常状态" },
+	"vine_lash": { "stat": "status_triggers", "target": 30, "hint": "累计触发 30 次异常状态" },
+	"gold_bell": { "stat": "kills", "target": 120, "hint": "累计击杀 120 个敌人" },
+	"frost_nova": { "stat": "best_wave", "target": 4, "hint": "单局推进到第 4 波" },
+	"flame_jian": { "stat": "best_wave", "target": 5, "hint": "单局推进到第 5 波" },
+	"chaos_hammer": { "stat": "kills", "target": 250, "hint": "累计击杀 250 个敌人" },
+	"railgun": { "stat": "boss_kills", "target": 1, "hint": "击破 1 个 BOSS" },
+	"blight_bow": { "stat": "status_triggers", "target": 45, "hint": "累计触发 45 次异常状态" },
+	"frost_hammer": { "stat": "best_wave", "target": 7, "hint": "单局推进到第 7 波" },
+	"gold_scepter": { "stat": "victories", "target": 1, "hint": "通关 1 次" },
+}
+
+## 解锁条件的统计键白名单：必须对应到 CodexData 的累计计数器（冒烟测试据此校验）
+const UNLOCK_STAT_KEYS := ["kills", "best_wave", "boss_kills", "victories",
+	"status_triggers", "reactions", "runs"]
+
+## 取某内容的解锁条目（空字典 = 未锁定，默认已解锁）
+static func unlock_entry(kind: String, id: String) -> Dictionary:
+	var table: Dictionary = CHARACTER_UNLOCKS if kind == "character" else WEAPON_UNLOCKS
+	return table.get(id, {})
+
 ## 升级池（可重复叠加；effects 键 = player.stats 键，创意工坊数据驱动；
 ## 特例：heal_flat = 最大生命+立即回复同值，heal_pct = 立即回复最大生命百分比）
 const UPGRADES := [
@@ -397,6 +443,15 @@ const UPGRADES := [
 	{ "id": "barrel", "ico": "🏹", "name": "加长枪管", "desc": "弹丸射程 +20%（投射武器）", "rarity": "rare", "effects": { "bullet_range_bonus": 0.20 } },
 	{ "id": "velocity", "ico": "💨", "name": "高初速", "desc": "子弹速度 +20%，命中更跟手", "rarity": "rare", "effects": { "bullet_speed_bonus": 0.20 } },
 	{ "id": "warhead", "ico": "💥", "name": "高爆装药", "desc": "爆炸范围 +20%（溅射武器：火箭筒 / 冰霜新星 / 震雷法锣…）", "rarity": "rare", "effects": { "aoe_radius_bonus": 0.20 } },
+	# ---- 角色向升级：effects 刻意集中在**单一标签族**（近战范围 / 弹速射程 / 异常 / 残血 / 经济），
+	# 于是对对应角色的亲和倍率天然高达 ×2.7~3.55，对无关角色接近不出现 ——
+	# 不用新增「专属」机制，靠既有的 affinity 推导就形成了角色向内容池
+	{ "id": "swordmanual", "ico": "📜", "name": "剑冢图谱", "desc": "斩击范围 +22%，暴击伤害 +60（近战构筑）", "rarity": "epic", "effects": { "melee_range_bonus": 0.22, "crit_mult": 0.60 } },
+	{ "id": "ballistic", "ico": "📐", "name": "弹道校准", "desc": "子弹速度 +25%，弹丸射程 +18%（投射构筑）", "rarity": "epic", "effects": { "bullet_speed_bonus": 0.25, "bullet_range_bonus": 0.18 } },
+	{ "id": "burningheart", "ico": "🔥", "name": "灼心诀", "desc": "命中时 12% 概率点燃，状态伤害 +35%", "rarity": "epic", "effects": { "on_hit_burn": 0.12, "status_dmg_mult": 0.35 } },
+	{ "id": "frostmantra", "ico": "🧊", "name": "玄冰诀", "desc": "命中时 10% 概率冻结，异常持续 +45%", "rarity": "epic", "effects": { "on_hit_freeze": 0.10, "status_dur_mult": 0.45 } },
+	{ "id": "bloodoath", "ico": "🩸", "name": "血战令", "desc": "生命越低伤害越高，濒死时最高 +30%", "rarity": "epic", "effects": { "low_hp_dmg_bonus": 0.30 } },
+	{ "id": "harvestrite", "ico": "🌾", "name": "丰饶祭", "desc": "材料获取 +45%，拾取范围 +70", "rarity": "epic", "effects": { "harvesting": 0.45, "pickup_range": 70.0 } },
 ]
 
 ## 商店道具（被动 = 永久属性；effects 键 = player.stats 键，创意工坊数据驱动；
@@ -455,6 +510,15 @@ const ITEMS := [
 	{ "id": "i-bloodvial", "ico": "🩸", "name": "血瓶", "desc": "命中时 20% 概率造成流血，击杀回复 +1.5", "price": 52, "rarity": "rare", "effects": { "on_hit_bleed": 0.20, "lifesteal": 1.5 } },
 	{ "id": "i-frostshard", "ico": "❄", "name": "霜片", "desc": "命中时 12% 概率冻结目标，异常持续 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12, "status_dur_mult": 0.15 } },
 	{ "id": "i-thunderrod", "ico": "⚡", "name": "雷杵", "desc": "命中时 10% 概率眩晕目标，子弹速度 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_stun": 0.10, "bullet_speed_bonus": 0.15 } },
+	# ---- 角色向道具：与元素附魔同一思路，但标签更集中（对对应角色的亲和倍率更高）----
+	# 近战（太白剑客 / 无相武僧 / 百战军侯）/ 投射（游侠 / 弹雨枪手）/ 火（焚天祭司）/
+	# 冰（沧海鲛人）/ 残血（狂战士 / 血族）/ 经济（收获者）各有 1 件
+	{ "id": "i-swordcase", "ico": "🗡", "name": "剑匣", "desc": "斩击范围 +35%，暴击率 +6%", "price": 72, "rarity": "epic", "effects": { "melee_range_bonus": 0.35, "crit_ch": 0.06 } },
+	{ "id": "i-calibrator", "ico": "🎯", "name": "校准仪", "desc": "弹丸射程 +30%，子弹速度 +20%", "price": 68, "rarity": "epic", "effects": { "bullet_range_bonus": 0.30, "bullet_speed_bonus": 0.20 } },
+	{ "id": "i-pyrotalisman", "ico": "🧧", "name": "焚天符", "desc": "命中时 16% 概率点燃，状态伤害 +40%", "price": 74, "rarity": "epic", "effects": { "on_hit_burn": 0.16, "status_dmg_mult": 0.40 } },
+	{ "id": "i-frostmirror", "ico": "🪞", "name": "霜心镜", "desc": "命中时 14% 概率冻结，异常持续 +50%", "price": 72, "rarity": "epic", "effects": { "on_hit_freeze": 0.14, "status_dur_mult": 0.50 } },
+	{ "id": "i-ragecloak", "ico": "🧥", "name": "怒血披风", "desc": "濒死时最高 +28% 伤害，闪避 +5%", "price": 54, "rarity": "rare", "effects": { "low_hp_dmg_bonus": 0.28, "dodge": 0.05 } },
+	{ "id": "i-luckypouch", "ico": "👝", "name": "聚宝囊", "desc": "材料获取 +50%，拾取范围 +60", "price": 48, "rarity": "rare", "effects": { "harvesting": 0.50, "pickup_range": 60.0 } },
 ]
 
 ## ============================================================
@@ -946,6 +1010,98 @@ static func affinity_mult(item_tags: Array, affinity: Array) -> float:
 	if hit <= 0:
 		return 1.0
 	return 1.0 + AFFINITY_BONUS * float(hit)
+
+# ============================================================
+# 角色印记（SIGIL）—— 角色的元素 / 风格在武器表现上的专属痕迹
+#
+# 与「武器外观族」正交：外观族回答「这是什么武器」（火舌 / 冰晶 / 刀光），
+# 印记回答「这是谁在用」（焚天祭司的火星 / 沧海鲛人的霜粒 / 太白剑客的刃光）。
+# 于是同一个角色换武器，画面里仍留有他的味道；同一把武器换角色，表现也随之改变。
+#
+# 每个印记只用四种绘制原语之一，避免为 11 个印记各写一套绘制代码：
+#   spark 飞散火星（火 / 爆 / 血）    mote 漂浮微粒（水 / 木 / 土 / 生）
+#   edge  附加锋线（剑 / 疾）          ring 脉动光环（守 / 运）
+# ============================================================
+const SIGIL_GLYPHS := ["spark", "mote", "edge", "ring"]
+const SIGILS := {
+	"fire":  { "name": "烈焰", "color": "#ff7a3c", "glyph": "spark" },
+	"water": { "name": "寒霜", "color": "#8fd8ff", "glyph": "mote" },
+	"wood":  { "name": "青瘴", "color": "#6ab04c", "glyph": "mote" },
+	"earth": { "name": "厚土", "color": "#ffd24a", "glyph": "mote" },
+	"blade": { "name": "剑意", "color": "#e8eef8", "glyph": "edge" },
+	"swift": { "name": "疾风", "color": "#9fe8d8", "glyph": "edge" },
+	"blast": { "name": "轰爆", "color": "#ffb347", "glyph": "spark" },
+	"guard": { "name": "坚守", "color": "#8fa8ff", "glyph": "ring" },
+	"luck":  { "name": "鸿运", "color": "#ffd76a", "glyph": "ring" },
+	"blood": { "name": "血怒", "color": "#c23b52", "glyph": "spark" },
+	"vigor": { "name": "生生", "color": "#a8e6a0", "glyph": "mote" },
+}
+
+## 五行状态 → 印记
+static func element_sigil(status: String) -> String:
+	return {
+		"burn": "fire", "poison": "wood", "bleed": "blood",
+		"freeze": "water", "slow": "water", "stun": "earth",
+	}.get(status, "")
+
+## effects 键 → 印记（角色特性 / 升级 / 道具共用同一张表）
+static func effect_sigil(key: String) -> String:
+	return {
+		"melee_range_bonus": "blade",
+		"bullet_speed_bonus": "swift",
+		"bullet_range_bonus": "swift",
+		"aoe_radius_bonus": "blast",
+		"low_hp_dmg_bonus": "blood",
+		"momentum_dmg_bonus": "blade",
+		"status_dmg_mult": "wood",
+		"status_dur_mult": "wood",
+		"status_chance": "wood",
+		"crit_ch": "luck",
+		"crit_mult": "luck",
+		"harvesting": "vigor",
+		"pickup_range": "vigor",
+		"regen": "vigor",
+		"lifesteal": "blood",
+		"max_hp": "guard",
+		"armor": "guard",
+		"dodge": "swift",
+		"speed_mult": "swift",
+		"base_speed": "swift",
+	}.get(key, "")
+
+## 角色印记推导：trait.sigil 显式声明优先（显式写空串 = 刻意「无印记」，
+## 如土豆勇者的「均衡之道」），否则按 kind → status → effects 顺序推断。
+## 返回 "" 表示该角色不带印记。
+static func sigil_for(character_id: String) -> String:
+	var tr: Dictionary = Registry.get_character(character_id).get("trait", {})
+	if tr.is_empty():
+		return ""
+	if tr.has("sigil"):
+		return String(tr["sigil"])
+	match String(tr.get("kind", "")):
+		"aura":
+			return element_sigil(String(tr.get("status", "")))
+		"thorns":
+			return "guard"
+		"momentum":
+			return "blade"
+	for k in tr.get("effects", {}):
+		var s := effect_sigil(String(k))
+		if s != "":
+			return s
+	return ""
+
+## 印记是否合法（空串合法 = 无印记）
+static func sigil_valid(id: String) -> bool:
+	return id == "" or SIGILS.has(id)
+
+static func sigil_color(id: String) -> Color:
+	if not SIGILS.has(id):
+		return Color(0, 0, 0, 0)
+	return Color(String(SIGILS[id].get("color", "#ffffff")))
+
+static func sigil_glyph(id: String) -> String:
+	return String(SIGILS.get(id, {}).get("glyph", ""))
 
 static func rarity_color(r: String) -> Color:
 	return RARITY_COLORS.get(r, Color("9aa3b2"))

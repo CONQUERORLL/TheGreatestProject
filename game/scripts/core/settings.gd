@@ -273,8 +273,11 @@ func reset_action(action: String) -> void:
 	_apply_action_events(action, defs)
 	var cfg := ConfigFile.new()
 	if cfg.load(CFG_PATH) == OK:
-		cfg.erase_section_key("input", action)
-		cfg.save(CFG_PATH)
+		# 用户从没自定义过按键时 settings.cfg 没有 "input" 段，
+		# 直接 erase_section_key 会报 "Cannot erase key from nonexistent section"
+		if cfg.has_section_key("input", action):
+			cfg.erase_section_key("input", action)
+			cfg.save(CFG_PATH)
 
 func _apply_action_events(action: String, descriptors: Array) -> void:
 	if not InputMap.has_action(action):

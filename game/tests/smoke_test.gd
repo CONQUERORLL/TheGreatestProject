@@ -22,6 +22,7 @@ const TEST_SAVE_ROOT := "user://tests/smoke_run"
 const TEST_CODEX_PATH := "user://tests/codex_data.json"
 const TEST_META_PATH := "user://tests/meta_progress.json"
 const TEST_STEAM_PATH := "user://tests/steam_pending.json"
+const TEST_UNLOCKS_PATH := "user://tests/unlocks.json"
 
 func _ready() -> void:
 	SaveRun.set_storage_root_for_tests(TEST_SAVE_ROOT)
@@ -33,6 +34,8 @@ func _ready() -> void:
 	CodexData.reset_for_tests()
 	PlatformAchievements.set_storage_path_for_tests(TEST_STEAM_PATH)
 	PlatformAchievements.reset_for_tests()
+	Unlocks.set_storage_path_for_tests(TEST_UNLOCKS_PATH)
+	Unlocks.reset_for_tests()
 	_main = preload("res://scenes/main.tscn").instantiate()
 	add_child(_main)
 	# 音频：SFX / Music 独立总线 + 主场景自动切战斗 BGM + 独立音量生效
@@ -767,6 +770,12 @@ func _check_items() -> void:
 	await _check_character_traits()
 	await _check_weapon_fx()
 	_check_affinity()
+	_check_sigils()
+	_check_affinity_floor()
+	_check_object_pool()
+	_check_boss_death_skills()
+	_check_unlocks()
+	_check_sect_talents()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -3627,6 +3636,273 @@ func _check_affinity() -> void:
 		return
 	print("SMOKE: affinity OK")
 
+## 角色印记（SIGIL）：表完整性 / 推导规则 / 显式声明优先 / 是否真的传到弹丸与刀光
+func _check_sigils() -> void:
+	# ---- 1. 表完整性 ----
+	if Config.SIGILS.is_empty():
+		_fail("SIGILS 表为空")
+		return
+	for sid in Config.SIGILS:
+		var s: Dictionary = Config.SIGILS[sid]
+		for key in ["name", "color", "glyph"]:
+			if not s.has(key):
+				_fail("印记 %s 缺少字段 %s" % [String(sid), key])
+				return
+		if not (String(s.glyph) in Config.SIGIL_GLYPHS):
+			_fail("印记 %s 的 glyph 非法：%s" % [String(sid), String(s.glyph)])
+			return
+		if not Color.html_is_valid(String(s.color)):
+			_fail("印记 %s 的颜色非法：%s" % [String(sid), String(s.color)])
+			return
+	# ---- 2. 每个角色都能推导出合法印记（空串合法 = 刻意无印记）----
+	var used := {}
+	var blank := 0
+	for cid in Registry.characters:
+		var sg := Config.sigil_for(String(cid))
+		if not Config.sigil_valid(sg):
+			_fail("角色 %s 推导出非法印记：%s" % [String(cid), sg])
+			return
+		if sg == "":
+			blank += 1
+		else:
+			used[sg] = true
+	if used.size() < 8:
+		_fail("印记覆盖面过低：只有 %d 种被角色使用" % used.size())
+		return
+	if blank >= Registry.characters.size():
+		_fail("所有角色都没有印记")
+		return
+	# ---- 3. 显式声明优先：土豆勇者 effects 里有 speed_mult，
+	# 不显式写空串就会被推成「疾风」，与「均衡之道」的定位矛盾 ----
+	if Config.sigil_for("potato") != "":
+		_fail("显式声明的空印记未生效（土豆勇者实得 %s）" % Config.sigil_for("potato"))
+		return
+	if Config.sigil_for("nobody_here") != "":
+		_fail("未知角色应推导出空印记")
+		return
+	# ---- 4. 推导规则抽查：光环按元素、剑客按 effects、荆棘按定位 ----
+	var expects := { "pyromancer": "fire", "swordmaster": "blade", "guardian": "guard",
+		"warlord": "blade", "tidecaller": "water" }
+	for cid2 in expects:
+		var got := Config.sigil_for(String(cid2))
+		if got != String(expects[cid2]):
+			_fail("角色 %s 的印记应为 %s（实得 %s）" % [String(cid2), String(expects[cid2]), got])
+			return
+	# ---- 5. 数据链路：印记必须真的到达弹丸与刀光实例 ----
+	var b = preload("res://scenes/weapons/bullet.tscn").instantiate()
+	b.setup(Vector2.ZERO, 0.0, { "fx": "bolt", "bspeed": 500.0 },
+		{ "dmg": 1.0, "crit": false, "sigil": "fire" }, Color(0, 0, 0, 0))
+	if String(b.sigil) != "fire":
+		_fail("弹丸未接收印记（实得 %s）" % String(b.sigil))
+		b.free()
+		return
+	b.free()
+	var sl := Slash.new()
+	sl.setup(Vector2.ZERO, 0.0, 100.0, 1.5, "slash", Color(0, 0, 0, 0),
+		Color(1, 1, 1), "water")
+	if String(sl.sigil) != "water":
+		_fail("刀光未接收印记（实得 %s）" % String(sl.sigil))
+		sl.free()
+		return
+	sl.free()
+	# ---- 6. 玩家侧：player.sigil 与 _roll_damage 的打包 ----
+	var pl: Node = _main.get_node("Player")
+	var want := Config.sigil_for(GameState.character_id)
+	if String(pl.sigil) != want:
+		_fail("player.sigil 与当前角色不符（%s vs %s）" % [String(pl.sigil), want])
+		return
+	var roll: Dictionary = pl._roll_damage(10.0, {})
+	if String(roll.get("sigil", "")) != want:
+		_fail("_roll_damage 未打包印记")
+		return
+	print("SMOKE: sigils OK (%d kinds in use / %d blank)" % [used.size(), blank])
+
+## 亲和保底：单靠加权只是「更常出现」，保底把关联性变成承诺。
+## 这里直接对保底函数做确定性验证 —— 不依赖随机抽到什么，断言永远可复现
+func _check_affinity_floor() -> void:
+	# ---- 1. 升级三选一：三张全不契合时必须换出至少一张契合项 ----
+	var lu: Node = _main.get_node("UI/LevelUp")
+	var cold: Array = []
+	for u in Registry.upgrade_list():
+		if not ("melee" in Config.entry_tags(u)):
+			cold.append(u)
+		if cold.size() >= 3:
+			break
+	if cold.size() < 3:
+		_fail("找不到 3 个非近战升级用于保底测试")
+		return
+	lu._choices = [cold[0], cold[1], cold[2]]
+	lu._ensure_affinity_choice(["melee"])
+	var filled := false
+	for c in lu._choices:
+		if "melee" in Config.entry_tags(c):
+			filled = true
+	if not filled:
+		_fail("升级保底未生效：三张全不契合时没有换出契合项")
+		return
+	# ---- 2. 已有契合项时不得干预（否则每级都塞同一类卡，build 会变窄而非变丰富）----
+	var hot: Dictionary = {}
+	for u2 in Registry.upgrade_list():
+		if "melee" in Config.entry_tags(u2):
+			hot = u2
+			break
+	if hot.is_empty():
+		_fail("升级池里没有近战向条目")
+		return
+	lu._choices = [hot, cold[0], cold[1]]
+	lu._ensure_affinity_choice(["melee"])
+	if String(lu._choices[1].id) != String(cold[0].id) \
+			or String(lu._choices[2].id) != String(cold[1].id):
+		_fail("已有契合项时保底仍然替换了卡片")
+		return
+	# ---- 3. 无亲和标签时不得干预 ----
+	lu._choices = [cold[0], cold[1], cold[2]]
+	lu._ensure_affinity_choice([])
+	if String(lu._choices[2].id) != String(cold[2].id):
+		_fail("无亲和标签时保底不应改动卡片")
+		return
+	lu._choices = []
+	# ---- 4. 商店保底：整店无契合时必须塞一格 ----
+	var shop: Node = _main.get_node("UI/Shop")
+	var saved_aff: Array = shop._affinity_cache
+	var saved_goods: Array = shop.goods
+	shop._affinity_cache = ["melee"]   # 直接喂亲和标签，把变量控住
+	var cold_items: Array = []
+	for it in Registry.item_list():
+		if not ("melee" in Config.entry_tags(it)):
+			cold_items.append(it)
+		if cold_items.size() >= 4:
+			break
+	if cold_items.size() < 4:
+		_fail("找不到 4 个非近战道具用于保底测试")
+		shop._affinity_cache = saved_aff
+		return
+	shop.goods = _cold_goods(cold_items, 0)
+	shop._ensure_affinity_goods()
+	var last: Dictionary = shop.goods[shop.goods.size() - 1]
+	if not bool(last.get("forced_synergy", false)) or int(last.get("synergy", 0)) <= 0:
+		_fail("商店保底未生效：整店无契合时最后一格未被替换")
+		shop.goods = saved_goods
+		shop._affinity_cache = saved_aff
+		return
+	# ---- 5. 已有契合商品时不得干预 ----
+	shop.goods = _cold_goods(cold_items, 1)
+	shop._ensure_affinity_goods()
+	if bool(shop.goods[shop.goods.size() - 1].get("forced_synergy", false)):
+		_fail("已有契合商品时保底仍然替换")
+		shop.goods = saved_goods
+		shop._affinity_cache = saved_aff
+		return
+	shop.goods = saved_goods
+	shop._affinity_cache = saved_aff
+	print("SMOKE: affinity floor OK (level-up + shop)")
+
+## 对象池：acquire/release 的复用与复位。用真实弹丸场景验证 setup 能完整重置
+func _check_object_pool() -> void:
+	ObjectPool.clear()
+	var bs: PackedScene = preload("res://scenes/weapons/bullet.tscn")
+	var parent := _main
+	# 首次 acquire：实例化新节点，池应为空
+	var a = ObjectPool.acquire("test_bullet", bs, parent)
+	if not is_instance_valid(a) or ObjectPool.idle_count() != 0:
+		_fail("首次 acquire 未实例化（或池不为空）")
+		return
+	# release：进入池、移出场景树
+	ObjectPool.release("test_bullet", a)
+	if ObjectPool.idle_count() != 1:
+		_fail("release 后未进入池（idle=%d）" % ObjectPool.idle_count())
+		return
+	if a.is_inside_tree():
+		_fail("release 后节点仍在场景树中")
+		return
+	# 再次 acquire：必须复用同一实例
+	var b = ObjectPool.acquire("test_bullet", bs, parent)
+	if b != a:
+		_fail("第二次 acquire 未复用同一实例")
+		return
+	if ObjectPool.idle_count() != 0:
+		_fail("复用后池未清空")
+		return
+	# 复用节点的 setup 必须完整复位（位置/伤害等运行时字段）
+	b.setup(Vector2(100.0, 100.0), 1.0, { "fx": "bolt", "bspeed": 700.0 },
+		{ "dmg": 5.0, "crit": false, "sigil": "" }, Color(0, 0, 0, 0))
+	if b.position != Vector2(100.0, 100.0) or float(b.dmg) != 5.0:
+		_fail("复用弹丸 setup 未完整复位（pos=%s dmg=%s）" % [str(b.position), str(b.dmg)])
+		ObjectPool.release("test_bullet", b)
+		return
+	ObjectPool.release("test_bullet", b)
+	ObjectPool.clear()
+	print("SMOKE: object pool OK")
+
+## BOSS 死亡技能：数据完整性 / 凤凰涅槃拦截 / 死亡技能确实产生弹幕
+func _check_boss_death_skills() -> void:
+	# ---- 1. 每个 BOSS 都有合法死亡技能 ----
+	var valid := ["ring", "double_ring", "miasma", "rebirth", "shockwave"]
+	for bid in Config.BOSS_POOL:
+		var bcfg: Dictionary = Config.ENEMIES.get(String(bid), {})
+		var ds := String(bcfg.get("death_skill", ""))
+		if ds == "" or not (ds in valid):
+			_fail("BOSS %s 的死亡技能非法：%s" % [String(bid), ds])
+			return
+	# ---- 2. 凤凰涅槃：第一次死不触发 boss_killed 且回血复活；第二次死才触发 ----
+	# 断开系统对 boss_killed 的处理（标准=通关结算 VICTORY / 无尽=进商店），二者都会改 phase；
+	# 只保留本测试的监听，用标志收集断言结果，统一恢复后再判失败，避免 return 漏恢复
+	var wm = _main.get_node("WaveManager")
+	EventBus.boss_killed.disconnect(_main._on_boss_killed)
+	EventBus.boss_killed.disconnect(wm._on_boss_killed)
+	var restore := func() -> void:
+		EventBus.boss_killed.connect(_main._on_boss_killed)
+		EventBus.boss_killed.connect(wm._on_boss_killed)
+	var killed := [0]
+	var cb := func() -> void:
+		killed[0] += 1
+	EventBus.boss_killed.connect(cb)
+	var phx = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(phx)
+	phx.setup("boss_phoenix", 10)
+	phx.player = _main.get_node("Player")
+	var max_hp: float = phx.max_hp
+	phx.take_damage(max_hp * 10.0, false)
+	var ok_first: bool = killed[0] == 0 and phx.hp > 0.0 \
+		and is_equal_approx(phx.hp, max_hp * 0.5)
+	phx.take_damage(phx.hp * 10.0, false)
+	var ok_second: bool = killed[0] == 1
+	EventBus.boss_killed.disconnect(cb)
+	restore.call()
+	phx.queue_free()
+	if not ok_first:
+		_fail("凤凰第一次死亡应回血复活（killed=%d hp=%.0f/%.0f）" % [killed[0], phx.hp, max_hp])
+		return
+	if not ok_second:
+		_fail("凤凰第二次死亡应触发 boss_killed（实际 %d 次）" % killed[0])
+		return
+	# ---- 3. ring 死亡技能确实产生敌弹 ----
+	var before := get_tree().get_nodes_in_group("enemy_bullets").size()
+	var b2 = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(b2)
+	b2.setup("boss", 10)
+	b2.player = _main.get_node("Player")
+	b2._execute_death_skill()
+	var after := get_tree().get_nodes_in_group("enemy_bullets").size()
+	if after <= before:
+		_fail("ring 死亡技能未产生敌弹（%d → %d）" % [before, after])
+		b2.queue_free()
+		return
+	b2.queue_free()
+	# 清理死亡技能残留的敌弹，避免污染后续压测
+	for eb in get_tree().get_nodes_in_group("enemy_bullets"):
+		eb.queue_free()
+	print("SMOKE: boss death skills OK")
+
+## 构造 4 格假商品（synergy 固定为 v），供保底测试用
+func _cold_goods(entries: Array, v: int) -> Array:
+	var out: Array = []
+	for e in entries:
+		out.append({ "kind": "item", "id": e.id, "ico": e.ico, "name": e.name,
+			"desc": e.desc, "rarity": e.rarity, "base_price": int(e.price),
+			"synergy": v, "sold": false, "locked": false })
+	return out
+
 func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
 		resist: float = 0.0) -> Node2D:
 	var e: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
@@ -3656,6 +3932,155 @@ func _find_reaction_head(hud: Control) -> Label:
 			return c as Label
 	return null
 
+## 解锁系统：数据完整性 / 阈值推导 / check_new 一次性庆祝 / 默认解锁
+func _check_unlocks() -> void:
+	# 数据完整性：每条锁定条目有合法 stat 键（白名单内）与非空 hint
+	for pair in [["character", Config.CHARACTER_UNLOCKS], ["weapon", Config.WEAPON_UNLOCKS]]:
+		var kind: String = pair[0]
+		var tbl: Dictionary = pair[1]
+		for id in tbl:
+			var e: Dictionary = Config.unlock_entry(kind, String(id))
+			if e.is_empty():
+				_fail("解锁条目 %s:%s 查不到" % [kind, String(id)])
+				return
+			if String(e.get("stat", "")) not in Config.UNLOCK_STAT_KEYS:
+				_fail("解锁条目 %s:%s 的 stat 键不在白名单" % [kind, String(id)])
+				return
+			if String(e.get("hint", "")).is_empty():
+				_fail("解锁条目 %s:%s 缺少 hint" % [kind, String(id)])
+				return
+	# 未列入表的默认解锁（基础内容 + mod）
+	if not Unlocks.is_unlocked("character", "potato"):
+		_fail("基础角色 potato 应默认解锁")
+		return
+	if not Unlocks.is_unlocked("weapon", "pistol"):
+		_fail("基础武器 pistol 应默认解锁")
+		return
+	# 阈值推导：快照统计 → 清零 → 精确断言 → 还原（不受前置用例的统计污染）
+	var saved := {}
+	for k in Config.UNLOCK_STAT_KEYS:
+		saved[k] = CodexData.stat(k)
+		CodexData.stats[k] = 0
+	Unlocks.reset_for_tests()
+	if Unlocks.is_unlocked("character", "warlord"):
+		_restore_unlock_stats(saved)
+		_fail("warlord 应在 victories=0 时锁定")
+		return
+	if Unlocks.is_unlocked("weapon", "gold_scepter"):
+		_restore_unlock_stats(saved)
+		_fail("gold_scepter 应在 victories=0 时锁定")
+		return
+	CodexData.stats["victories"] = 1
+	if not Unlocks.is_unlocked("character", "warlord"):
+		_restore_unlock_stats(saved)
+		_fail("warlord 应在 victories>=1 时解锁")
+		return
+	if not Unlocks.is_unlocked("weapon", "gold_scepter"):
+		_restore_unlock_stats(saved)
+		_fail("gold_scepter 应在 victories>=1 时解锁")
+		return
+	# check_new 一次性：本轮应恰有 2 个新解锁（warlord + gold_scepter），再次调用为 0
+	var n := Unlocks.check_new()
+	if n != 2:
+		_restore_unlock_stats(saved)
+		_fail("check_new 应恰有 2 个新解锁（实际 %d）" % n)
+		return
+	if Unlocks.check_new() != 0:
+		_restore_unlock_stats(saved)
+		_fail("check_new 第二次应返回 0（庆祝应一次性）")
+		return
+	_restore_unlock_stats(saved)
+	Unlocks.reset_for_tests()
+	print("SMOKE: unlocks OK")
+
+func _restore_unlock_stats(saved: Dictionary) -> void:
+	for k in saved:
+		CodexData.stats[k] = int(saved[k])
+
+## 门派天赋树：数据完整性 / effect 键合法 / sect_for / buy_sect 扣费持久化 / 仅对应角色生效
+func _check_sect_talents() -> void:
+	# 5 门派齐全 + 数据合法
+	if MetaProgress.SECT_TALENTS.size() != 5:
+		_fail("门派天赋应有 5 个（实际 %d）" % MetaProgress.SECT_TALENTS.size())
+		return
+	for sid in MetaProgress.SECT_TALENTS:
+		var t: Dictionary = MetaProgress.SECT_TALENTS[sid]
+		var chid := String(t.get("character", ""))
+		if not Registry.characters.has(chid):
+			_fail("门派 %s 的 character %s 不存在" % [String(sid), chid])
+			return
+		if int(t.get("max_lv", 0)) <= 0:
+			_fail("门派 %s 缺少 max_lv" % String(sid))
+			return
+		var eff: Dictionary = t.get("effect", {})
+		if not eff.has("stats") or typeof(eff.stats) != TYPE_DICTIONARY:
+			_fail("门派 %s 缺少 effect.stats" % String(sid))
+			return
+		for k in eff.stats:
+			if not Registry.STAT_LIMITS.has(String(k)):
+				_fail("门派 %s 的 effect 键 %s 不在 STAT_LIMITS" % [String(sid), String(k)])
+				return
+	# sect_for 映射
+	if MetaProgress.sect_for("pyromancer") != "fire":
+		_fail("sect_for(pyromancer) 应返回 fire")
+		return
+	if MetaProgress.sect_for("potato") != "":
+		_fail("非门派角色 potato 应无门派")
+		return
+	# buy_sect 扣费 + 持久化
+	MetaProgress.reset_for_tests()
+	MetaProgress.essence = 500
+	var cost0 := MetaProgress.sect_cost("fire")   # 本级价格（sect_cost 随等级递增，须在购买前取值）
+	if not MetaProgress.buy_sect("fire"):
+		_fail("buy_sect(fire) 应成功（精华 500）")
+		return
+	if MetaProgress.sect_level("fire") != 1:
+		_fail("buy_sect 后 fire 等级应为 1")
+		return
+	if MetaProgress.essence != 500 - cost0:
+		_fail("buy_sect 后精华扣除不正确（%d ≠ %d）" % [MetaProgress.essence, 500 - cost0])
+		return
+	MetaProgress._save()
+	MetaProgress.reset_for_tests()
+	MetaProgress._load()
+	if MetaProgress.sect_level("fire") != 1:
+		_fail("门派天赋未持久化（load 后 fire 等级 %d）" % MetaProgress.sect_level("fire"))
+		return
+	# 仅对应角色生效：用全新玩家实例，避免污染主玩家的 stats
+	var saved_cid: String = GameState.character_id
+	MetaProgress.reset_for_tests()
+	MetaProgress.essence = 500
+	MetaProgress.buy_sect("fire")
+	# pyromancer 吃到 fire 门派天赋
+	GameState.character_id = "pyromancer"
+	var p_pyro: Node2D = preload("res://scenes/characters/player.tscn").instantiate()
+	_main.add_child(p_pyro)
+	var base_dmg: float = p_pyro.stats.status_dmg_mult
+	MetaProgress.apply_on_run_start(p_pyro)
+	if not is_equal_approx(float(p_pyro.stats.status_dmg_mult), base_dmg + 0.15):
+		_fail("门派天赋未对 pyromancer 生效（%.3f ≠ %.3f）"
+			% [float(p_pyro.stats.status_dmg_mult), base_dmg + 0.15])
+		p_pyro.queue_free()
+		GameState.character_id = saved_cid
+		MetaProgress.reset_for_tests()
+		return
+	p_pyro.queue_free()
+	# potato 不吃 fire 门派天赋
+	GameState.character_id = "potato"
+	var p_potato: Node2D = preload("res://scenes/characters/player.tscn").instantiate()
+	_main.add_child(p_potato)
+	MetaProgress.apply_on_run_start(p_potato)
+	if not is_equal_approx(float(p_potato.stats.status_dmg_mult), 0.0):
+		_fail("potato 被误加了 fire 门派天赋（%.3f）" % float(p_potato.stats.status_dmg_mult))
+		p_potato.queue_free()
+		GameState.character_id = saved_cid
+		MetaProgress.reset_for_tests()
+		return
+	p_potato.queue_free()
+	GameState.character_id = saved_cid
+	MetaProgress.reset_for_tests()
+	print("SMOKE: sect talents OK")
+
 ## 无尽炼狱模式回归：标准通关→继续无尽、BOSS 波判定/积分公式/排行榜、
 ## BOSS 击破 → 商店衔接 → wave11 存档/恢复、240 敌群性能压测、死亡入榜
 func _check_endless() -> void:
@@ -3675,6 +4100,9 @@ func _check_endless() -> void:
 		_fail("BOSS 血量未强化（max_hp=%.0f）" % vboss_hp)
 		return
 	vboss.take_damage(1.0e9, false)
+	# 焚天凤凰会涅槃复活一次：一击后若仍未进结算（phase 仍 INTRO），补一刀
+	if GameState.phase != GameState.Phase.VICTORY and is_instance_valid(vboss):
+		vboss.take_damage(1.0e9, false)
 	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.VICTORY or not _main._victory_menu.visible:
 		_fail("击破 BOSS 未进入通关结算（phase=%d）" % GameState.phase)
@@ -3742,6 +4170,9 @@ func _check_endless() -> void:
 		return
 	# BOSS 击破 → 商店衔接 + wave11 存档
 	boss.take_damage(1.0e9, false)
+	# 焚天凤凰会涅槃复活一次：一击后若仍未进商店（phase 仍 INTRO 且 boss 仍存活），补一刀
+	if GameState.phase != GameState.Phase.SHOP and is_instance_valid(boss):
+		boss.take_damage(1.0e9, false)
 	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.SHOP or wm.boss != null:
 		_fail("无尽 BOSS 击破未衔接商店（phase=%d）" % GameState.phase)

@@ -354,6 +354,53 @@ func _roll_goods() -> void:
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in 4:
 		goods.append(_roll_one(weapon_full))
+	_ensure_affinity_goods()
+
+## 亲和保底：整店都没契合商品时，把最后一格换成契合项（已锁定的格不动）。
+## 与升级三选一同一个意图 —— 让「这家店与我的构筑有关」成为承诺，而不是运气。
+## 只在升级 / 道具里找：二者不受武器槽限制，池子更稳；法宝走独立掷点，不占这一格名额
+func _ensure_affinity_goods() -> void:
+	if goods.is_empty() or _affinity().is_empty():
+		return
+	for g in goods:
+		if int(g.get("synergy", 0)) > 0:
+			return   # 已有契合商品，不干预
+	var idx := goods.size() - 1
+	if bool(goods[idx].get("locked", false)):
+		return
+	var taken := {}
+	for g2 in goods:
+		taken[String(g2.get("id", ""))] = true
+	var pool: Array = []
+	for u in Registry.upgrade_list():
+		if taken.has(String(u.get("id", ""))):
+			continue
+		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
+		if m > 1.0:
+			pool.append({ "item": u,
+				"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m })
+	for it in Registry.item_list():
+		if taken.has(String(it.get("id", ""))):
+			continue
+		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
+		if m2 > 1.0:
+			pool.append({ "item": it,
+				"w": Config.rarity_weight(String(it.get("rarity", "common")), _wave) * m2 })
+	if pool.is_empty():
+		return
+	# 注意 GameRng.weighted_pick 返回的是 entry.item（条目本身），不是整条包装 ——
+	# 所以 kind 只能靠条目归属反查，别指望从池里带出来
+	var e: Dictionary = GameRng.weighted_pick(pool)
+	if e.is_empty():
+		return
+	var kind := "upgrade" if Registry.upgrades.has(String(e.get("id", ""))) else "item"
+	goods[idx] = {
+		"kind": kind, "id": e.id, "ico": e.ico, "name": e.name,
+		"desc": e.desc, "rarity": e.get("rarity", "common"),
+		"base_price": int(e.get("price", 22)),
+		"synergy": _synergy(e), "sold": false, "locked": false,
+		"forced_synergy": true,   # 测试观测：这一格是保底塞进来的
+	}
 
 func _roll_one(weapon_full: bool) -> Dictionary:
 	# 法宝先掷：独立于下面武器/升级/道具的 42/29/29 分配，不改动原有比例

@@ -16,18 +16,33 @@ var _bob := 0.0        # 当前浮动偏移（位置承担，避免每帧重绘�
 var _scale_settled := false
 
 func setup(kind_name: String, value: int, pos: Vector2, velocity: Vector2) -> void:
+	_reset_runtime()
 	kind = kind_name
 	val = value
 	position = pos
 	vel = velocity
+	_phase = pos.x   # 浮动相位取自 x 坐标（首次由 _ready 设，复用节点在这里重设）
 
 ## 法宝掉落专用入口：与 setup 分开而非改其签名，避免影响 xp/mat/heart 三处现有调用
 func setup_artifact(id: String, pos: Vector2, velocity: Vector2) -> void:
+	_reset_runtime()
 	kind = "artifact"
 	artifact_id = id
 	val = 1
 	position = pos
 	vel = velocity
+	_phase = pos.x
+
+## 对象池复用时的完整复位：_ready 只在首次实例化跑一次，复用的节点必须手动恢复
+## group 成员 / 弹出动画 / 结算标记等运行时状态，否则会出现「捡了不掉血」这类隐性 bug
+func _reset_runtime() -> void:
+	_collected = false
+	_t = 0.0
+	_bob = 0.0
+	_scale_settled = false
+	scale = Vector2(0.2, 0.2)   # 重新播放弹出缩放动画
+	if not is_in_group("loot"):
+		add_to_group("loot")    # settle() 会 remove_from_group，复用要加回来
 
 func _ready() -> void:
 	add_to_group("loot")
@@ -82,7 +97,7 @@ func settle() -> void:
 			# 波末全场回收也走 settle()，没捡到的法宝仍会入账（保底不丢）
 			if player and is_instance_valid(player):
 				player.apply_artifact(artifact_id)
-	queue_free()
+	ObjectPool.release("loot", self)
 
 func _draw() -> void:
 	match kind:

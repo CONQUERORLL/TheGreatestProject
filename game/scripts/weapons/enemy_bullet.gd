@@ -39,18 +39,18 @@ func _physics_process(delta: float) -> void:
 	if is_finite(block_t) and block_t > 0.0:
 		# 刻意不播撞击特效：敌弹数量最多，若每颗撞墙都迸发粒子，会吃掉
 		# Burst.MAX_LIVE 的全局预算，把「击杀/受击」这类关键打击感的粒子挤掉
-		queue_free()
+		ObjectPool.release("enemy_bullet", self)
 		return
 	if player != null and is_instance_valid(player) and Combat.segment_hits_circle(
 			previous, next, player.global_position, radius + float(Config.PLAYER.radius)):
 		global_position = next
 		player.take_damage(dmg)
-		queue_free()
+		ObjectPool.release("enemy_bullet", self)
 		return
 	global_position = next
 	var world := Rect2(0.0, 0.0, Config.WORLD.w, Config.WORLD.h)
 	if life <= 0.0 or not world.has_point(global_position):
-		queue_free()
+		ObjectPool.release("enemy_bullet", self)
 
 func _draw() -> void:
 	# 镖形（箭头朝 +X = 飞行方向）：外廓 > 弹身 > 弹芯，轮廓感强

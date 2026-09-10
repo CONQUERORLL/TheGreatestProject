@@ -123,6 +123,22 @@ bash game/tools/push.sh [分支]
 绕法：直接编辑 `.git/packed-refs`，把对应 `refs/remotes/origin/*` 行改成 `git ls-remote` 拿到的真实 SHA。
 这是本机环境特性，不是仓库问题 —— 用户在普通终端里一切正常。
 
+### ⚠️ 禁止 `git rebase`（会触发对象库回滚灾难）
+
+本沙箱里 `git rebase` 会 hang（被 SIGTERM 中断），且中断后沙箱的「新建目录/文件回滚」
+会把 `.git/refs/` 和 `.git/objects/`（含 pack 文件）大量删除 —— `git status` 报
+"not a git repository"、`git fsck` 报 missing blob、fetch 报 "invalid index-pack output"，
+本地对象库彻底损坏、无法用 fetch 修复。
+
+**整合远端分叉（用户自己推了新提交时）的正确姿势：**
+1. `git fetch origin` 确认是否分叉（**push 前必做**，不能假设远端停在上次位置）
+2. 分叉时：备份工作区改动 → `git clone --depth 60 <url> /tmp/fresh_clone` →
+   `git fetch origin <branch>` + `git checkout -B <branch> FETCH_HEAD` →
+   复制改动回去重建提交 → push → 用 fresh_clone 的 `.git` 覆盖原仓库损坏的 `.git`
+3. 绝不用 `git rebase` / `git merge` 去整合（merge 也尽量别在沙箱做，用 clone 重建最稳）
+
+工作区文件（代码改动）是灾难里唯一可靠的东西；提交对象可能被回滚，但文件内容不丢。
+
 ## 4. 受限环境的工具限制（本项目沙箱）
 
 | 现象 | 说明 |
@@ -169,6 +185,15 @@ bash game/tools/push.sh [分支]
   的视线判定，而 `Obstacles` 需要线段-圆解析解 —— 解法是让 `Obstacles` 本地实现那 15 行几何，
   只保留单向依赖 `Combat → Obstacles`。
 - mod / 数据校验失败用 `push_warning(...)` 跳过该条目，**不能中断其他内容加载**。
+- **类名冲突 / 方法名覆盖**：`class_name` 的静态方法不要用 `Object` 原生方法名 ——
+  本项目的 `ObjectPool.get()` 就覆盖了 `Object.get`，报
+  `The method "get()" overrides a method from native class "Object"`。
+  改用 `acquire` / `release` 这类无歧义的名字。
+- **本项目把「从 Variant 推断类型」当 error**（warning treated as error）：
+  对象池这类「返回复用节点」的工厂函数，若标返回 `Node`，调用方 `var x = ...`
+  会被推断成 `Node`，再调子类方法 `x.setup()` 直接报 `Nonexistent function 'setup' in base 'Node2D'`。
+  正确写法：**工厂函数不标返回类型（返回 Variant）**，内部 `var node: Node = null` +
+  `node = stack.pop_back() as Node`（显式 cast），调用方用 `var x = ...`（`=` 而非 `:=`）接收。
 
 ## 6. 架构约定
 

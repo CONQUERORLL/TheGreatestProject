@@ -18,6 +18,7 @@ var applied := false
 var status_roll: Dictionary = {}
 var fx := ""
 var col := Color("ff9a3c")
+var sigil := ""                  # 角色印记 id（元素 / 风格痕迹，空 = 无印记）
 
 static func spawn(parent: Node, pos: Vector2, radius: float, damage: float, is_crit: bool,
 		roll: Dictionary = {}) -> void:
@@ -29,6 +30,7 @@ static func spawn(parent: Node, pos: Vector2, radius: float, damage: float, is_c
 	ex.crit = is_crit
 	ex.status_roll = roll
 	ex.fx = String(roll.get("fx", ""))
+	ex.sigil = String(roll.get("sigil", ""))
 	# 配色：武器状态色优先（火=橙红 / 冰=冰蓝 / 雷=金 / 毒=绿），否则按外观族兜底
 	var sid := String(roll.get("status", ""))
 	if sid != "" and Config.STATUS.has(sid):
@@ -87,6 +89,43 @@ func _draw() -> void:
 			_draw_flame(t, alpha)
 		_:
 			_draw_default(t, alpha)
+	# 角色印记：爆点上再叠一层「谁打出来的」痕迹
+	if sigil != "":
+		_draw_sigil(t, alpha)
+
+## ---------------- 角色印记 ----------------
+## 叠加在爆炸外观之上：印记色外环 + 按 glyph 分布的痕迹。
+## 半径随扩散进度推进，但比主爆环略小 —— 让它读起来是「附着在爆点上」而非另一个爆炸
+func _draw_sigil(t: float, alpha: float) -> void:
+	var c := Config.sigil_color(sigil)
+	if c.a <= 0.0:
+		return
+	var r := max_r * (0.72 + 0.28 * t)
+	match Config.sigil_glyph(sigil):
+		"spark":
+			# 火 / 爆 / 血：向外飞散的火星
+			for i in 8:
+				var d := Vector2.from_angle(TAU * float(i) / 8.0 + t * 0.6)
+				draw_circle(d * r * (0.85 + float(i % 3) * 0.08),
+					2.0, Color(c.r, c.g, c.b, 0.60 * alpha))
+		"ring":
+			# 守 / 运：双环
+			draw_arc(Vector2.ZERO, r * 0.92, 0.0, TAU, 40,
+				Color(c.r, c.g, c.b, 0.50 * alpha), 2.0, true)
+			draw_arc(Vector2.ZERO, r * 0.68, 0.0, TAU, 32,
+				Color(c.r, c.g, c.b, 0.32 * alpha), 1.4, true)
+		"edge":
+			# 剑 / 疾：径向向外的锋线
+			for i2 in 6:
+				var d2 := Vector2.from_angle(TAU * float(i2) / 6.0 + 0.5)
+				draw_line(d2 * r * 0.45, d2 * r * 1.02,
+					Color(c.r, c.g, c.b, 0.48 * alpha), 1.6, true)
+		_:
+			# mote（水 / 木 / 土 / 生）：外圈漂浮微粒
+			for i3 in 10:
+				var d3 := Vector2.from_angle(TAU * float(i3) / 10.0 + t * 0.4)
+				draw_circle(d3 * r * (0.9 + float(i3 % 3) * 0.06),
+					1.6, Color(c.r, c.g, c.b, 0.50 * alpha))
 
 func _draw_default(_t: float, alpha: float) -> void:
 	var r := max_r * (1.0 - alpha)

@@ -31,6 +31,7 @@ var flee := 0.0
 var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才重绘
 var _spiral_angle := 0.0   # 螺旋织网者：当前螺旋弹幕相位
 var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
+var _reborn := false       # 焚天凤凰：涅槃重生标记（第一次死亡回血复活，仅一次）
 var spawn_wave := 1        # 生成时波次（召唤物继承）
 var elite := false         # 精英实例标志（由 wave_manager.spawn 注入；掉法宝只认这个）
 var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
@@ -56,7 +57,7 @@ func setup(type_name: String, wave: int = 1) -> void:
 	spawn_wave = wave
 	cfg = Registry.enemies[type_name]
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
-	var boss_flag := type_name == "boss" or bool(cfg.get("is_boss", false)) \
+	var boss_flag := type_name.begins_with("boss") or bool(cfg.get("is_boss", false)) \
 			or String(cfg.get("ai", "")) == "boss"
 	var hp_s := 1.0
 	var dmg_s := 1.0
@@ -82,9 +83,13 @@ func setup(type_name: String, wave: int = 1) -> void:
 	status_resist = clampf(float(cfg.get("status_resist", 0.0)), 0.0, 0.95)
 	CodexData.unlock("enemy", type_name)   # 图鉴：遭遇即解锁
 
-## 是否 BOSS（内置 boss / 自定义 is_boss=true / ai="boss"）
+## 是否 BOSS（内置 boss / boss_* 前缀 / 自定义 is_boss=true / ai="boss"）
 func is_boss() -> bool:
-	return type == "boss" or bool(cfg.get("is_boss", false)) or String(cfg.get("ai", "")) == "boss"
+	# boss / boss_spiral / boss_phoenix 等所有 boss_* 前缀都是 BOSS。
+	# 之前只判 type == "boss"，导致 Phase 2 的 5 个新 BOSS 从未被识别 ——
+	# 它们一直是「不会发弹幕、不触发胜利结算」的高血肉桩
+	return type.begins_with("boss") or bool(cfg.get("is_boss", false)) \
+		or String(cfg.get("ai", "")) == "boss"
 
 ## AI 行为类型（chaser 追击 / runner 抖动冲刺 / shooter 风筝射击 / boss 环形弹幕）
 func ai_type() -> String:
@@ -593,10 +598,9 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
 	if get_tree().get_nodes_in_group("enemy_bullets").size() >= 150:
 		return
-	var b := EnemyBulletScene.instantiate()
+	var b = ObjectPool.acquire("enemy_bullet", EnemyBulletScene, get_parent())
 	b.setup(global_position, ang, bspeed, dmg, r, life_t)
 	b.player = player
-	get_parent().add_child(b)
 
 func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	if hp <= 0.0 or flee > 0.0:
@@ -622,6 +626,19 @@ func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 		die()
 
 func die() -> void:
+	# 焚天凤凰·涅槃：第一次死亡回血复活，不结算击杀/掉落、不真正死亡。
+	# 必须放在 enemy_killed 之前拦截 —— 否则复活会让「一个 BOSS 计两次击杀」，
+	# 也会让法宝 on_kill 在假死时提前结算
+	if is_boss() and String(cfg.get("death_skill", "")) == "rebirth" and not _reborn:
+		_reborn = true
+		hp = max_hp * 0.5
+		enraged = true
+		speed *= 1.5
+		bar_t = 0.9
+		queue_redraw()
+		Burst.spawn(get_parent(), global_position, color, 30, 240.0)
+		EventBus.screen_shake.emit(10.0)
+		return
 	EventBus.enemy_killed.emit(type)
 	# 携带节点引用的死亡事件：法宝 on_kill 要读死前身上的状态（凤凰翎要燃烧、断刃锋要流血）
 	# 必须在 queue_free 之前发，订阅者才能安全访问节点；BOSS 也要发（无尽模式 BOSS 每波都死）
@@ -630,6 +647,7 @@ func die() -> void:
 		# 原型：BOSS 死亡大爆发（40 粒 / 260 速度）+ 震屏 14，直接胜利结算不掉落
 		Burst.spawn(get_parent(), global_position, color, 40, 260.0)
 		EventBus.screen_shake.emit(14.0)
+		_execute_death_skill()   # BOSS 专属死亡技能（最后一击）
 		EventBus.boss_killed.emit()
 		queue_free()
 		return
@@ -642,6 +660,42 @@ func die() -> void:
 	if player and is_instance_valid(player) and player.stats.lifesteal > 0.0:
 		player.hp = minf(player.stats.max_hp, player.hp + player.stats.lifesteal)
 	queue_free()
+
+## BOSS 专属死亡技能：死亡瞬间释放的最后一击（数据驱动，见 death_skill 字段）。
+## 设计克制 —— 形态明确可躲、伤害不高（≤ touch_dmg 且按距离衰减），
+## 只制造「胜利时刻仍需应对」的紧张，不做成「打赢却被反杀」的挫败。
+func _execute_death_skill() -> void:
+	match String(cfg.get("death_skill", "")):
+		"ring":
+			# 单圈爆发：一圈均匀弹幕收尾
+			for i in 16:
+				_fire_enemy_bullet(TAU * float(i) / 16.0, 300.0, 7.0, 4.0, touch_dmg * 0.5)
+		"double_ring":
+			# 双圈交叉：螺旋网崩解，两圈错相弹幕
+			for ring in 2:
+				var off := TAU * float(ring) / 2.0
+				for i in 14:
+					_fire_enemy_bullet(off + TAU * float(i) / 14.0,
+						260.0 + float(ring) * 70.0, 6.0, 4.0, touch_dmg * 0.4)
+		"miasma":
+			# 腐土孵化者：死后爆出瘴气，贴脸玩家按距离衰减受伤
+			var d := 99999.0
+			if player and is_instance_valid(player):
+				d = player.global_position.distance_to(global_position)
+			if d < radius + 200.0:
+				player.take_damage(touch_dmg * (1.0 - d / (radius + 200.0)))
+			for i in 12:
+				Burst.spawn(get_parent(),
+					global_position + Vector2.from_angle(TAU * float(i) / 12.0) * radius,
+					Color("4caf50"), 2, 80.0)
+		"shockwave":
+			# 玄武岩王：山崩地裂，贴身玩家受重击，远离即安全
+			var d2 := 99999.0
+			if player and is_instance_valid(player):
+				d2 = player.global_position.distance_to(global_position)
+			if d2 < radius + 300.0:
+				player.take_damage(touch_dmg * (1.0 - d2 / (radius + 300.0)))
+			EventBus.screen_shake.emit(16.0)
 
 ## 掉落：经验晶体 + 材料（收获加成）+ 概率红心（越强掉越好，heart_chance 按怪物类型）
 func _drop_loot() -> void:
@@ -674,17 +728,15 @@ func _artifact_system():
 
 ## 法宝掉落物：Loot.setup 的 value 是 int，承载不了法宝字符串 id，走独立入口
 func _spawn_artifact(id: String) -> void:
-	var l := LootScene.instantiate()
+	var l = ObjectPool.acquire("loot", LootScene, get_parent())
 	l.setup_artifact(id, global_position + Vector2(0.0, -6.0), Vector2(0.0, -70.0))
 	l.player = player
-	get_parent().add_child(l)
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
-	var l := LootScene.instantiate()
+	var l = ObjectPool.acquire("loot", LootScene, get_parent())
 	l.setup(kind_name, value, global_position + Vector2(GameRng.range_f(-6.0, 6.0),
 		GameRng.range_f(-6.0, 6.0)), velocity)
 	l.player = player
-	get_parent().add_child(l)
 
 func _draw() -> void:
 	var sc := 1.0 + (0.12 if flash_t > 0.0 else 0.0)
