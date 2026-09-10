@@ -123,6 +123,22 @@ bash game/tools/push.sh [分支]
 绕法：直接编辑 `.git/packed-refs`，把对应 `refs/remotes/origin/*` 行改成 `git ls-remote` 拿到的真实 SHA。
 这是本机环境特性，不是仓库问题 —— 用户在普通终端里一切正常。
 
+### ⚠️ 禁止 `git rebase`（会触发对象库回滚灾难）
+
+本沙箱里 `git rebase` 会 hang（被 SIGTERM 中断），且中断后沙箱的「新建目录/文件回滚」
+会把 `.git/refs/` 和 `.git/objects/`（含 pack 文件）大量删除 —— `git status` 报
+"not a git repository"、`git fsck` 报 missing blob、fetch 报 "invalid index-pack output"，
+本地对象库彻底损坏、无法用 fetch 修复。
+
+**整合远端分叉（用户自己推了新提交时）的正确姿势：**
+1. `git fetch origin` 确认是否分叉（**push 前必做**，不能假设远端停在上次位置）
+2. 分叉时：备份工作区改动 → `git clone --depth 60 <url> /tmp/fresh_clone` →
+   `git fetch origin <branch>` + `git checkout -B <branch> FETCH_HEAD` →
+   复制改动回去重建提交 → push → 用 fresh_clone 的 `.git` 覆盖原仓库损坏的 `.git`
+3. 绝不用 `git rebase` / `git merge` 去整合（merge 也尽量别在沙箱做，用 clone 重建最稳）
+
+工作区文件（代码改动）是灾难里唯一可靠的东西；提交对象可能被回滚，但文件内容不丢。
+
 ## 4. 受限环境的工具限制（本项目沙箱）
 
 | 现象 | 说明 |
