@@ -770,6 +770,7 @@ func _check_items() -> void:
 	_check_sigils()
 	_check_affinity_floor()
 	_check_object_pool()
+	_check_boss_death_skills()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -3828,6 +3829,66 @@ func _check_object_pool() -> void:
 	ObjectPool.clear()
 	print("SMOKE: object pool OK")
 
+## BOSS 死亡技能：数据完整性 / 凤凰涅槃拦截 / 死亡技能确实产生弹幕
+func _check_boss_death_skills() -> void:
+	# ---- 1. 每个 BOSS 都有合法死亡技能 ----
+	var valid := ["ring", "double_ring", "miasma", "rebirth", "shockwave"]
+	for bid in Config.BOSS_POOL:
+		var bcfg: Dictionary = Config.ENEMIES.get(String(bid), {})
+		var ds := String(bcfg.get("death_skill", ""))
+		if ds == "" or not (ds in valid):
+			_fail("BOSS %s 的死亡技能非法：%s" % [String(bid), ds])
+			return
+	# ---- 2. 凤凰涅槃：第一次死不触发 boss_killed 且回血复活；第二次死才触发 ----
+	# 断开系统对 boss_killed 的处理（标准=通关结算 VICTORY / 无尽=进商店），二者都会改 phase；
+	# 只保留本测试的监听，用标志收集断言结果，统一恢复后再判失败，避免 return 漏恢复
+	var wm = _main.get_node("WaveManager")
+	EventBus.boss_killed.disconnect(_main._on_boss_killed)
+	EventBus.boss_killed.disconnect(wm._on_boss_killed)
+	var restore := func() -> void:
+		EventBus.boss_killed.connect(_main._on_boss_killed)
+		EventBus.boss_killed.connect(wm._on_boss_killed)
+	var killed := [0]
+	var cb := func() -> void:
+		killed[0] += 1
+	EventBus.boss_killed.connect(cb)
+	var phx = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(phx)
+	phx.setup("boss_phoenix", 10)
+	phx.player = _main.get_node("Player")
+	var max_hp: float = phx.max_hp
+	phx.take_damage(max_hp * 10.0, false)
+	var ok_first: bool = killed[0] == 0 and phx.hp > 0.0 \
+		and is_equal_approx(phx.hp, max_hp * 0.5)
+	phx.take_damage(phx.hp * 10.0, false)
+	var ok_second: bool = killed[0] == 1
+	EventBus.boss_killed.disconnect(cb)
+	restore.call()
+	phx.queue_free()
+	if not ok_first:
+		_fail("凤凰第一次死亡应回血复活（killed=%d hp=%.0f/%.0f）" % [killed[0], phx.hp, max_hp])
+		return
+	if not ok_second:
+		_fail("凤凰第二次死亡应触发 boss_killed（实际 %d 次）" % killed[0])
+		return
+	# ---- 3. ring 死亡技能确实产生敌弹 ----
+	var before := get_tree().get_nodes_in_group("enemy_bullets").size()
+	var b2 = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(b2)
+	b2.setup("boss", 10)
+	b2.player = _main.get_node("Player")
+	b2._execute_death_skill()
+	var after := get_tree().get_nodes_in_group("enemy_bullets").size()
+	if after <= before:
+		_fail("ring 死亡技能未产生敌弹（%d → %d）" % [before, after])
+		b2.queue_free()
+		return
+	b2.queue_free()
+	# 清理死亡技能残留的敌弹，避免污染后续压测
+	for eb in get_tree().get_nodes_in_group("enemy_bullets"):
+		eb.queue_free()
+	print("SMOKE: boss death skills OK")
+
 ## 构造 4 格假商品（synergy 固定为 v），供保底测试用
 func _cold_goods(entries: Array, v: int) -> Array:
 	var out: Array = []
@@ -3885,6 +3946,9 @@ func _check_endless() -> void:
 		_fail("BOSS 血量未强化（max_hp=%.0f）" % vboss_hp)
 		return
 	vboss.take_damage(1.0e9, false)
+	# 焚天凤凰会涅槃复活一次：一击后若仍未进结算（phase 仍 INTRO），补一刀
+	if GameState.phase != GameState.Phase.VICTORY and is_instance_valid(vboss):
+		vboss.take_damage(1.0e9, false)
 	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.VICTORY or not _main._victory_menu.visible:
 		_fail("击破 BOSS 未进入通关结算（phase=%d）" % GameState.phase)
