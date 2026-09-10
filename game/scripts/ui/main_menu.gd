@@ -23,8 +23,8 @@ var _options: GridContainer
 var _back_btn: Button
 var _next_btn: Button
 var _step := 0
-var _back_press_ms := 0   # 首页返回键上次按下时刻（双击退出防误触）
-var _back_hint: Label
+var _back_press_ms := 0   # 首页返回键上次按下时刻（双击回桌面防误触）
+var _back_hint: PanelContainer
 var _slots_panel: Control     # 选槽弹窗（开始新局 / 继续共用）
 var _slots_title: Label
 var _slots_tip: Label
@@ -62,17 +62,35 @@ func _ready() -> void:
 	_build_daily_panel()
 	_build_codex()
 
-## 底部居中提示（返回键双击退出用）
+## 返回键大提示卡（首页双击回桌面用）：醒目大字号，手机小屏也清晰可见
 func _build_back_hint() -> void:
-	_back_hint = Label.new()
-	_back_hint.text = "再按一次返回键退出"
-	_back_hint.add_theme_font_size_override("font_size", 16)
-	_back_hint.add_theme_color_override("font_color", Color("e8b84b"))
-	_back_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_back_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	_back_hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_back_hint.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	_back_hint.offset_bottom = -22.0
+	_back_hint = PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.07, 0.08, 0.11, 0.94)
+	sb.border_color = Color("e8b84b")
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(14)
+	sb.content_margin_left = 34.0
+	sb.content_margin_right = 34.0
+	sb.content_margin_top = 18.0
+	sb.content_margin_bottom = 18.0
+	_back_hint.add_theme_stylebox_override("panel", sb)
+	# 水平居中、贴底部（留 70px 安全距离，避免贴边/被手势条遮挡）
+	_back_hint.anchor_left = 0.5
+	_back_hint.anchor_right = 0.5
+	_back_hint.anchor_top = 1.0
+	_back_hint.anchor_bottom = 1.0
+	_back_hint.offset_left = -300.0
+	_back_hint.offset_right = 300.0
+	_back_hint.offset_top = -150.0
+	_back_hint.offset_bottom = -74.0
+	var lbl := Label.new()
+	lbl.text = "再按一次返回键回到桌面"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 26)
+	lbl.add_theme_color_override("font_color", Color("f2d48a"))
+	_back_hint.add_child(lbl)
 	_back_hint.visible = false
 	add_child(_back_hint)
 
@@ -512,16 +530,19 @@ func _unhandled_input(event: InputEvent) -> void:
 			focus.pressed.emit()
 			get_viewport().set_input_as_handled()
 		return
-	# 首页：返回键 / Esc 两秒内按两次退出（Android 返回键防误触）
+	# 首页：返回键 2 秒内按两次 → 回到桌面（Android 退到后台不杀进程，PC 退出）
+	# 首次只弹醒目大提示，绝不一次滑动就误杀游戏
 	if not _wizard.visible and event.is_action_pressed("ui_cancel"):
 		var now := Time.get_ticks_msec()
 		if now - _back_press_ms < 2000:
-			get_tree().quit()
-		else:
-			_back_press_ms = now
-			_back_hint.visible = true
-			var t := get_tree().create_timer(2.0)
-			t.timeout.connect(func() -> void: _back_hint.visible = false)
+			_back_hint.visible = false
+			get_viewport().set_input_as_handled()
+			Settings.go_background()
+			return
+		_back_press_ms = now
+		_back_hint.visible = true
+		var t := get_tree().create_timer(2.0)
+		t.timeout.connect(func() -> void: _back_hint.visible = false)
 		get_viewport().set_input_as_handled()
 
 func _start() -> void:

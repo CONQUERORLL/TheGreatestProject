@@ -396,6 +396,16 @@ func _close_editor() -> void:
 	_browser.visible = true
 	_rebuild_list()
 
+func _unhandled_input(event: InputEvent) -> void:
+	# Android 返回键 / Esc / 手柄 B：编辑器内先返回列表，列表页回主菜单（消费事件杜绝误退出）
+	if not event.is_action_pressed("ui_cancel"):
+		return
+	if _editor.visible:
+		_close_editor()
+	else:
+		get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+	get_viewport().set_input_as_handled()
+
 func _on_editor_cat(on: bool, cat: String) -> void:
 	if not on:
 		return

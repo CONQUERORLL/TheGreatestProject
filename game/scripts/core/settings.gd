@@ -74,9 +74,23 @@ var _binds := {}   # action -> Array[描述符 Dictionary]
 
 func _ready() -> void:
 	_apply_mobile_scale()
+	# 运行时再次强制关闭"按返回键即退出"（project.godot 已配 quit_on_go_back=false，
+	# 这里兜底，保证任何场景下 Android 返回都作为 ui_cancel 事件交给游戏自行处理，绝不直接杀进程）
+	get_tree().set_quit_on_go_back(false)
 	ensure_audio_buses()
 	load_config()
 	apply_all()
+
+## 手机返回键回桌面（标准 Android 行为：退到后台，进程存活、进度不丢）；
+## 非 Android（PC/编辑器/headless）则直接退出。真正"退出游戏"由主菜单的退出按钮调用。
+func go_background() -> void:
+	if OS.has_feature("android"):
+		var art = Engine.get_singleton("AndroidRuntime")
+		if art:
+			var activity = art.call("getActivity")
+			if activity != null and activity.call("moveTaskToBack", true):
+				return
+	get_tree().quit()
 
 ## 手机端 UI 全局放大（Android/iOS 导出模板自带 "mobile" feature 标签，
 ## 桌面触屏笔记本不会误触发；须在 autoload 阶段设置以覆盖所有场景）

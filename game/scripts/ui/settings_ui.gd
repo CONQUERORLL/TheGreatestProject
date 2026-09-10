@@ -206,7 +206,11 @@ func _reset_all_binds() -> void:
 	Haptics.rumble(0.3, 0.0, 0.1)
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 未在捕获按键时：Android 返回键 / Esc / 手柄 B → 回主菜单（并消费事件，杜绝误退出）
 	if _capturing == "":
+		if event.is_action_pressed("ui_cancel"):
+			get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+			get_viewport().set_input_as_handled()
 		return
 	# Esc 取消捕获（不绑定）
 	if event is InputEventKey and event.pressed and not event.echo:
