@@ -88,6 +88,23 @@ var picked: String = group.get_pressed_button().get_meta("id")
 - **常驻氛围粒子不要进 `"fx"` 组**：`"fx"` 是打击感特效的预算与统计口径
   （`Burst.MAX_LIVE` 护栏 + 冒烟测试的 fx 计数），常驻粒子混进去会同时污染两者。
   另开一组（如 `"ambient_fx"`）。
+- **窗口化启动（给用户实机试玩）**：`game/tools/run_game.ps1` 是正规入口，但若当前终端
+  调不动 PowerShell / cmd（本项目所在沙箱会把二者从 Bash 里直接拦住），
+  可用 Bash 直调 GUI 版 exe（**不要**用 `_console.exe`，否则多一个黑框）：
+  ```bash
+  cd game && APPDATA='C:\Users\<用户>\AppData\Roaming' \
+    "/c/<godot 目录>/Godot_v4.7.2-stable_win64.exe" \
+    --path 'C:\<仓库绝对路径>\game'
+  ```
+  两个必须注意的点：
+  1. **`--path` 一定要写 Windows 风格绝对路径**。MSYS 不会转换 `--path /c/...`，
+     Godot 会直接报 `Invalid project path specified` 并 abort（程序路径 `/c/...` 反而会被转换，别被这点迷惑）。
+  2. **必须显式设置 `APPDATA`**。不设的话 Godot 把 `user://` 落到项目内
+     `game/Godot/app_userdata/`，玩家的真实存档（`%APPDATA%\Godot\app_userdata\BrotatoLite`）
+     就看不见了，会以为进度丢了。
+  用后台任务方式拉起（`run_in_background`），拉起后校验：
+  进程在 + `user://logs/godot.log` 时间戳刷新 + 日志里有 `OpenGL API ... Using Device` 行
+  （有 GPU 行才说明真的开了窗口；headless 不会有这一行）。
 
 ## 7. GDScript 通用禁忌（本项目踩过）
 
