@@ -332,11 +332,15 @@ func _execute_generate_effect(effect: Dictionary) -> void:
 
 ## 相克效果：消耗层数 + 爆发（AOE / 处决 / 破甲 / DoT 翻倍）
 func _execute_overcome_effect(effect: Dictionary) -> void:
-	# 爆发基数必须在消耗前结算：消耗会清空层数，之后 power×stacks 归零
+	# 爆发基数必须在消耗前结算：消耗会清空层数，之后 power×stacks 归零。
+	# 同时取「施加这些状态时的玩家单次命中伤害」作为爆发上限的参考值
+	# （power 记录的就是施加时那一次命中的伤害）
 	var burst := 0.0
+	var ref_hit := 0.0
 	for sid in statuses:
 		var st: Dictionary = statuses[String(sid)]
 		burst += float(st.power) * float(int(st.stacks))
+		ref_hit = maxf(ref_hit, float(st.power))
 	var consume: Dictionary = effect.get("consume", {})
 	for sid2 in consume:
 		var st2 := _status_entry(String(sid2))
@@ -347,8 +351,12 @@ func _execute_overcome_effect(effect: Dictionary) -> void:
 			statuses.erase(String(sid2))
 	# AOE 爆发（含自身；status_resist 减免，BOSS 抗反应）
 	if effect.has("aoe_dmg_scale"):
-		_damage_in_radius(burst * float(effect.aoe_dmg_scale) * (1.0 - status_resist),
-			float(effect.get("aoe_radius", REACTION_AOE_RADIUS)))
+		var raw_burst := burst * float(effect.aoe_dmg_scale) * (1.0 - status_resist)
+		# 平衡护栏（Config.REACTION_BURST_CAP_MULT）：防止异常叠层堆到极端时一击清场
+		var cap := ref_hit * Config.REACTION_BURST_CAP_MULT
+		if cap > 0.0:
+			raw_burst = minf(raw_burst, cap)
+		_damage_in_radius(raw_burst, float(effect.get("aoe_radius", REACTION_AOE_RADIUS)))
 	# 处决（土克水：血量低于阈值直接碎裂）
 	if effect.has("execute_threshold") and max_hp > 0.0 \
 			and hp / max_hp < float(effect.execute_threshold):
@@ -530,6 +538,9 @@ func _physics_process(delta: float) -> void:
 				other.global_position = other.global_position.clamp(
 					Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
 				Combat.update_enemy_position(other)
+	# 障碍物推出（Phase 5）：本项目未使用物理引擎，障碍物是手写判定，
+	# 放在最终边界钳制之前，推出结果仍在世界内
+	global_position = Obstacles.resolve_circle(global_position, radius)
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
 	Combat.update_enemy_position(self)

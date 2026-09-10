@@ -57,6 +57,10 @@ func _physics_process(delta: float) -> void:
 	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
 	var r: float = c.radius
 	global_position = (global_position + velocity * delta).clamp(Vector2(r, r), world - Vector2(r, r))
+	# 障碍物推出（Phase 5）：本项目没有走 Godot 物理（移动是直接写 global_position），
+	# 障碍物用同一套手写判定把玩家挡在外面；推出后再钳一次边界防止被挤出世界
+	global_position = Obstacles.resolve_circle(global_position, r) \
+		.clamp(Vector2(r, r), world - Vector2(r, r))
 	if input_dir != Vector2.ZERO:
 		facing = input_dir.angle()
 	# ---- 回复 / 无敌帧 ----
@@ -75,7 +79,9 @@ func _process(_delta: float) -> void:
 func try_fire(w: Dictionary) -> void:
 	var c: Dictionary = Registry.weapons[w.type]
 	w.cd = float(c.cd) / maxf(0.01, float(stats.as_mult))
-	var target := Combat.nearest_enemy(global_position)
+	# 索敌优先选视线未被障碍物挡住的敌人（Phase 5）：障碍物会拦住弹丸，
+	# 若还死盯最近的目标，玩家会被迫对着柱子倾泻全部输出
+	var target := Combat.nearest_enemy_visible(global_position, 4.0)
 	var ang := (target.global_position - global_position).angle() if target else facing
 	facing = ang
 	queue_redraw()

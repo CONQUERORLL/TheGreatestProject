@@ -101,6 +101,29 @@ static func nearest_enemy(from: Vector2) -> Node2D:
 			best = enemy
 	return best
 
+## 最近的、且视线未被地图障碍物挡住的敌人（Phase 5）。
+## 全部被挡住时退回最近的敌人，保证任何情况下都不会「有敌人在场却不开火」。
+## 障碍物为空时 Obstacles.has_los 立即返回 true，等于退化成 nearest_enemy，零额外开销。
+static func nearest_enemy_visible(from: Vector2, projectile_radius: float = 4.0) -> Node2D:
+	_ensure_index()
+	var best_vis: Node2D = null
+	var best_vis_d := INF
+	var best_any: Node2D = null
+	var best_any_d := INF
+	for enemy in _enemies:
+		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion() or enemy.flee > 0.0:
+			continue
+		var d_sq := from.distance_squared_to(enemy.global_position)
+		if d_sq < best_any_d:
+			best_any_d = d_sq
+			best_any = enemy
+		# 只有比当前最优可视目标更近时才做遮挡查询，正常情况每帧只查少数几次
+		if d_sq < best_vis_d \
+				and Obstacles.has_los(from, enemy.global_position, projectile_radius):
+			best_vis_d = d_sq
+			best_vis = enemy
+	return best_vis if best_vis != null else best_any
+
 static func first_enemy_hit_on_segment(from: Vector2, to: Vector2, projectile_radius: float) -> Dictionary:
 	var midpoint := (from + to) * 0.5
 	var query_radius := from.distance_to(to) * 0.5 + projectile_radius + MAX_ENTITY_RADIUS

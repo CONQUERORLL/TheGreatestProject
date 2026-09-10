@@ -39,6 +39,11 @@ var event_card_cap := 4      # 本局上限（reset_run 时在 EVENT_CARD_MIN~MA
 var events_seen: Array = []  # 本局已出现过的卡 id（不重复抽，保证 10 张都能见到）
 var next_wave_elite := 0     # 下一波开始时额外生成的精英数量（事件风险选项写入）
 
+## 当前地图主题（Phase 5，Config.MAP_THEMES 的键）
+## 刻意不落存档：主题是波次的纯函数（Config.map_theme_for_wave），
+## 读档恢复 wave 时主题自然一致，避免为一个可推导的值改存档格式
+var map_theme := "bamboo"
+
 func add_score(v: int) -> void:
 	score = maxi(0, score + v)
 

@@ -382,10 +382,17 @@ func _check_boss() -> void:
 		return
 	Explosion.spawn(_main, boss.global_position, 60.0, 0.0, false)
 	await get_tree().process_frame
-	var fx3 := get_tree().get_nodes_in_group("fx").size()
-	print("SMOKE: fx explosion ->%d" % fx3)
-	if fx3 <= fx2:
-		_fail("爆炸未生成光环/粒子特效（fx %d->%d）" % [fx2, fx3])
+	# 直接找刚生成的 Explosion 实例，而不是比对 fx 组总数：组计数跨越了一个帧边界，
+	# 会被「同一帧里自然到期的旧特效」抵消（Burst 存活 0.2~0.5s，随时可能整批回收），
+	# 属于测试自身的竞态——增加场上特效数量后已能稳定复现假失败
+	var ex_node: Node2D = null
+	for n in get_tree().get_nodes_in_group("fx"):
+		if n is Explosion:
+			ex_node = n
+			break
+	print("SMOKE: fx explosion ->%s" % ("有" if ex_node != null else "无"))
+	if ex_node == null:
+		_fail("爆炸未生成光环特效（fx 组内找不到 Explosion 节点）")
 		return
 	# ---- 升级三选一流程验证：排空积压 → 恰好升 1 级 → 弹卡 → 选择 ----
 	var ui: Control = _main.get_node("UI/LevelUp")
@@ -751,6 +758,7 @@ func _check_items() -> void:
 	_check_phase2_content()
 	_check_phase3_artifacts()
 	_check_event_cards()
+	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -2487,19 +2495,30 @@ func _check_phase3_artifacts() -> void:
 		l2.queue_free()
 
 	# ---- 验证点 6：apply_artifact 幂等 + 重复转材料补偿 ----
+	# 刻意不硬编码法宝 id：前置的精英掉落与波末自动回收会随机送出法宝，
+	# 一旦硬编码的那件已经被玩家拿到，本用例必然失败（5 件常驻普品 → 约 1/5 概率）。
+	# 这里动态取一件当前确定未持有的法宝
+	var fresh_artifact := ""
+	for cand in Registry.artifacts:
+		if not p2.artifacts_owned.has(String(cand)):
+			fresh_artifact = String(cand)
+			break
+	if fresh_artifact == "":
+		_fail("找不到未持有的法宝用于幂等验证")
+		return
 	var acquired: Array = []
 	var acq_cb := func(id: String) -> void:
 		acquired.append(id)
 	EventBus.artifact_acquired.connect(acq_cb)
-	if not p2.apply_artifact("art_cinder_seal"):
-		_fail("apply_artifact 首次获得应返回 true")
+	if not p2.apply_artifact(fresh_artifact):
+		_fail("apply_artifact 首次获得应返回 true（%s）" % fresh_artifact)
 		return
 	if p2.artifacts_owned.size() != owned_before.size() + 1 or acquired.size() != 1:
 		_fail("首次获得未入账/未发 artifact_acquired（%d 件，信号 %d 次）"
 			% [p2.artifacts_owned.size(), acquired.size()])
 		return
 	var mats_first: int = GameState.materials
-	if p2.apply_artifact("art_cinder_seal"):
+	if p2.apply_artifact(fresh_artifact):
 		_fail("重复获得应返回 false")
 		return
 	if p2.artifacts_owned.size() != owned_before.size() + 1:
@@ -2528,8 +2547,8 @@ func _check_phase3_artifacts() -> void:
 			or CodexData.display_icon("artifact", "art_cinder_seal") != "🔥":
 		_fail("图鉴 artifact 数据源不对")
 		return
-	if not CodexData.is_unlocked("artifact", "art_cinder_seal"):
-		_fail("获得法宝未解锁图鉴")
+	if not CodexData.is_unlocked("artifact", fresh_artifact):
+		_fail("获得法宝未解锁图鉴（%s）" % fresh_artifact)
 		return
 	var art_reward: int = CodexData.unlock_reward("artifact")
 	if art_reward < 4 or art_reward > 7:
@@ -2926,6 +2945,214 @@ func _check_event_cards() -> void:
 	GameState.event_card_count = cnt_before
 	p_ev.hp = minf(hp_saved, float(p_ev.stats.max_hp))
 	print("SMOKE: event cards OK")
+
+## 地图主题化（Phase 5）：主题数据 / 波次映射 / 障碍物生成分布 / 推出与遮挡判定 /
+## 索敌视线 / BOSS 波削减 / 氛围粒子。最后把现场还原成当前波次的主题。
+func _check_map_themes() -> void:
+	var wm: Node = _main.get_node("WaveManager")
+	var p_mt: Node2D = _main.get_node("Player")
+	# ---- 主题数据与波次映射 ----
+	if Config.MAP_THEMES.size() != 3 or Config.MAP_THEME_ORDER.size() != 3:
+		_fail("地图主题数量不对（%d）" % Config.MAP_THEMES.size())
+		return
+	for tid in Config.MAP_THEMES:
+		var t: Dictionary = Config.MAP_THEMES[tid]
+		for key in ["name", "bg", "grid", "accent", "obstacle", "particle", "waves"]:
+			if not t.has(key):
+				_fail("地图主题 %s 缺字段 %s" % [String(tid), key])
+				return
+		if not Obstacle.SHAPES.has(String(t.get("obstacle", ""))):
+			_fail("地图主题 %s 引用了未知障碍物外观（%s）"
+				% [String(tid), String(t.get("obstacle", ""))])
+			return
+	var expect := { 1: "bamboo", 3: "bamboo", 4: "temple", 6: "temple", 7: "nether", 10: "nether" }
+	for w_key in expect:
+		if Config.map_theme_for_wave(int(w_key)) != String(expect[w_key]):
+			_fail("第 %d 波主题映射错误（%s，期望 %s）"
+				% [int(w_key), Config.map_theme_for_wave(int(w_key)), String(expect[w_key])])
+			return
+	# 无尽模式超出主题表区间后必须回落到合法主题（不能返回空）
+	for w2 in [11, 20, 99]:
+		if not Config.MAP_THEMES.has(Config.map_theme_for_wave(w2)):
+			_fail("无尽第 %d 波主题越界（%s）" % [w2, Config.map_theme_for_wave(w2)])
+			return
+	# 背景/网格/强调色三主题必须两两不同，否则「换景」没有意义
+	var bgs: Array = []
+	for tid2 in Config.MAP_THEMES:
+		bgs.append(String(Config.MAP_THEMES[tid2].get("bg", "")))
+	if bgs.size() != 3 or bgs[0] == bgs[1] or bgs[1] == bgs[2] or bgs[0] == bgs[2]:
+		_fail("三主题背景色未区分（%s）" % str(bgs))
+		return
+	# BOSS 波判定与削减上限的关系
+	if not Config.is_boss_wave(Config.BOSS_WAVE):
+		_fail("第 %d 波未被判定为 BOSS 波" % Config.BOSS_WAVE)
+		return
+	if Config.OBSTACLE_BOSS_MAX > Config.OBSTACLE_MIN:
+		_fail("BOSS 波障碍物上限不低于普通波下限（%d vs %d）"
+			% [Config.OBSTACLE_BOSS_MAX, Config.OBSTACLE_MIN])
+		return
+	# 当前主题应当与当前波次一致（start_wave 写入 GameState）
+	if GameState.map_theme != Config.map_theme_for_wave(wm.wave):
+		_fail("当前主题与波次不符（wave=%d theme=%s）" % [wm.wave, GameState.map_theme])
+		return
+	print("SMOKE: map themes mapping OK (%s @ wave %d)" % [GameState.map_theme, wm.wave])
+	# ---- 障碍物生成：数量 / 避开出生点 / 场内 / 块间通道 ----
+	var origin := Vector2(Config.WORLD.w, Config.WORLD.h) * 0.5
+	var made: int = _main.spawn_obstacles("nether", Config.OBSTACLE_MAX)
+	if made < Config.OBSTACLE_MIN:
+		_fail("障碍物生成数量不足（%d，请求 %d）" % [made, Config.OBSTACLE_MAX])
+		return
+	var entries: Array = Obstacles.entries()
+	if entries.size() != made or Obstacles.count() != made:
+		_fail("障碍物数据与索引不一致（%d / %d / %d）"
+			% [entries.size(), Obstacles.count(), made])
+		return
+	var r := Obstacle.radius("stele")
+	var min_gap := r * 2.0 + 56.0
+	for e in entries:
+		var p: Vector2 = e.pos
+		if p.distance_to(origin) < Config.OBSTACLE_SAFE_RADIUS + r - 0.01:
+			_fail("障碍物侵入玩家出生点安全圈（%.1f）" % p.distance_to(origin))
+			return
+		if p.x < r or p.y < r or p.x > Config.WORLD.w - r or p.y > Config.WORLD.h - r:
+			_fail("障碍物越出世界边界（%s）" % str(p))
+			return
+	for i in entries.size():
+		var a: Vector2 = entries[i].pos
+		for j in range(i + 1, entries.size()):
+			var b: Vector2 = entries[j].pos
+			if a.distance_to(b) < min_gap - 0.01:
+				_fail("障碍物间距不足，可能出现死路（%.1f < %.1f）" % [a.distance_to(b), min_gap])
+				return
+	print("SMOKE: obstacles spawned=%d gap>=%.0f safe>=%.0f"
+		% [made, min_gap, Config.OBSTACLE_SAFE_RADIUS])
+	# ---- 碰撞与视线：改用「世界中心一块已知障碍物」的受控场景 ----
+	# 生成集是随机的，坐标可能贴边导致测试线段越界；碰撞/视线是纯几何，
+	# 用受控单块障碍物验证既确定又可读，生成集的分布特征已在上面单独断言
+	var c0 := Vector2(Config.WORLD.w, Config.WORLD.h) * 0.5
+	var cr := Obstacle.radius("stele")
+	Obstacles.rebuild([{ "pos": c0, "kind": "stele", "r": cr }])
+	if Obstacles.count() != 1:
+		_fail("受控障碍物重建失败（%d）" % Obstacles.count())
+		return
+	var pushed := Obstacles.resolve_circle(c0, 16.0)
+	if pushed.distance_to(c0) < cr + 16.0 - 0.01:
+		_fail("与障碍物圆心重合的实体未被推出（%.1f）" % pushed.distance_to(c0))
+		return
+	var far_pos := c0 + Vector2(cr + 16.0 + 80.0, 0.0)
+	if Obstacles.resolve_circle(far_pos, 16.0) != far_pos:
+		_fail("远离障碍物的实体被误推出")
+		return
+	if not Obstacles.overlaps_circle(c0, 1.0):
+		_fail("障碍物自身位置未被判定为重叠")
+		return
+	if Obstacles.overlaps_circle(far_pos, 16.0):
+		_fail("障碍物外侧 80px 的实体被误判为重叠")
+		return
+	var from := c0 + Vector2(-(cr + 120.0), 0.0)
+	var to := c0 + Vector2(cr + 120.0, 0.0)
+	var t_hit := Obstacles.first_block_t(from, to, 4.0)
+	if not is_finite(t_hit) or t_hit <= 0.0 or t_hit >= 1.0:
+		_fail("穿过障碍物的线段未被挡住（t=%.3f）" % t_hit)
+		return
+	var offset := Vector2(0.0, cr + 200.0)
+	var t_clear := Obstacles.first_block_t(from + offset, to + offset, 4.0)
+	if is_finite(t_clear):
+		_fail("未经过障碍物的线段被误判为遮挡（t=%.3f）" % t_clear)
+		return
+	if Obstacles.has_los(from, to, 4.0):
+		_fail("has_los 与实际遮挡结果不一致（应被挡住）")
+		return
+	if not Obstacles.has_los(from + offset, to + offset, 4.0):
+		_fail("has_los 与实际遮挡结果不一致（应通畅）")
+		return
+	print("SMOKE: obstacle collision OK (block_t=%.3f)" % t_hit)
+	# ---- 索敌视线：被障碍物挡住的近处敌人必须让位给无遮挡的远处敌人 ----
+	var far := c0 + Vector2(-(cr + 400.0), 0.0)
+	var e_blocked: Node2D = _spawn_reaction_target("grunt", c0 + Vector2(cr + 20.0, 0.0), p_mt)
+	var e_visible: Node2D = _spawn_reaction_target("grunt",
+		far + Vector2(0.0, -(cr * 2.0 + 500.0)), p_mt)
+	await get_tree().physics_frame
+	var blocked_visible := Obstacles.has_los(far, e_blocked.global_position, 4.0)
+	var clear_visible := Obstacles.has_los(far, e_visible.global_position, 4.0)
+	var picked: Node2D = Combat.nearest_enemy_visible(far, 4.0)
+	e_blocked.queue_free()
+	e_visible.queue_free()
+	if blocked_visible:
+		_fail("被障碍物遮挡的敌人未被判定为无视线")
+		return
+	if not clear_visible:
+		_fail("无遮挡的敌人被误判为无视线")
+		return
+	if picked == e_blocked:
+		_fail("索敌未避开被障碍物遮挡的目标")
+		return
+	print("SMOKE: obstacle line-of-sight targeting OK")
+	# ---- 弹丸遮挡回归：没有障碍物时弹丸绝不能凭空消失 ----
+	# 踩过的坑：first_block_t 用 INF 表示「没被挡住」，而 INF > 0.0 为真、
+	# INF <= enemy_t（同样为 INF）也为真，于是漏判把「没挡住」当成「挡住」，
+	# 每颗子弹在第一帧就被销毁——无敌人时 enemy_t 同为 INF，这个坑更隐蔽。
+	# 这里放一颗零速弹丸：没有障碍物可挡、也不会命中敌人或飞出世界，它必须活下来
+	var saved_phase: int = GameState.phase
+	var saved_queue: int = GameState.level_queue
+	GameState.level_queue = 0
+	GameState.set_phase(GameState.Phase.PLAYING)
+	Obstacles.clear()
+	var free_bullet: Node2D = preload("res://scenes/weapons/bullet.tscn").instantiate()
+	_main.add_child(free_bullet)
+	free_bullet.setup(c0 + Vector2(0.0, -300.0), PI,
+		{ "bspeed": 0.0, "bullet_life": 5.0 }, { "dmg": 1.0, "crit": false })
+	for _i in 6:
+		await get_tree().physics_frame
+	var survived := is_instance_valid(free_bullet) and not free_bullet.is_queued_for_deletion()
+	if is_instance_valid(free_bullet):
+		free_bullet.queue_free()
+	GameState.set_phase(saved_phase)
+	GameState.level_queue = saved_queue
+	if not survived:
+		_fail("无障碍物时弹丸被误判为被遮挡（第一帧即销毁）")
+		return
+	print("SMOKE: obstacle-free bullet survives OK")
+	# ---- BOSS 波障碍物削减（临时把波次推到 BOSS 波，验完立即还原）----
+	var saved_wave: int = wm.wave
+	var saved_endless: bool = GameState.endless
+	GameState.endless = false
+	wm.wave = Config.BOSS_WAVE
+	_main._apply_map_theme("nether")
+	var boss_count: int = Obstacles.count()
+	wm.wave = saved_wave
+	GameState.endless = saved_endless
+	if boss_count > Config.OBSTACLE_BOSS_MAX:
+		_fail("BOSS 波障碍物未削减（%d > %d）" % [boss_count, Config.OBSTACLE_BOSS_MAX])
+		return
+	print("SMOKE: boss wave obstacles=%d (cap %d)" % [boss_count, Config.OBSTACLE_BOSS_MAX])
+	# ---- 氛围粒子：每主题脚本匹配且登记进 fx 组 ----
+	for tid3 in Config.MAP_THEME_ORDER:
+		_main._apply_map_theme(String(tid3))
+		var fx: Node2D = _main._theme_fx
+		if fx == null or not is_instance_valid(fx):
+			_fail("主题 %s 未创建氛围粒子" % String(tid3))
+			return
+		var scr: Script = fx.get_script()
+		var want := String(Config.MAP_THEMES[tid3].get("particle", ""))
+		if scr == null or String(scr.resource_path).find(want) < 0:
+			_fail("主题 %s 氛围粒子脚本不匹配（%s）"
+				% [String(tid3), String(scr.resource_path) if scr != null else "null"])
+			return
+		if not fx.is_in_group("ambient_fx"):
+			_fail("主题 %s 氛围粒子未登记进 ambient_fx 组（不得混进打击感 fx 组）"
+				% String(tid3))
+			return
+		if fx.is_in_group("fx"):
+			_fail("主题 %s 氛围粒子混进了打击感 fx 组（会污染全程特效计数）" % String(tid3))
+			return
+	print("SMOKE: theme particles OK (%s)" % str(Config.MAP_THEME_ORDER))
+	# ---- 还原：重建当前波次的主题障碍物 ----
+	_main._apply_map_theme(GameState.map_theme)
+	if Obstacles.count() < 1:
+		_fail("还原当前主题后障碍物为空")
+		return
+	print("SMOKE: map themes OK")
 
 ## 递归找第一个文本包含 frag 的 Label，返回其完整文本（找不到返回空串）
 func _find_label_text(node: Node, frag: String) -> String:

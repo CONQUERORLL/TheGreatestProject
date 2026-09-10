@@ -439,9 +439,79 @@ func _on_codex_closed() -> void:
 		_codex_phase_before = -1
 	_next_toast()
 
-## 每波开始：BOSS 波切激烈曲，普通波切战斗曲
+## 每波开始：BOSS 波切激烈曲，普通波切战斗曲；并按地图主题重建障碍物与氛围粒子
 func _on_wave_started(w: int) -> void:
 	Music.play_track(Music.track_for_wave(w), 0.35)
+	_apply_map_theme(GameState.map_theme)
+
+# ------------------------------------------------------------
+# 地图主题化（Phase 5）
+# 主题由波次推导（Config.map_theme_for_wave），每波开始时应用到背景/障碍物/粒子。
+# 障碍物是「纯数据 + 手写判定」（见 systems/obstacles.gd），不是物理体
+# ------------------------------------------------------------
+
+var _theme_fx: Node2D = null
+var obstacles_spawned := 0   # 测试观测：本波实际生成的障碍物数量
+
+## 应用地图主题：重建障碍物 → 换氛围粒子 → 重绘竞技场
+func _apply_map_theme(theme_id: String) -> void:
+	var theme := Config.map_theme(theme_id)
+	if theme.is_empty():
+		return
+	var target := GameRng.range_i(Config.OBSTACLE_MIN, Config.OBSTACLE_MAX)
+	# BOSS 波压缩障碍物：既给 BOSS 弹幕留出走位空间，也避免地形把 BOSS 卡在角落
+	if Config.is_boss_wave(wave_manager.wave):
+		target = mini(target, Config.OBSTACLE_BOSS_MAX)
+	obstacles_spawned = spawn_obstacles(theme_id, target)
+	_rebuild_theme_fx(String(theme.get("particle", "bamboo_leaf")))
+	queue_redraw()
+
+## 生成本波障碍物并重建索引，返回实际数量。
+## 拒绝采样：避开玩家出生点（世界中心）安全半径与四周边界，且块与块之间留出通道。
+## 单点 12 次尝试失败就放弃该点，不做「强行塞到边上」的兜底——
+## 否则会在出生点或角落堆出无法通行的死角
+func spawn_obstacles(theme_id: String, count: int) -> int:
+	var theme := Config.map_theme(theme_id)
+	var kind := String(theme.get("obstacle", "bamboo"))
+	var r := Obstacle.radius(kind)
+	var wr := float(Config.WORLD.w)
+	var hr := float(Config.WORLD.h)
+	var origin := Vector2(wr, hr) * 0.5
+	var margin := r + 48.0
+	var min_gap := r * 2.0 + 56.0   # 块间最小间距：保证任何方向都走得过去
+	var entries: Array = []
+	for _i in count:
+		for _try in 12:
+			var p := Vector2(GameRng.range_f(margin, wr - margin),
+				GameRng.range_f(margin, hr - margin))
+			if p.distance_to(origin) < Config.OBSTACLE_SAFE_RADIUS + r:
+				continue
+			var blocked := false
+			for e in entries:
+				var ep: Vector2 = e.pos
+				if p.distance_to(ep) < min_gap:
+					blocked = true
+					break
+			if blocked:
+				continue
+			entries.append({ "pos": p, "kind": kind, "r": r })
+			break
+	Obstacles.rebuild(entries)
+	return Obstacles.count()
+
+## 换主题氛围粒子：同屏只留一套，切主题时销毁旧的
+func _rebuild_theme_fx(particle_kind: String) -> void:
+	if _theme_fx != null and is_instance_valid(_theme_fx):
+		_theme_fx.queue_free()
+	_theme_fx = null
+	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
+	match particle_kind:
+		"bamboo_leaf":
+			_theme_fx = BambooLeaf.spawn(self, world)
+		"incense":
+			_theme_fx = Incense.spawn(self, world)
+		"ghost_fire":
+			_theme_fx = GhostFire.spawn(self, world)
 
 # ------------------------------------------------------------
 # 江湖奇遇事件卡（Phase 4）
@@ -763,10 +833,13 @@ func toggle_pause() -> void:
 		_pause_overlay.visible = false
 
 func _draw() -> void:
+	var theme := Config.map_theme(GameState.map_theme)
 	var g := 64.0
 	var w := Config.WORLD.w
 	var h := Config.WORLD.h
-	var grid_color := Color("222730")
+	# 主题底色（Phase 5）：氛围主要交给背景色，网格与边框取同系色保证可读性
+	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("bg", "#101218"))), true)
+	var grid_color := Color(String(theme.get("grid", "#222730")))
 	var x := 0.0
 	while x <= w:
 		draw_line(Vector2(x, 0.0), Vector2(x, h), grid_color, 1.0)
@@ -775,7 +848,9 @@ func _draw() -> void:
 	while y <= h:
 		draw_line(Vector2(0.0, y), Vector2(w, y), grid_color, 1.0)
 		y += g
-	draw_rect(Rect2(0.0, 0.0, w, h), Color("4a5262"), false, 4.0)
+	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("accent", "#4a5262"))), false, 4.0)
+	# 障碍物：与背景同一遍绘制（静态内容，由 CanvasItem 缓存，不产生逐帧开销）
+	Obstacles.draw_all(self)
 
 # ---- 暂停 / 死亡 / 胜利 按钮菜单（代码构建，手柄可导航） ----
 

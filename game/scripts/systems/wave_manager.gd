@@ -49,24 +49,33 @@ func start_wave(n: int) -> void:
 	spawn_t = 0.6
 	wave_timer = Config.wave_duration(wave)
 	_clear_projectiles()
+	# 地图主题（Phase 5）：由波次推导，波 1-3 竹林 / 4-6 古庙 / 7-10 幽冥，
+	# 无尽按主题表循环。障碍物与氛围粒子由 main 在 wave_started 里按此重建
+	var prev_theme := GameState.map_theme
+	GameState.map_theme = Config.map_theme_for_wave(wave)
 	# 玩家回到世界中心（原型 startWave 同款）
 	player.global_position = Vector2(Config.WORLD.w, Config.WORLD.h) / 2.0
 	player.velocity = Vector2.ZERO
 	var is_boss_wave := Config.is_boss_wave(wave)
 	intro_t = 2.6 if is_boss_wave else 2.2
 	GameState.set_phase(GameState.Phase.INTRO)
+	# 换景提示：只在主题真的变了的那一波播报，避免每波刷屏
+	var theme_note := ""
+	if GameState.map_theme != prev_theme:
+		theme_note = " · " + Config.map_theme_name(GameState.map_theme)
 	if is_boss_wave:
 		var bid := _pick_boss_id()
 		spawn(bid)
 		var bname: String = Registry.enemies[bid].name
 		var title: String = Config.BOSS_TITLES.get(bid, "")
-		EventBus.banner_requested.emit("第 %d 波 · BOSS" % wave,
+		EventBus.banner_requested.emit("第 %d 波 · BOSS%s" % [wave, theme_note],
 			"%s 出现了！%s" % [bname, "（%s）" % title if title != "" else ""], 2.6)
 	elif Config.is_event_wave(wave):
 		_roll_event_wave()
 	else:
-		EventBus.banner_requested.emit("第 %d 波%s" % [wave,
-				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱"],
+		EventBus.banner_requested.emit("第 %d 波%s%s" % [wave,
+				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱",
+				theme_note],
 			"武器会自动攻击，专心走位", 2.2)
 	# 江湖奇遇的风险代价（如「挥手驱赶」「跃龙门」）：上一波约定「下一波多 N 个精英」，
 	# 在这里兑现并清零。刻意放在横幅之后、wave_started 之前——精英立刻入场，
