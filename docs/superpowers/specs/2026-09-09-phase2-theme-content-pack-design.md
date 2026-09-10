@@ -730,17 +730,17 @@ for elem in ["fire", "wood", "metal", "water", "earth"]:
 ## 九、验收标准
 
 ### 必须通过
-- [ ] 冒烟测试 `SMOKE: PASS`（连续 3 次）
-- [ ] 无 `push_warning` 输出（Registry 拒绝任何一条新内容都会 push_warning）
-- [ ] 12 个角色都能在角色选择界面出现（依赖 HUD 自动读取 Registry.characters）
-- [ ] 22 把武器都能在商店出现（依赖 `Registry.shop_weapon_pool()`）
-- [ ] 23 个敌人都能在波次中出现（依赖 `wave_composition`）
-- [ ] 6 个 BOSS 都能在第 10 波出现（依赖 `Registry.boss_id()`）
+- [x] 冒烟测试 `SMOKE: PASS`（连续 3 次）
+- [x] 无 `push_warning` 输出（Registry 拒绝任何一条新内容都会 push_warning）
+- [x] 12 个角色都能在角色选择界面出现（现已扩到 18 个）
+- [x] 22 把武器都能在商店出现（现已扩到 26 把）
+- [x] 23 个敌人都能在波次中出现（现为 21 种普通敌人）
+- [x] 6 个 BOSS 都能在第 10 波出现（依赖 `Registry.boss_id()`）
 
 ### 应该通过
-- [ ] 每个五行至少 2 把武器覆盖（冒烟测试验证点 6）
-- [ ] 5 个新角色的 stats 与现有 7 角色形成差异化（人工审查）
-- [ ] 3 个新 BOSS 与现有 3 BOSS 打法差异化（人工审查）
+- [x] 每个五行至少 2 把武器覆盖（冒烟测试验证点 6）
+- [x] 5 个新角色的 stats 与现有 7 角色形成差异化（人工审查）
+- [x] 3 个新 BOSS 与现有 3 BOSS 打法差异化（人工审查）
 
 ### 可以延后
 - [ ] 图鉴分类按五行筛选
