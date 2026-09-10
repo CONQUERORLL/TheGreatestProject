@@ -8,6 +8,8 @@ var hp: float = 100.0
 var stats: Dictionary = {}
 var weapons: Array = []   # [{ "type": String, "cd": float }]，上限 Config.WEAPON_SLOTS
 var items_owned: Dictionary = {}   # 已购道具 id -> 数量（暂停/商店展示与出售用）
+var artifacts_owned: Dictionary = {}   # 已持有法宝 id -> 1（每种限 1 件，值仅为与存档格式对齐）
+var artifact_stacks: Dictionary = {}   # 叠层法宝 id -> 当前层数（断刃锋/玄武核）
 var facing := 0.0
 var iframes := 0.0
 
@@ -218,6 +220,87 @@ func sell_item(id: String) -> int:
 	queue_redraw()
 	return price
 
+# ------------------------------------------------------------
+# 法宝（Phase 3）：触发式特效，每种限 1 件，重复获得转材料补偿
+# ------------------------------------------------------------
+
+## 获得法宝。返回 true = 新获得；false = 重复（已发放材料补偿）或 id 非法
+## 掉落物/商店/BOSS 入账三条渠道统一走这里，保证补偿与图鉴解锁不会漏
+func apply_artifact(id: String) -> bool:
+	if not Registry.artifacts.has(id):
+		return false
+	CodexData.unlock("artifact", id)
+	if artifacts_owned.has(id):
+		GameState.add_materials(Config.ARTIFACT_DUP_MATERIALS)
+		FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -28.0),
+			"法宝已持有 · +%d ◆" % Config.ARTIFACT_DUP_MATERIALS, Color("ffd24a"))
+		return false
+	artifacts_owned[id] = 1
+	EventBus.artifact_acquired.emit(id)
+	return true
+
+## 出售法宝：返还 50% 购入价，并先清零它的叠层属性（否则暴击/护甲会残留）
+func sell_artifact(id: String) -> int:
+	if not artifacts_owned.has(id) or not Registry.artifacts.has(id):
+		return 0
+	var price := roundi(float(int(Registry.artifacts[id].get("price", 110))) * 0.5)
+	_set_artifact_stacks(id, 0)
+	artifacts_owned.erase(id)
+	return price
+
+## 已持有法宝的配置列表（按获得顺序），供触发执行器与 UI 共用
+func owned_artifacts() -> Array:
+	var out: Array = []
+	for id in artifacts_owned:
+		var a: Dictionary = Registry.get_artifact(String(id))
+		if not a.is_empty():
+			out.append(a)
+	return out
+
+## 把叠层法宝的层数设为 target（自动受 stack_max 上限约束）
+## 层数差量增量结算到 stats，与 apply_item/sell_item 同一套叠加方式
+func _set_artifact_stacks(id: String, target: int) -> void:
+	var effect: Dictionary = Registry.get_artifact(id).get("effect", {})
+	if not effect.has("stat"):
+		return
+	var stat_id := String(effect.stat)
+	var next := clampi(target, 0, int(effect.get("stack_max", 1)))
+	var cur := int(artifact_stacks.get(id, 0))
+	if next == cur:
+		return
+	var per := float(effect.get("per_stack", 0.0))
+	stats[stat_id] = float(stats.get(stat_id, 0.0)) + per * float(next - cur)
+	if next <= 0:
+		artifact_stacks.erase(id)
+	else:
+		artifact_stacks[id] = next
+	_sanitize_stats()
+
+## 给叠层法宝加 n 层（未持有则忽略）
+func add_artifact_stacks(id: String, n: int) -> void:
+	if artifacts_owned.has(id):
+		_set_artifact_stacks(id, int(artifact_stacks.get(id, 0)) + n)
+
+## 重置叠层：scope = "wave"（每波开始，断刃锋）/ "run"（局终，玄武核）
+func reset_artifact_stacks(scope: String) -> void:
+	# .keys() 返回副本，遍历中删改 artifact_stacks 安全
+	for id in artifact_stacks.keys():
+		var effect: Dictionary = Registry.get_artifact(String(id)).get("effect", {})
+		if String(effect.get("stack_reset", "wave")) == scope:
+			_set_artifact_stacks(String(id), 0)
+
+## 回复生命（法宝/事件共用），返回实际回复量
+func heal(amount: float) -> float:
+	if amount <= 0.0 or hp <= 0.0:
+		return 0.0
+	var before := hp
+	hp = minf(float(stats.max_hp), hp + amount)
+	var gained := hp - before
+	if gained > 0.5:
+		FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -24.0),
+			"+" + str(roundi(gained)), Color("7ec850"))
+	return gained
+
 func _sanitize_stats() -> void:
 	stats.max_hp = maxf(1.0, float(stats.max_hp))
 	stats.base_speed = maxf(1.0, float(stats.base_speed))
@@ -246,7 +329,11 @@ func take_damage(raw: float) -> void:
 	if GameRng.chance(stats.dodge):
 		FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -22.0), "闪避", Color("9ad0ff"))
 		return
-	var dmg: float = raw * (1.0 - stats.armor / (stats.armor + 8.0))
+	# 岩肤符：受击【前】同步查询法宝的护甲加成与低血减伤
+	# （player_damaged 信号在本次结算之后才发，在那里改已经太晚）
+	var armor := float(stats.armor) + ArtifactSystem.armor_bonus(self)
+	var dmg: float = raw * (1.0 - armor / (armor + 8.0))
+	dmg *= ArtifactSystem.incoming_damage_mult(self)
 	hp -= dmg
 	iframes = Config.PLAYER.iframes
 	EventBus.screen_shake.emit(3.5)

@@ -1,11 +1,12 @@
 class_name Loot
 extends Node2D
 ## 掉落物（移植自原型 pickups / updatePickups / settlePickup / drawPickup）
-## kind: "xp" 经验晶体 / "mat" 材料 / "heart" 红心（+val HP）
+## kind: "xp" 经验晶体 / "mat" 材料 / "heart" 红心（+val HP）/ "artifact" 法宝（读 artifact_id）
 ## 行为：弹出减速（摩擦 exp(-6dt)）→ 进入拾取范围被磁吸 → 接触结算
 
 var kind := "xp"
 var val := 1
+var artifact_id := ""   # 仅 kind == "artifact" 时使用（val 是 int，承载不了字符串 id）
 var vel := Vector2.ZERO
 var player  # characters/player.gd 引用，由生成方注入
 var _t := 0.0
@@ -17,6 +18,14 @@ var _scale_settled := false
 func setup(kind_name: String, value: int, pos: Vector2, velocity: Vector2) -> void:
 	kind = kind_name
 	val = value
+	position = pos
+	vel = velocity
+
+## 法宝掉落专用入口：与 setup 分开而非改其签名，避免影响 xp/mat/heart 三处现有调用
+func setup_artifact(id: String, pos: Vector2, velocity: Vector2) -> void:
+	kind = "artifact"
+	artifact_id = id
+	val = 1
 	position = pos
 	vel = velocity
 
@@ -67,6 +76,12 @@ func settle() -> void:
 				player.hp = minf(player.stats.max_hp, player.hp + float(val))
 				FloatingText.spawn(get_parent(), player.global_position + Vector2(0.0, -24.0),
 					"+" + str(val), Color("7ec850"))
+		"artifact":
+			# 统一走 player.apply_artifact：重复持有转材料补偿、图鉴解锁、
+			# artifact_acquired 信号（HUD/toast）全在里面，这里不重复造轮子。
+			# 波末全场回收也走 settle()，没捡到的法宝仍会入账（保底不丢）
+			if player and is_instance_valid(player):
+				player.apply_artifact(artifact_id)
 	queue_free()
 
 func _draw() -> void:
@@ -86,3 +101,13 @@ func _draw() -> void:
 			draw_circle(Vector2(2.8, -2.2), 3.4, Color("ef6b5e"))
 			draw_colored_polygon(PackedVector2Array([
 				Vector2(-5.6, -0.5), Vector2(5.6, -0.5), Vector2(0.0, 6.0)]), Color("ef6b5e"))
+		"artifact":
+			# 法宝：稀有度色菱形 + 半透光环，体积大于 xp 晶体以区分
+			# 不做脉动动画：_draw 仅在弹出缩放期重绘，脉动要每帧 queue_redraw
+			var col := Config.rarity_color(
+				String(Registry.get_artifact(artifact_id).get("rarity", "common")))
+			draw_circle(Vector2.ZERO, 10.0, Color(col.r, col.g, col.b, 0.22))
+			draw_set_transform(Vector2.ZERO, PI / 4.0, Vector2.ONE)
+			draw_rect(Rect2(-6.0, -6.0, 12.0, 12.0), col)
+			draw_rect(Rect2(-2.6, -2.6, 5.2, 5.2), col.lightened(0.55))
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

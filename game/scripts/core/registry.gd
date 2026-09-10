@@ -18,6 +18,7 @@ var upgrades: Dictionary = {}     # id -> 升级（effects 同上）
 var enemies: Dictionary = {}      # id -> 敌人（boss 也在此；is_boss=true 或 ai="boss"）
 var difficulties: Dictionary = {} # id -> 难度（hp_mult / dmg_mult / spawn_mult）
 var reactions: Dictionary = {}    # id -> 五行反应（同 Config.REACTIONS 条目结构 + key）
+var artifacts: Dictionary = {}    # id -> 法宝（触发式特效，同 Config.ARTIFACTS 条目结构）
 var _reaction_keys: Dictionary = {}   # "elemA+elemB"（字母序）-> 反应 id
 
 var boss_override := ""           # 校验后的最终 BOSS 敌人 id
@@ -59,7 +60,17 @@ const GENERATE_EFFECT_KEYS := ["add_stacks", "duration_mult", "duration_add",
 const OVERCOME_EFFECT_KEYS := ["consume", "aoe_dmg_scale", "aoe_radius",
 	"execute_threshold", "execute_heal", "armor_break", "armor_break_duration",
 	"dot_mult", "dot_duration"]
+
+## 法宝：effect 载荷键白名单 + params 键白名单 + 叠层重置时机
 ## 未知键直接拒登，防 mod 写错字后静默无效（与五行反应同款策略）
+const ARTIFACT_EFFECT_KEYS := ["patch", "bonus_dmg_pct", "chance", "radius",
+	"apply_status", "stacks", "duration", "stat", "per_stack", "stack_max",
+	"stack_reset", "dmg_mult", "heal_pct", "high_hp", "high_hp_armor",
+	"low_hp", "low_hp_dmg_reduce", "add_stacks", "bonus_materials"]
+const ARTIFACT_PARAM_KEYS := ["element", "key", "status", "hp_below"]
+const ARTIFACT_PATCH_OPS := ["set", "add"]
+const ARTIFACT_STACK_RESETS := ["wave", "run"]
+
 func _ready() -> void:
 	reload_content()
 
@@ -125,6 +136,32 @@ func find_reaction(status_a: String, status_b: String) -> Dictionary:
 	if key == "" or not _reaction_keys.has(key):
 		return {}
 	return reactions.get(String(_reaction_keys[key]), {})
+
+func artifact_list() -> Array:
+	return artifacts.values()
+
+## 按 id 取法宝配置
+func get_artifact(id: String) -> Dictionary:
+	return artifacts.get(id, {})
+
+## 法宝抽取池：排除已持有（每种限 1 件），按 稀有度权重 × shop_weight 加权
+## progress = 波次（复用 Config.rarity_weight，越往后高品阶越多）
+## boss=true 时 legendary 权重 ×Config.ARTIFACT_BOSS_LEGENDARY_MULT（BOSS 必掉更出彩）
+## 返回 [{ "item": id, "w": weight }]，供 GameRng.weighted_pick 使用；全部已持有则返回空数组
+func artifact_pool(owned: Dictionary, wave: int, boss: bool = false) -> Array:
+	var pool: Array = []
+	for id in artifacts:
+		if owned.has(id):
+			continue
+		var a: Dictionary = artifacts[id]
+		var rarity := String(a.get("rarity", "common"))
+		var w := Config.rarity_weight(rarity, wave) * float(a.get("shop_weight", 1.0))
+		if boss and rarity == "legendary":
+			w *= Config.ARTIFACT_BOSS_LEGENDARY_MULT
+		if w > 0.0:
+			pool.append({ "item": id, "w": w })
+	return pool
+
 ## 状态图鉴数据源：某状态的施加/强化来源（遍历 Registry，mod 内容自动出现）
 ## 返回 { "weapons": [...], "items": [...], "boosts": [...] }
 ##   weapons：{ id, ico, name, desc, rarity, chance, stacks }
@@ -419,6 +456,7 @@ func _valid_reaction_effect(data: Dictionary, type_id: String) -> bool:
 	return true
 
 ## 反应 effect 的完整合法性检查，返回错误原因（"" = 合法）
+## 反应注册与法宝 patch 共用这里，保证两条路径的合法区间完全一致（不会漂移）
 func _reaction_effect_issue(effect: Dictionary, type_id: String) -> String:
 	var allowed := OVERCOME_EFFECT_KEYS if type_id == "overcome" else GENERATE_EFFECT_KEYS
 	for k in effect:
@@ -467,6 +505,7 @@ func _reaction_effect_issue(effect: Dictionary, type_id: String) -> String:
 					or not Config.STATUS.has(String(effect.convert_dmg[sid2])):
 				return "convert_dmg 两端状态 id 均需已注册"
 	return ""
+
 ## “状态 id -> 数值”映射校验：非空、状态已注册、数值在 [low, high]
 func _valid_status_amounts(value: Variant, low: float, high: float) -> bool:
 	if typeof(value) != TYPE_DICTIONARY or (value as Dictionary).is_empty():
@@ -478,9 +517,132 @@ func _valid_status_amounts(value: Variant, low: float, high: float) -> bool:
 			return false
 	return true
 
+# ------------------------------------------------------------
+# 法宝注册（Phase 3）：触发式特效，每种限 1 件
+# ------------------------------------------------------------
+
+func register_artifact(data: Dictionary) -> bool:
+	if not _valid(data, "法宝", ["id", "name", "element", "rarity", "trigger",
+			"params", "effect"]):
+		return false
+	_apply_defaults(data, {"ico": "🔮", "desc": "", "price": 110, "shop_weight": 1.0})
+	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity", "element", "trigger"]):
+		return _reject("法宝", data, "文本字段类型非法")
+	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty():
+		return _reject("法宝", data, "ID/名称不能为空")
+	if data.rarity not in Config.RARITIES:
+		return _reject("法宝", data, "rarity 非法")
+	if String(data.element) not in Config.ELEMENTS:
+		return _reject("法宝", data, "element 必须是五行之一：" + String(data.element))
+	if String(data.trigger) not in Config.ARTIFACT_TRIGGERS:
+		return _reject("法宝", data, "trigger 非法：" + String(data.trigger))
+	if typeof(data.params) != TYPE_DICTIONARY:
+		return _reject("法宝", data, "params 必须是对象（无过滤条件时给空对象）")
+	if typeof(data.effect) != TYPE_DICTIONARY or (data.effect as Dictionary).is_empty():
+		return _reject("法宝", data, "effect 必须是非空对象")
+	# 法宝定位高于普通道具，价格上限 400（道具为 300）
+	if not _nonnegative_integer(data.price) or int(data.price) > 400:
+		return _reject("法宝", data, "price 必须是 [0, 400] 的整数")
+	if not _number_in_range(data.shop_weight, 0.0, 5.0):
+		return _reject("法宝", data, "shop_weight 必须在 [0, 5]")
+	if not _valid_artifact_params(data):
+		return false
+	if not _valid_artifact_effect(data):
+		return false
+	artifacts[String(data.id)] = data
+	return true
+
 ## params 逐键校验：键白名单 + 引用的五行/反应/状态真实存在
+func _valid_artifact_params(data: Dictionary) -> bool:
+	var params: Dictionary = data.params
+	for k in params:
+		var key := String(k)
+		if key not in ARTIFACT_PARAM_KEYS:
+			return _reject("法宝", data, "不支持的 params 键 \"%s\"" % key)
+		match key:
+			"element":
+				if String(params.element) not in Config.ELEMENTS:
+					return _reject("法宝", data, "params.element 必须是五行之一")
+			"key":
+				if not _reaction_keys.has(String(params.key)):
+					return _reject("法宝", data,
+						"params.key 不是已注册的五行反应：%s" % params.key)
+			"status":
+				if not Config.STATUS.has(String(params.status)):
+					return _reject("法宝", data,
+						"params.status 状态未注册：%s" % params.status)
+			"hp_below":
+				if not _number_in_range(params.hp_below, 0.0, 1.0):
+					return _reject("法宝", data, "params.hp_below 必须在 [0, 1]")
+	return true
+
+## effect 逐键校验：键白名单 + 引用真实存在的状态/属性 + 数值在安全区间
+func _valid_artifact_effect(data: Dictionary) -> bool:
+	var effect: Dictionary = data.effect
+	for k in effect:
+		if String(k) not in ARTIFACT_EFFECT_KEYS:
+			return _reject("法宝", data, "不支持的效果键 \"%s\"" % k)
+	if effect.has("patch") and not _valid_artifact_patch(data, effect.patch):
+		return false
+	for key in ["chance", "bonus_dmg_pct", "heal_pct", "dmg_mult", "high_hp",
+			"low_hp", "low_hp_dmg_reduce"]:
+		if effect.has(key) and not _number_in_range(effect.get(key), 0.0, 10.0):
+			return _reject("法宝", data, "%s 必须在 [0, 10]" % key)
+	for key2 in ["high_hp_armor", "per_stack"]:
+		if effect.has(key2) and not _number_in_range(effect.get(key2), 0.0, 1000.0):
+			return _reject("法宝", data, "%s 必须在 [0, 1000]" % key2)
+	if effect.has("radius") and not _number_in_range(effect.radius, 1.0, 600.0):
+		return _reject("法宝", data, "radius 必须在 [1, 600]")
+	if effect.has("duration") and not _number_in_range(effect.duration, 0.0, 30.0):
+		return _reject("法宝", data, "duration 必须在 [0, 30]")
+	for key3 in ["stacks", "add_stacks", "bonus_materials", "stack_max"]:
+		if effect.has(key3) \
+				and (not _positive_integer(effect.get(key3)) or int(effect[key3]) > 100):
+			return _reject("法宝", data, "%s 必须是 [1, 100] 的整数" % key3)
+	if effect.has("apply_status") and not Config.STATUS.has(String(effect.apply_status)):
+		return _reject("法宝", data,
+			"apply_status 状态未注册：%s" % effect.apply_status)
+	if effect.has("stack_reset") and String(effect.stack_reset) not in ARTIFACT_STACK_RESETS:
+		return _reject("法宝", data, "stack_reset 必须是 wave / run")
+	if effect.has("stat"):
+		var stat_id := String(effect.stat)
+		if not STAT_LIMITS.has(stat_id):
+			return _reject("法宝", data, "stat 不是可叠加属性：%s" % stat_id)
+		if not _positive_number(effect.get("per_stack")):
+			return _reject("法宝", data, "叠层法宝必须给出 > 0 的 per_stack")
+		if not _positive_integer(effect.get("stack_max", 0)):
+			return _reject("法宝", data, "叠层法宝必须给出 >= 1 的整数 stack_max")
+		# 叠满后仍须落在属性区间内，防 mod 配出暴击率 900% 之类的溢出构筑
+		var lim: Vector2 = STAT_LIMITS[stat_id]
+		var peak := float(effect.per_stack) * float(int(effect.stack_max))
+		if peak < lim.x or peak > lim.y:
+			return _reject("法宝", data, "%s 叠满 %s 超出属性区间 %s"
+				% [stat_id, peak, lim])
+	return true
 
 ## patch 校验：目标反应必须已注册，且补丁并入原 effect 后仍通过反应自身的合法性检查
+## 实际合并走 Config.apply_patch（与运行时同一函数），验的就是真正会执行的效果
+func _valid_artifact_patch(data: Dictionary, patch: Variant) -> bool:
+	if typeof(patch) != TYPE_DICTIONARY or (patch as Dictionary).is_empty():
+		return _reject("法宝", data, "patch 必须是非空对象")
+	var rkey := String(data.params.get("key", ""))
+	if rkey == "":
+		return _reject("法宝", data, "patch 类法宝的 params 必须给出 key（目标五行反应）")
+	var rid := String(_reaction_keys.get(rkey, ""))
+	var r: Dictionary = reactions.get(rid, {})
+	if r.is_empty():
+		return _reject("法宝", data, "patch 目标反应不存在：" + rkey)
+	for op in patch:
+		if String(op) not in ARTIFACT_PATCH_OPS:
+			return _reject("法宝", data, "patch 只支持 set / add，当前：%s" % op)
+		if typeof(patch[op]) != TYPE_DICTIONARY or (patch[op] as Dictionary).is_empty():
+			return _reject("法宝", data, "patch.%s 必须是非空对象" % op)
+	var merged := Config.apply_patch(r.get("effect", {}), patch)
+	var issue := _reaction_effect_issue(merged, String(r.get("type", "")))
+	if issue != "":
+		return _reject("法宝", data, "patch 后的反应效果非法：%s" % issue)
+	return true
+
 ## 缺省字段补全（mod/编辑器漏填时兜底）
 func _apply_defaults(data: Dictionary, defaults: Dictionary) -> void:
 	for k in defaults:
@@ -688,6 +850,10 @@ func _register_builtin() -> void:
 		var r: Dictionary = Config.REACTIONS[rkey].duplicate(true)
 		r["key"] = String(rkey)
 		register_reaction(r)
+	# 法宝必须在反应之后注册：patch 类法宝要校验 params.key 指向的反应已存在
+	artifacts = {}
+	for a in Config.ARTIFACTS:
+		register_artifact(a.duplicate(true))
 
 # ------------------------------------------------------------
 # mod 加载：扫描目录下的 manifest.json
@@ -727,6 +893,8 @@ func _apply_manifest(path: String, mod_name: String) -> int:
 		"items": register_item, "upgrades": register_upgrade,
 		"enemies": register_enemy, "difficulties": register_difficulty,
 		"reactions": register_reaction,
+		# 法宝排最后：同一清单里新增反应 + patch 该反应的法宝时，反应先落地
+		"artifacts": register_artifact,
 	}
 	for key in handled:
 		var entries: Variant = content.get(key, [])
@@ -813,6 +981,7 @@ func save_content(kind: String, entry: Dictionary) -> bool:
 		"enemies": target = enemies; register_call = register_enemy
 		"difficulties": target = difficulties; register_call = register_difficulty
 		"reactions": target = reactions; register_call = register_reaction
+		"artifacts": target = artifacts; register_call = register_artifact
 		_:
 			push_warning("Registry: 未知内容类别 " + kind)
 			return false

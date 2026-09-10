@@ -210,16 +210,54 @@ func _refresh_left() -> void:
 	trait_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_left_box.add_child(trait_l)
 
-## 刷新右侧已购道具面板（出售按钮 = 50% 购入价）
+## 刷新右侧已购面板（法宝 + 道具，出售按钮 = 50% 购入价）
 func _refresh_right() -> void:
 	for c in _items_box.get_children():
 		_items_box.remove_child(c)
 		c.queue_free()
-	if player.items_owned.is_empty():
+	if player.artifacts_owned.is_empty() and player.items_owned.is_empty():
 		var empty := _mk_label(12, Color("5a6270"))
 		empty.text = "暂无道具"
 		_items_box.add_child(empty)
 		return
+	# 法宝列在道具之前：每种限 1 件无数量，是触发式构筑核心，与纯属性道具分开看
+	if not player.artifacts_owned.is_empty():
+		_items_box.add_child(_group_label("法宝"))
+		for aid: String in player.artifacts_owned:
+			var a: Dictionary = Registry.get_artifact(aid)
+			if a.is_empty():
+				continue   # mod 卸载后残留的持有记录
+			var arow := HBoxContainer.new()
+			arow.add_theme_constant_override("separation", 6)
+			var anm := Label.new()
+			anm.text = "%s %s" % [a.get("ico", "🔮"), a.get("name", aid)]
+			anm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			anm.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			anm.add_theme_font_size_override("font_size", 13)
+			anm.add_theme_color_override("font_color",
+				Config.rarity_color(a.get("rarity", "common")))
+			anm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			arow.add_child(anm)
+			# 叠层法宝（断刃锋/玄武核）显示当前层数，否则这一列空着
+			var stacks := int(player.artifact_stacks.get(aid, 0))
+			if stacks > 0:
+				var ast := Label.new()
+				ast.text = "%d 层" % stacks
+				ast.add_theme_font_size_override("font_size", 13)
+				ast.add_theme_color_override("font_color", Color("f2e7c7"))
+				ast.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				arow.add_child(ast)
+			var asell := Button.new()
+			asell.text = "%d◆" % roundi(float(int(a.get("price", 110))) * 0.5)
+			asell.custom_minimum_size = Vector2(56.0, 24.0)
+			asell.tooltip_text = "出售（50% 购入价，并清除其叠层加成）"
+			asell.pressed.connect(_sell_artifact.bind(aid))
+			arow.add_child(asell)
+			_items_box.add_child(arow)
+	if player.items_owned.is_empty():
+		return
+	if not player.artifacts_owned.is_empty():
+		_items_box.add_child(_group_label("道具"))
 	for id: String in player.items_owned:
 		var cnt := int(player.items_owned[id])
 		var it: Dictionary = Registry.items.get(id, {})
@@ -247,6 +285,12 @@ func _refresh_right() -> void:
 		row.add_child(sell)
 		_items_box.add_child(row)
 
+## 分组小标题（法宝 / 道具）：仅当两类同时非空时才需要区分，但法宝单列时也加上保持一致
+func _group_label(text_str: String) -> Label:
+	var l := _mk_label(13, Color("e8b84b"))
+	l.text = text_str
+	return l
+
 ## 出售 1 个道具（返还 50% 并移除效果，购买价按当前波次上浮的差价不计入返还）
 func _sell(id: String) -> void:
 	var got: int = player.sell_item(id)
@@ -256,6 +300,16 @@ func _sell(id: String) -> void:
 		Sfx.play("ui_select")
 		_refresh()
 		_save_checkpoint()   # 出售后即时重存
+
+## 出售法宝：sell_artifact 内部已先清零叠层属性（否则暴击率/护甲会残留）
+func _sell_artifact(id: String) -> void:
+	var got: int = player.sell_artifact(id)
+	if got > 0:
+		GameState.add_materials(got)
+		Haptics.rumble(0.2, 0.0, 0.06)
+		Sfx.play("ui_select")
+		_refresh()
+		_save_checkpoint()
 
 # ---------------- 开关与商品 ----------------
 
@@ -299,6 +353,18 @@ func _roll_goods() -> void:
 		goods.append(_roll_one(weapon_full))
 
 func _roll_one(weapon_full: bool) -> Dictionary:
+	# 法宝先掷：独立于下面武器/升级/道具的 42/29/29 分配，不改动原有比例
+	# artifact_pool 已排除持有中的（每种限 1 件），池空时自然落到常规商品，不浪费这一格
+	if GameRng.chance(Config.ARTIFACT_SHOP_CHANCE):
+		var apool := Registry.artifact_pool(player.artifacts_owned, _wave)
+		if not apool.is_empty():
+			var aid := String(GameRng.weighted_pick(apool))
+			var a: Dictionary = Registry.get_artifact(aid)
+			return { "kind": "artifact", "id": aid, "ico": a.get("ico", "🔮"),
+				"name": a.get("name", aid), "desc": a.get("desc", ""),
+				"rarity": a.get("rarity", "common"),
+				"base_price": int(a.get("price", 110)),
+				"sold": false, "locked": false }
 	var r := GameRng.range_f(0.0, 1.0)
 	if not weapon_full and r < Config.WEAPON_SHOP_CHANCE:
 		var wt: String = GameRng.weighted_pick(Registry.shop_weapon_pool())
@@ -508,6 +574,12 @@ func buy(i: int) -> void:
 		return
 	if g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots():
 		return
+	# 商店开着期间已通过掉落/事件拿到同一件法宝：直接标售罄且不扣钱。
+	# 否则玩家会为一件已拥有的法宝付 110~300 只换回 60 材料补偿（apply_artifact 的重复分支）
+	if g.kind == "artifact" and player.artifacts_owned.has(String(g.id)):
+		g.sold = true
+		_refresh()
+		return
 	GameState.add_materials(-price)
 	g.sold = true
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
@@ -516,6 +588,8 @@ func buy(i: int) -> void:
 		player.weapons.append({ "type": g.wtype, "cd": 0.1 })
 	elif g.kind == "upgrade":
 		player.apply_upgrade(g.id)
+	elif g.kind == "artifact":
+		player.apply_artifact(g.id)
 	else:
 		player.apply_item(g.id)
 	var purchased_id := String(g.wtype) if g.kind == "weapon" else String(g.id)

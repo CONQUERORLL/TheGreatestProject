@@ -184,6 +184,40 @@ const REACTIONS := {
 ## 内置反应查询（mod 内容需走 Registry.find_reaction）
 static func get_reaction(status_a: String, status_b: String) -> Dictionary:
 	return REACTIONS.get(reaction_key(get_element(status_a), get_element(status_b)), {})
+
+## 把法宝 patch 应用到反应 effect 上，返回新字典（不改原数据）
+##   set：整键覆盖（字典值也是整体替换）
+##   add：数值相加；字典值按子键合并（缺失则新建）；类型不兼容时退化为覆盖
+## 纯函数：Registry 注册校验与 ArtifactSystem 运行时共用，保证“验的就是跑的”
+static func apply_patch(base: Variant, patch: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	if typeof(base) == TYPE_DICTIONARY:
+		out = (base as Dictionary).duplicate(true)
+	for op in patch:
+		if typeof(patch[op]) != TYPE_DICTIONARY:
+			continue
+		var delta: Dictionary = patch[op]
+		if String(op) == "set":
+			out.merge(delta, true)
+			continue
+		if String(op) != "add":
+			continue
+		for k in delta:
+			if typeof(delta[k]) == TYPE_DICTIONARY:
+				var sub: Dictionary = {}
+				if typeof(out.get(k)) == TYPE_DICTIONARY:
+					sub = (out[k] as Dictionary).duplicate(true)
+				sub.merge(delta[k], true)
+				out[k] = sub
+			elif out.has(k) and _is_number(out[k]) and _is_number(delta[k]):
+				out[k] = float(out[k]) + float(delta[k])
+			else:
+				out[k] = delta[k]
+	return out
+
+static func _is_number(v: Variant) -> bool:
+	return typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT
+
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
 ## evolve_need：持有同名武器达到该数量，波末自动合成为 evolve_to（吸血鬼幸存者式）
 const WEAPONS := {
@@ -367,6 +401,116 @@ const ITEMS := [
 	{ "id": "i-gale", "ico": "🌪", "name": "风神羽靴", "desc": "移速 +35%，攻速 +30%，闪避 +10%", "price": 250, "rarity": "legendary", "effects": { "speed_mult": 0.35, "as_mult": 0.30, "dodge": 0.10 } },
 	{ "id": "i-sanguine", "ico": "🧛", "name": "血族圣冠", "desc": "击杀回血 +3，生命回复 +2 / 秒", "price": 280, "rarity": "legendary", "effects": { "lifesteal": 3.0, "regen": 2.0 } },
 	{ "id": "i-crown", "ico": "👑", "name": "王者桂冠", "desc": "伤害 +15%，攻速 +15%，暴击 +8%，暴伤 +50%", "price": 300, "rarity": "legendary", "effects": { "dmg_mult": 0.15, "as_mult": 0.15, "crit_ch": 0.08, "crit_mult": 0.50 } },
+]
+
+## ============================================================
+## 法宝（Phase 3）—— 触发式特效，区别于 ITEMS 的纯属性被动
+## 每种限 1 件、无总上限；重复获得转化为 ARTIFACT_DUP_MATERIALS 材料
+## 字段说明：
+##   element  五行归属（ELEMENTS 之一），图鉴/商店分组与五行加成用
+##   trigger  触发时机，必须是 ARTIFACT_TRIGGERS 之一
+##   params   触发过滤条件：element / key（五行反应）/ status / hp_below
+##   effect   动作载荷，键随 trigger 而变（见各条目行内注释）
+## effect 载荷约定（ArtifactSystem 按存在的键分派）：
+##   patch          改写五行反应效果本身：set 覆盖 / add 叠加合并。
+##                  由 enemy.gd 在执行反应效果【之前】同步调用
+##                  ArtifactSystem.patch_reaction_effect() 应用（信号太晚）
+##   bonus_dmg_pct  对反应目标追加 = 玩家攻击力 × 该比例 的伤害
+##   chance + apply_status + radius + stacks + duration
+##                  概率对半径内敌人施加状态（凤凰翎/寒镜/潮汐珠）
+##   stat + per_stack + stack_max + stack_reset
+##                  叠层属性：stack_reset = "wave"（每波重置）/ "run"（仅局终重置）
+##   dmg_mult       命中低血量目标时的伤害倍率（配合 params.hp_below）
+##   heal_pct       按最大生命百分比回复（建木枝）
+##   high_hp / high_hp_armor / low_hp / low_hp_dmg_reduce
+##                  受击前修正：由 player.take_damage 同步查询（岩肤符）
+##   add_stacks     概率给已施加的状态追加层数（缠藤结）
+##   bonus_materials 概率额外获得材料（后土符）
+## ============================================================
+const ARTIFACT_TRIGGERS := ["on_reaction", "on_kill", "on_status_apply",
+	"on_deal_hit", "on_take_hit", "on_wave_end"]
+
+const ARTIFACT_ELITE_DROP_CHANCE := 0.12     # 精英怪（实例 elite 标志）击杀掉法宝概率
+const ARTIFACT_BOSS_LEGENDARY_MULT := 3.0    # BOSS 掉落时 legendary 权重倍率
+const ARTIFACT_SHOP_CHANCE := 0.25           # 商店每格刷出法宝（而非武器/道具/升级）概率
+const ARTIFACT_DUP_MATERIALS := 60           # 重复获得已持有法宝的材料补偿
+
+const ARTIFACTS := [
+	# ---- 火 · 爆发 ----
+	{ "id": "art_cinder_seal", "ico": "🔥", "name": "焚天印", "element": "fire", "rarity": "common",
+		"desc": "火系五行反应触发时，对反应目标追加 40% 攻击力的额外伤害",
+		"trigger": "on_reaction", "params": { "element": "fire" },
+		"effect": { "bonus_dmg_pct": 0.40 }, "price": 110, "shop_weight": 1.0 },
+	{ "id": "art_phoenix_plume", "ico": "🪶", "name": "凤凰翎", "element": "fire", "rarity": "epic",
+		"desc": "击杀燃烧中的敌人时，12% 概率点燃周围 120 范围内敌人 1 层",
+		"trigger": "on_kill", "params": { "status": "burn" },
+		"effect": { "chance": 0.12, "radius": 120.0, "apply_status": "burn",
+			"stacks": 1, "duration": 3.0 }, "price": 210, "shop_weight": 1.0 },
+	{ "id": "art_molten_crucible", "ico": "🌋", "name": "熔金炉", "element": "fire", "rarity": "legendary",
+		"desc": "「火克金」熔金强化：受伤 +50%→+80%，持续 3 秒→5 秒",
+		"trigger": "on_reaction", "params": { "key": "fire+metal" },
+		"effect": { "patch": { "set": { "armor_break": 0.8, "armor_break_duration": 5.0 } } },
+		"price": 300, "shop_weight": 1.0 },
+	# ---- 木 · 持续 / 回复 ----
+	{ "id": "art_vine_knot", "ico": "🌿", "name": "缠藤结", "element": "wood", "rarity": "common",
+		"desc": "施加中毒时 15% 概率额外 +1 层",
+		"trigger": "on_status_apply", "params": { "status": "poison" },
+		"effect": { "chance": 0.15, "add_stacks": 1 }, "price": 110, "shop_weight": 1.0 },
+	{ "id": "art_spore_heart", "ico": "🍄", "name": "孢心", "element": "wood", "rarity": "epic",
+		"desc": "「水生木」毒素扩散半径 100→180",
+		"trigger": "on_reaction", "params": { "key": "water+wood" },
+		"effect": { "patch": { "set": { "spread": { "poison": 180.0 } } } },
+		"price": 210, "shop_weight": 1.0 },
+	{ "id": "art_world_tree", "ico": "🌳", "name": "建木枝", "element": "wood", "rarity": "legendary",
+		"desc": "每波结束回复 18% 最大生命",
+		"trigger": "on_wave_end", "params": {},
+		"effect": { "heal_pct": 0.18 }, "price": 300, "shop_weight": 1.0 },
+	# ---- 金 · 暴击 / 处决 ----
+	{ "id": "art_notch_blade", "ico": "⚔", "name": "断刃锋", "element": "metal", "rarity": "common",
+		"desc": "击杀流血中的敌人 +4% 暴击率（本波内有效，最多 8 层）",
+		"trigger": "on_kill", "params": { "status": "bleed" },
+		"effect": { "stat": "crit_ch", "per_stack": 0.04, "stack_max": 8,
+			"stack_reset": "wave" }, "price": 110, "shop_weight": 1.0 },
+	{ "id": "art_executioner", "ico": "🪓", "name": "刑天斧", "element": "metal", "rarity": "epic",
+		"desc": "对生命低于 25% 的敌人伤害 +45%",
+		"trigger": "on_deal_hit", "params": { "hp_below": 0.25 },
+		"effect": { "dmg_mult": 1.45 }, "price": 210, "shop_weight": 1.0 },
+	{ "id": "art_soul_bell", "ico": "🔔", "name": "落魂钟", "element": "metal", "rarity": "legendary",
+		"desc": "「金克木」败血症期间，目标受到的伤害额外 +35%",
+		"trigger": "on_reaction", "params": { "key": "metal+wood" },
+		"effect": { "patch": { "add": { "armor_break": 0.35, "armor_break_duration": 4.0 } } },
+		"price": 300, "shop_weight": 1.0 },
+	# ---- 水 · 控制 / 生存 ----
+	{ "id": "art_frost_mirror", "ico": "❄", "name": "寒镜", "element": "water", "rarity": "common",
+		"desc": "水系五行反应触发时，12% 概率冰冻周围 140 范围内敌人 0.8 秒",
+		"trigger": "on_reaction", "params": { "element": "water" },
+		"effect": { "chance": 0.12, "radius": 140.0, "apply_status": "freeze",
+			"stacks": 1, "duration": 0.8 }, "price": 110, "shop_weight": 1.0 },
+	{ "id": "art_tide_pearl", "ico": "🫧", "name": "潮汐珠", "element": "water", "rarity": "epic",
+		"desc": "受到攻击时 18% 概率释放寒冰新星，减速周围 150 范围内敌人 2 秒",
+		"trigger": "on_take_hit", "params": {},
+		"effect": { "chance": 0.18, "radius": 150.0, "apply_status": "slow",
+			"stacks": 1, "duration": 2.0 }, "price": 210, "shop_weight": 1.0 },
+	{ "id": "art_leviathan_eye", "ico": "👁", "name": "蛟皇目", "element": "water", "rarity": "legendary",
+		"desc": "「土克水」碎裂阈值 20%→32%，碎裂成功时回复 8 点生命",
+		"trigger": "on_reaction", "params": { "key": "earth+water" },
+		"effect": { "patch": { "set": { "execute_threshold": 0.32, "execute_heal": 8.0 } } },
+		"price": 300, "shop_weight": 1.0 },
+	# ---- 土 · 防御 / 资源 ----
+	{ "id": "art_stone_skin", "ico": "🪨", "name": "岩肤符", "element": "earth", "rarity": "common",
+		"desc": "生命高于 70% 时护甲 +4；低于 30% 时受到的伤害 -22%",
+		"trigger": "on_take_hit", "params": {},
+		"effect": { "high_hp": 0.70, "high_hp_armor": 4.0,
+			"low_hp": 0.30, "low_hp_dmg_reduce": 0.22 }, "price": 110, "shop_weight": 1.0 },
+	{ "id": "art_earth_tally", "ico": "🏵", "name": "后土符", "element": "earth", "rarity": "epic",
+		"desc": "每次击杀 8% 概率额外获得 1 份材料",
+		"trigger": "on_kill", "params": {},
+		"effect": { "chance": 0.08, "bonus_materials": 1 }, "price": 210, "shop_weight": 1.0 },
+	{ "id": "art_titan_core", "ico": "⛰", "name": "玄武核", "element": "earth", "rarity": "legendary",
+		"desc": "土系五行反应触发时获得 1 层「磐石」（护甲 +1.5，永久，最多 12 层）",
+		"trigger": "on_reaction", "params": { "element": "earth" },
+		"effect": { "stat": "armor", "per_stack": 1.5, "stack_max": 12,
+			"stack_reset": "run" }, "price": 300, "shop_weight": 1.0 },
 ]
 
 const WAVES_TOTAL := 10

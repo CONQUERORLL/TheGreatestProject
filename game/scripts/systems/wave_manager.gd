@@ -133,7 +133,9 @@ func _physics_process(delta: float) -> void:
 			Config.ENEMY_HARD_CAP)
 		if wave_timer > 0.0 and spawn_t <= 0.0 and alive < cap:
 			spawn_t = Config.wave_interval(wave) / float(diff.spawn_mult)
-			spawn(_pick_spawn_id(diff))
+			var pick_id := _pick_spawn_id(diff)
+			# 必须紧跟 _pick_spawn_id 读取：_picked_elite 是单次调用的伴随标志位
+			spawn(pick_id, _picked_elite)
 			_alive_cache += 1
 			alive += 1
 		if wave_timer <= 0.0 and not ending_started:
@@ -158,9 +160,17 @@ func _physics_process(delta: float) -> void:
 				{ "item": "runner", "w": 0.35 }, { "item": "grunt", "w": 0.30 },
 				{ "item": "shadow", "w": 0.20 }, { "item": "bomber", "w": 0.15 }])))
 
+## 上一次 _pick_spawn_id 的结果是否为精英（伴随标志位）
+## _pick_spawn_id 刻意保持返回 String：冒烟测试按字符串断言 chest_guard，
+## 改返回结构体会破坏既有契约。法宝掉落只认这个标志而不认敌人类型，
+## 因为 Config.wave_composition 里 guard/wizard/shadow/bomber 在 W7+ 常规波就会出现
+var _picked_elite := false
+
 ## 选怪：事件波用专属组合；常规按波次权重组合；
 ## 高难度（hard/噩梦）有 elite_chance 概率在第 4 波起替换为精英怪
+## 返回敌人 id，是否为精英写入 _picked_elite
 func _pick_spawn_id(diff: Dictionary) -> String:
+	_picked_elite = false
 	match event_kind:
 		"treasure":
 			# 宝箱守卫波：只刷宝箱守卫（少量慢速高价值目标）
@@ -170,12 +180,14 @@ func _pick_spawn_id(diff: Dictionary) -> String:
 			if GameRng.chance(0.4):
 				var elite := String(GameRng.weighted_pick(Config.ELITE_POOL))
 				_hunt_elites_total += 1
+				_picked_elite = true
 				return elite
 			return String(GameRng.weighted_pick(Registry.wave_composition(wave)))
 	var pick_id := String(GameRng.weighted_pick(Registry.wave_composition(wave)))
 	var elite_ch := float(diff.get("elite_chance", 0.0))
 	if elite_ch > 0.0 and wave >= 4 and GameRng.chance(elite_ch):
 		pick_id = String(GameRng.weighted_pick(Config.ELITE_POOL))
+		_picked_elite = true
 	return pick_id
 
 ## 流星砸落点：70% 砸玩家附近（半径 120-320 随机），30% 全场随机
@@ -229,12 +241,15 @@ func _settle_event_wave() -> void:
 				"奖励 %d ◆" % reward_m, 2.2)
 
 ## 刷怪：玩家视野外一圈、世界边界内（原型 12 次尝试，距玩家 >420）
-func spawn(type: String) -> void:
+## is_elite：标记为精英实例（影响法宝掉落）；默认 false，
+## BOSS 波干扰怪与调试快捷键（main.gd KEY_6/KEY_7）沿用单参调用
+func spawn(type: String, is_elite: bool = false) -> void:
 	if not Registry.enemies.has(type):
 		push_warning("WaveManager: 未知敌人 ID，跳过生成：" + type)
 		return
 	var e := EnemyScene.instantiate()
 	e.setup(type, wave)
+	e.elite = is_elite
 	var view := get_viewport().get_visible_rect().size
 	var base_r := maxf(view.x, view.y) * 0.62
 	var pos := Vector2.ZERO

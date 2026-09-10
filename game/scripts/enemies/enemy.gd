@@ -32,6 +32,7 @@ var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才�
 var _spiral_angle := 0.0   # 螺旋织网者：当前螺旋弹幕相位
 var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
 var spawn_wave := 1        # 生成时波次（召唤物继承）
+var elite := false         # 精英实例标志（由 wave_manager.spawn 注入；掉法宝只认这个）
 var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
 var status_resist := 0.0        # 状态时长减免（BOSS 0.55）
 var reaction_debuffs: Array = []   # 五行反应 debuff：{dmg_taken_mult, dot_mult, remaining}
@@ -264,6 +265,10 @@ func trigger_reaction(reaction: Dictionary) -> void:
 			or _reaction_depth >= MAX_REACTION_DEPTH:
 		return
 	var reaction_id := String(reaction.get("id", ""))
+	# 法宝改写（熔金炉/孢心/落魂钟/蛟皇目）必须在执行效果【之前】应用：
+	# element_reaction 信号在本函数末尾才发，那时破甲/阈值/扩散半径已经结算完了
+	var effect: Dictionary = ArtifactSystem.patch_reaction_effect(player,
+		String(reaction.get("key", "")), reaction.get("effect", {}))
 	_reaction_active[reaction_id] = true
 	_reaction_depth += 1
 	if String(reaction.get("type", "")) == "overcome":
@@ -348,6 +353,8 @@ func _execute_overcome_effect(effect: Dictionary) -> void:
 	if effect.has("execute_threshold") and max_hp > 0.0 \
 			and hp / max_hp < float(effect.execute_threshold):
 		take_damage(hp + 1.0, false, false)
+		# 蛟皇目：碎裂成功时回复生命（execute_heal 由法宝 patch 注入，内置反应没这个键）
+		# queue_free 是延迟的，此处 self / player 仍有效
 		if effect.has("execute_heal") and player and is_instance_valid(player):
 			player.heal(float(effect.execute_heal))
 		return
@@ -413,6 +420,7 @@ func _reaction_dot_mult() -> float:
 	for d in reaction_debuffs:
 		mult *= float(d.get("dot_mult", 1.0))
 	return mult
+
 func _ready() -> void:
 	add_to_group("enemies")
 
@@ -582,7 +590,9 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	if hp <= 0.0 or flee > 0.0:
 		return
-	var final_dmg := dmg * _damage_taken_mult()
+	# 刑天斧：低血加成必须在 hp 扣减【之前】按当前血量比例判定，扣完再算就晚了
+	var final_dmg := dmg * ArtifactSystem.execute_damage_mult(player, self) \
+		* _damage_taken_mult()
 	hp -= final_dmg
 	bar_t = 0.9
 	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
@@ -602,6 +612,9 @@ func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 
 func die() -> void:
 	EventBus.enemy_killed.emit(type)
+	# 携带节点引用的死亡事件：法宝 on_kill 要读死前身上的状态（凤凰翎要燃烧、断刃锋要流血）
+	# 必须在 queue_free 之前发，订阅者才能安全访问节点；BOSS 也要发（无尽模式 BOSS 每波都死）
+	EventBus.enemy_died.emit(self)
 	if is_boss():
 		# 原型：BOSS 死亡大爆发（40 粒 / 260 速度）+ 震屏 14，直接胜利结算不掉落
 		Burst.spawn(get_parent(), global_position, color, 40, 260.0)
@@ -631,6 +644,29 @@ func _drop_loot() -> void:
 	var heart_ch: float = float(cfg.get("heart_chance", Config.HEAL_DROP_CHANCE))
 	if heart_ch > 0.0 and GameRng.chance(heart_ch):
 		_spawn_loot("heart", 8, Vector2.ZERO)
+	# 精英怪掉法宝（spec：精英是三大获取渠道之一）
+	# 只认实例 elite 标志，不按敌人类型判定 —— Config.wave_composition 里
+	# guard/wizard/shadow/bomber 在 W7+ 常规波就会出现，按类型会误伤大量常规怪。
+	# 先判 sys 再掷 RNG：无 ArtifactSystem 的环境（冒烟测试）不消耗随机数，保持确定性
+	if elite:
+		var sys = _artifact_system()   # 不用 := ：返回不定型节点，无法标注类型供推断
+		if sys != null and GameRng.chance(Config.ARTIFACT_ELITE_DROP_CHANCE):
+			var aid := String(sys.pick_artifact(false))
+			if aid != "":
+				_spawn_artifact(aid)
+
+## 法宝系统节点（main.tscn 下）：精英掉落需要它抽取法宝 id
+## 用组查找而非 preload/单例：ArtifactSystem 随 main.tscn 生灭，
+## 冒烟测试等无此节点的场景返回 null 自然降级
+func _artifact_system():
+	return get_tree().get_first_node_in_group("artifact_system")
+
+## 法宝掉落物：Loot.setup 的 value 是 int，承载不了法宝字符串 id，走独立入口
+func _spawn_artifact(id: String) -> void:
+	var l := LootScene.instantiate()
+	l.setup_artifact(id, global_position + Vector2(0.0, -6.0), Vector2(0.0, -70.0))
+	l.player = player
+	get_parent().add_child(l)
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
 	var l := LootScene.instantiate()

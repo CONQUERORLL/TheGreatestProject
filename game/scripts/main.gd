@@ -47,6 +47,7 @@ var _victory_menu: Control = null
 @onready var banner_title: Label = $UI/BannerTitle
 @onready var banner_sub: Label = $UI/BannerSub
 @onready var wave_manager: Node = $WaveManager
+@onready var artifact_system: Node = $ArtifactSystem
 @onready var level_up_ui: Control = $UI/LevelUp
 @onready var shop_ui: Control = $UI/Shop
 @onready var hud: Control = $UI/HUD
@@ -75,9 +76,11 @@ func _ready() -> void:
 	EventBus.status_applied.connect(_on_status_applied)
 	EventBus.element_reaction.connect(_on_element_reaction)
 	EventBus.codex_unlocked.connect(_on_codex_unlocked)
+	EventBus.artifact_acquired.connect(_on_artifact_acquired)
 	EventBus.achievement_unlocked.connect(_on_achievement_unlocked)
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
 	wave_manager.player = player
+	artifact_system.player = player
 	level_up_ui.player = player
 	shop_ui.player = player
 	shop_ui.wave_manager = wave_manager
@@ -296,6 +299,16 @@ func _scan_codex_weapons() -> void:
 func _on_codex_unlocked(cat: String, id: String) -> void:
 	_enqueue_toast("📖 图鉴解锁", "%s %s · ✦%d" % [CodexData.display_icon(cat, id),
 		CodexData.display_name(cat, id), CodexData.unlock_reward(cat)], cat, id)
+
+## 获得法宝：精英掉落 / BOSS 必掉 / 商店购买 三条渠道的统一出口
+## 刻意走队列化 toast 而非 banner：BOSS 掉落时本函数会紧接着发「BOSS 击破！」横幅，
+## banner 是单例式后发覆盖先发，两边会互相吃掉；toast 队列（上限 4 条）则依次展示
+func _on_artifact_acquired(id: String) -> void:
+	var a := Registry.get_artifact(id)
+	if a.is_empty():
+		return
+	_enqueue_toast("🔮 法宝入手", "%s %s · %s" % [String(a.get("ico", "")),
+		String(a.get("name", id)), String(a.get("desc", ""))], "artifact", id)
 
 func _on_achievement_unlocked(id: String) -> void:
 	_enqueue_toast("🏆 成就达成", "%s %s · ✦%d 精华" % [CodexData.display_icon("achieve", id),
@@ -799,7 +812,7 @@ func _refresh_pause_content() -> void:
 	trait_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	trait_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_left.add_child(trait_l)
-	# 右：已购道具（相同叠加显示数量）
+	# 右：已购道具（相同叠加显示数量）+ 法宝区
 	for c in _pause_items.get_children():
 		_pause_items.remove_child(c)
 		c.queue_free()
@@ -809,25 +822,76 @@ func _refresh_pause_content() -> void:
 		empty.add_theme_font_size_override("font_size", 12)
 		empty.add_theme_color_override("font_color", Color("5a6270"))
 		_pause_items.add_child(empty)
+	else:
+		for id: String in player.items_owned:
+			var it: Dictionary = Registry.items.get(id, {})
+			var row := HBoxContainer.new()
+			row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var l2 := Label.new()
+			l2.text = "%s %s" % [it.get("ico", "🧩"), it.get("name", id)]
+			l2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			l2.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			l2.add_theme_font_size_override("font_size", 13)
+			l2.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
+			l2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(l2)
+			var ct := Label.new()
+			ct.text = "x%d" % int(player.items_owned[id])
+			ct.add_theme_font_size_override("font_size", 13)
+			ct.add_theme_color_override("font_color", Color("f2e7c7"))
+			ct.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(ct)
+			_pause_items.add_child(row)
+	_pause_artifact_rows()
+
+## 暂停面板法宝区：法宝不占常驻 HUD（spec 第五章），这里是局内查看持有与叠层的入口。
+## 叠层必须显示：断刃锋/玄武核的属性随层数涨，看不到层数就无法判断构筑强度。
+func _pause_artifact_rows() -> void:
+	var sep := ColorRect.new()
+	sep.color = Color("2c3340")
+	sep.custom_minimum_size = Vector2(0.0, 1.0)
+	sep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(sep)
+	var t := Label.new()
+	t.text = "法宝"
+	t.add_theme_font_size_override("font_size", 13)
+	t.add_theme_color_override("font_color", Color("e8b84b"))
+	t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(t)
+	if player.artifacts_owned.is_empty():
+		var empty := Label.new()
+		empty.text = "暂无法宝（精英击杀 / BOSS / 商店可得）"
+		empty.add_theme_font_size_override("font_size", 12)
+		empty.add_theme_color_override("font_color", Color("5a6270"))
+		_pause_items.add_child(empty)
 		return
-	for id: String in player.items_owned:
-		var it: Dictionary = Registry.items.get(id, {})
+	for aid: String in player.artifacts_owned:
+		var a: Dictionary = Registry.get_artifact(aid)
+		if a.is_empty():
+			continue   # mod 卸载后的残留持有，不画空行
 		var row := HBoxContainer.new()
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var l2 := Label.new()
-		l2.text = "%s %s" % [it.get("ico", "🧩"), it.get("name", id)]
-		l2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		l2.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		l2.add_theme_font_size_override("font_size", 13)
-		l2.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
-		l2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(l2)
-		var ct := Label.new()
-		ct.text = "x%d" % int(player.items_owned[id])
-		ct.add_theme_font_size_override("font_size", 13)
-		ct.add_theme_color_override("font_color", Color("f2e7c7"))
-		ct.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(ct)
+		var nm := Label.new()
+		nm.text = "%s %s" % [a.get("ico", "🔮"), a.get("name", aid)]
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nm.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		nm.add_theme_font_size_override("font_size", 13)
+		nm.add_theme_color_override("font_color", Config.rarity_color(a.get("rarity", "common")))
+		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(nm)
+		var bits: Array[String] = []
+		var elem := String(a.get("element", ""))
+		if elem != "" and Config.ELEMENT_NAME.has(elem):
+			bits.append(String(Config.ELEMENT_NAME[elem]))
+		var stacks := int(player.artifact_stacks.get(aid, 0))
+		if stacks > 0:
+			bits.append("x%d 层" % stacks)
+		var st := Label.new()
+		st.text = " ".join(bits)
+		st.add_theme_font_size_override("font_size", 13)
+		st.add_theme_color_override("font_color", Color("f2e7c7"))
+		st.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(st)
 		_pause_items.add_child(row)
 
 func _build_end_menus() -> void:

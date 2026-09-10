@@ -6,12 +6,16 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/level_up_ui.tscn" id="4_levelup"]
 [ext_resource type="PackedScene" path="res://scenes/ui/shop_ui.tscn" id="5_shop"]
 [ext_resource type="PackedScene" path="res://scenes/ui/hud.tscn" id="6_hud"]
+[ext_resource type="Script" path="res://scripts/systems/artifact_system.gd" id="7_artifact"]
 
 [node name="Main" type="Node2D" unique_id=1372956391]
 script = ExtResource("1_main")
 
 [node name="WaveManager" type="Node" parent="." unique_id=1296073400]
 script = ExtResource("3_wave")
+
+[node name="ArtifactSystem" type="Node" parent="."]
+script = ExtResource("7_artifact")
 
 [node name="Player" parent="." unique_id=1038812603 instance=ExtResource("2_player")]
 position = Vector2(800, 800)

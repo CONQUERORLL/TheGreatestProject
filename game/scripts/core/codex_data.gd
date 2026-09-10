@@ -6,19 +6,20 @@ extends Node
 ## 测试可用 set_storage_path_for_tests 隔离路径，避免污染本机档
 
 const SAVE_PATH := "user://codex.json"
-const CATEGORIES := ["status", "reaction", "weapon", "item",
+const CATEGORIES := ["status", "reaction", "weapon", "item", "artifact",
 	"upgrade", "enemy"]
 const CAT_NAMES := {
 	"status": "状态", "reaction": "五行", "weapon": "武器", "item": "道具",
-	"upgrade": "升级", "enemy": "敌人",
+	"artifact": "法宝", "upgrade": "升级", "enemy": "敌人",
 }
 
 ## 图鉴首次解锁奖励（土豆精华）：收集越多，局外天赋成型越快
 ## 五行反应需主动凑状态组合才能触发，门槛高于普通条目，取平衡区间上限
+## 法宝靠精英 12% / BOSS 必掉 / 商店 25% 三渠道凑齐 15 件，需多局积累，
 ## 难度介于道具（5）与反应（7）之间，取 6（与敌人同级）
 ## （冒烟测试限定每类奖励在 [4, 7]，超出会被判为失衡）
 const UNLOCK_REWARDS := {
-	"status": 4, "reaction": 7, "weapon": 7, "item": 5,
+	"status": 4, "reaction": 7, "weapon": 7, "item": 5, "artifact": 6,
 	"upgrade": 4, "enemy": 6,
 }
 
@@ -155,6 +156,7 @@ func total_entries(cat: String) -> int:
 		"reaction": return Registry.reactions.size()
 		"weapon": return Registry.weapons.size()
 		"item": return Registry.items.size()
+		"artifact": return Registry.artifacts.size()
 		"upgrade": return Registry.upgrades.size()
 		"enemy": return Registry.enemies.size()
 		"achieve": return ACHIEVEMENTS.size()
@@ -166,6 +168,7 @@ func display_name(cat: String, id: String) -> String:
 		"reaction": return String(Registry.reactions.get(id, {}).get("name", id))
 		"weapon": return String(Registry.weapons.get(id, {}).get("name", id))
 		"item": return String(Registry.items.get(id, {}).get("name", id))
+		"artifact": return String(Registry.get_artifact(id).get("name", id))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("name", id))
 		"enemy": return String(Registry.enemies.get(id, {}).get("name", id))
 		"achieve": return String(ACHIEVEMENTS.get(id, {}).get("name", id))
@@ -177,6 +180,7 @@ func display_icon(cat: String, id: String) -> String:
 		"reaction": return String(Registry.reactions.get(id, {}).get("ico", "☯"))
 		"weapon": return String(Registry.weapons.get(id, {}).get("ico", "🔧"))
 		"item": return String(Registry.items.get(id, {}).get("ico", "🧩"))
+		"artifact": return String(Registry.get_artifact(id).get("ico", "🔮"))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("ico", "✨"))
 		"enemy": return "👾"
 		"achieve": return String(ACHIEVEMENTS.get(id, {}).get("ico", "🏆"))

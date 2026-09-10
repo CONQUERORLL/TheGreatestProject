@@ -85,6 +85,10 @@ func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_STA
 			"weapons": player.weapons.map(func(w: Dictionary) -> Dictionary:
 				return { "type": w.type }),
 			"items_owned": player.items_owned.duplicate(),
+			# 法宝必须连叠层一起存：叠层属性已含在 stats 里，但层数记录丢了
+			# 会让 _set_artifact_stacks 的 cur 归零，下次叠层重复加成
+			"artifacts_owned": player.artifacts_owned.duplicate(),
+			"artifact_stacks": player.artifact_stacks.duplicate(),
 		},
 	}
 	var saved := _write_json_atomic(path, data)
@@ -149,6 +153,20 @@ func restore(player: Node) -> int:
 			var count := int(pl.items_owned[id])
 			if count > 0:
 				player.items_owned[id] = count
+	# 法宝：stats 已随存档恢复（叠层加成已含在其中），这里只恢复持有表与层数记录。
+	# 刻意不调 _set_artifact_stacks / apply_artifact：前者会把已入账的属性再加一遍，
+	# 后者会重复发 artifact_acquired 与图鉴解锁
+	player.artifacts_owned = {}
+	player.artifact_stacks = {}
+	var saved_stacks: Dictionary = pl.get("artifact_stacks", {})
+	for aid: String in pl.get("artifacts_owned", {}):
+		# mod 卸载后存档里的法宝失效：静默丢弃（与 items_owned 同款处理）
+		if not Registry.artifacts.has(aid):
+			continue
+		player.artifacts_owned[aid] = 1
+		var stacks := int(saved_stacks.get(aid, 0))
+		if stacks > 0:
+			player.artifact_stacks[aid] = stacks
 	player.queue_redraw()
 	current_run_owns_slot = true
 	return wave
@@ -230,6 +248,10 @@ func _read_path(path: String) -> Dictionary:
 			or typeof(pl.get("weapons")) != TYPE_ARRAY \
 			or typeof(pl.get("items_owned")) != TYPE_DICTIONARY:
 		return {}
+	# 法宝字段用 .get 默认值：旧存档（Phase 3 之前）无这两个键，仍须能恢复
+	if typeof(pl.get("artifacts_owned", {})) != TYPE_DICTIONARY \
+			or typeof(pl.get("artifact_stacks", {})) != TYPE_DICTIONARY:
+		return {}
 	var stat_limits := {
 		"max_hp": Vector2(1.0, 10_000_000.0), "regen": Vector2(0.0, 1_000_000.0),
 		"armor": Vector2(-7.9, 1_000_000.0), "dodge": Vector2(0.0, 0.95),
@@ -263,6 +285,15 @@ func _read_path(path: String) -> Dictionary:
 	for id in pl.items_owned:
 		if typeof(id) != TYPE_STRING or String(id).is_empty() or String(id).length() > 128 \
 				or not _integer_in_range(pl.items_owned[id], 1, 1_000_000):
+			return {}
+	for aid in pl.get("artifacts_owned", {}):
+		if typeof(aid) != TYPE_STRING or String(aid).is_empty() \
+				or String(aid).length() > 128:
+			return {}
+	for sid in pl.get("artifact_stacks", {}):
+		# 上限 1000：stack_max 本身被 Registry 限定在 [1, 100]，给 mod 改版留余量
+		if typeof(sid) != TYPE_STRING or String(sid).is_empty() \
+				or not _integer_in_range(pl.artifact_stacks[sid], 0, 1000):
 			return {}
 	return data
 
