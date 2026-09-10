@@ -325,16 +325,15 @@ func _build_step() -> void:
 			_options.columns = 3
 			for c: Dictionary in Registry.characters.values():
 				_options.add_child(_make_card(_g_char, c.id,
-					c.get("ico", "?"), c.name, c.get("desc", ""),
+					c.get("ico", "?"), c.name, _character_card_desc(c),
 					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id))
 		1:
 			_options.columns = 4
-			# 默认选中角色专属初始武器（角色特色绑定，玩家仍可改选）
-			var sel_ch: Dictionary = Registry.get_character(_sel_char)
-			var start_w := String(sel_ch.get("start_weapon", "pistol"))
-			if Registry.weapons.has(start_w):
-				_sel_weapon = start_w
+			# 开局武器完全由玩家决定：角色不再绑定"初始武器"，
+			# 否则玩家改选武器时角色设定会被覆盖，绑定本身也就失去意义
 			for w: Dictionary in Registry.weapons.values():
+				if float(w.get("shop_weight", 1.0)) <= 0.0:
+					continue   # 进化形态不进开局池（只能靠波末同名武器合成获得）
 				_options.add_child(_make_card(_g_weapon, w.id,
 					w.ico, w.name, "%s\n伤害 %.0f · CD %.2fs" % [w.desc, float(w.dmg), float(w.cd)],
 					w.id == _sel_weapon, Config.rarity_color(w.get("rarity", "common"))))
@@ -373,6 +372,17 @@ func _build_step() -> void:
 	if focus_target:
 		focus_target.grab_focus()
 
+## 角色卡描述：特性置顶 + 玩法定位。
+## 特性是"为什么要选这个角色"的唯一答案，必须第一眼可见 ——
+## 只写属性取舍（攻速 +50%、伤害 -30%）玩家根本感受不到角色差异
+func _character_card_desc(c: Dictionary) -> String:
+	var t: Dictionary = c.get("trait", {})
+	var role := String(c.get("desc", ""))
+	if t.is_empty():
+		return role
+	return "⚡【%s】%s\n\n%s" % [
+		String(t.get("name", "")), String(t.get("desc", "")), role]
+
 ## 选项卡片：暗底 + 稀有度/角色/难度色描边，大图标 + 色名 + 描述；选中即确认
 ## 前三步自动进入下一步，最后一步聚焦"开始游戏"防误触
 ## char_id 非空时卡面用程序化角色头像替代 emoji 图标
@@ -382,7 +392,9 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	b.button_group = group
 	b.button_pressed = pressed
 	b.set_meta("id", id)
-	b.custom_minimum_size = Vector2(218.0, 208.0)
+	# 卡面高度容纳「特性描述 + 玩法定位」两段文本（角色步），
+	# 其余步骤内容较短，靠 VBox 居中，视觉上仍然平衡
+	b.custom_minimum_size = Vector2(218.0, 244.0)
 	# 卡面样式：accent 色微底 + 描边，hover/focus 金边高亮（手柄导航可见）
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = Color(accent.r, accent.g, accent.b, 0.09)

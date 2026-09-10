@@ -8,6 +8,7 @@ var _pool_size := 8
 var _idx := 0
 var _streams: Dictionary = {}   # name -> AudioStreamWAV
 var _status_cd: Dictionary = {}  # status_id -> 下次可播放的时间戳（ms，防高频武器刷屏）
+var _reaction_cd: Dictionary = {}   # reaction_id -> 下次可播放时间戳（防 AOE 连锁糊成一团）
 
 func _ready() -> void:
 	Settings.ensure_audio_buses()
@@ -40,6 +41,17 @@ func _ready() -> void:
 	_streams["status_freeze"] = _gen_sweep(1400.0, 620.0, 0.20, 0.24)
 	_streams["status_slow"] = _gen_sweep(620.0, 260.0, 0.22, 0.20)
 	_streams["status_stun"] = _gen_arpeggio([880.0, 660.0, 880.0], 0.05, 0.20)
+	# 五行反应音（相生清亮上行 / 相克厚重爆裂；由 EventBus.element_reaction 驱动）
+	_streams["reaction_wood_fire"] = _gen_arpeggio([392.0, 523.0, 659.0], 0.06, 0.22)
+	_streams["reaction_fire_earth"] = _gen_arpeggio([330.0, 440.0, 523.0], 0.06, 0.22)
+	_streams["reaction_earth_metal"] = _gen_sweep(700.0, 1500.0, 0.14, 0.24)
+	_streams["reaction_metal_water"] = _gen_sweep(1200.0, 500.0, 0.16, 0.22)
+	_streams["reaction_water_wood"] = _gen_arpeggio([523.0, 659.0, 880.0], 0.05, 0.20)
+	_streams["reaction_wood_earth"] = _gen_noise(0.18, 0.42, 320.0)
+	_streams["reaction_earth_water"] = _gen_sweep(180.0, 40.0, 0.42, 0.55)
+	_streams["reaction_fire_water"] = _gen_noise(0.26, 0.50, 900.0)
+	_streams["reaction_fire_metal"] = _gen_sweep(1500.0, 300.0, 0.22, 0.40)
+	_streams["reaction_metal_wood"] = _gen_noise(0.22, 0.38, 1800.0)
 	# 播放器池
 	for i in _pool_size:
 		var p := AudioStreamPlayer.new()
@@ -54,6 +66,7 @@ func _ready() -> void:
 	EventBus.leveled_up.connect(_on_leveled_up)
 	EventBus.wave_started.connect(_on_wave_started)
 	EventBus.status_applied.connect(_on_status_applied)
+	EventBus.element_reaction.connect(_on_element_reaction)
 
 func play(name: String) -> void:
 	if not _streams.has(name):
@@ -88,6 +101,14 @@ func _on_status_applied(status_id: String, _stacks: int, _pos: Vector2) -> void:
 		return
 	_status_cd[status_id] = now + 200
 	play("status_" + status_id)
+
+## 五行反应音：同反应 160ms 节流（水生木扩散连锁时不会叠成白噪）
+func _on_element_reaction(reaction_id: String, _pos: Vector2, _targets: Array) -> void:
+	var now := Time.get_ticks_msec()
+	if now < int(_reaction_cd.get(reaction_id, 0)):
+		return
+	_reaction_cd[reaction_id] = now + 160
+	play("reaction_" + reaction_id)
 
 # ---------------- 程序生成 AudioStreamWAV ----------------
 

@@ -3,6 +3,20 @@
 *.uid.invocation
 export/
 
+# user:// 落点兜底目录
+# 正常跑（tools/run_smoke.ps1 / run_game.ps1）时 user:// = %APPDATA%\Godot\app_userdata\BrotatoLite；
+# 若在未设置 APPDATA 的环境里直接 `godot --path .`，Godot 会退化成项目内的 Godot/app_userdata/。
+# 那是纯运行时缓存（设置/日志/测试临时档），不入版。
+Godot/
+
 # System
 *.tmp
 .DS_Store
+
+# 冒烟测试输出（tools/run_smoke.ps1 生成，不入版）
+smoke_out.txt
+smoke_err.txt
+
+# 游戏运行日志（tools/run_game.ps1 生成，不入版）
+run_game.log
+run_game_err.log

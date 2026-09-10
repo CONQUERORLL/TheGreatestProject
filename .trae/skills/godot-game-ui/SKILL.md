@@ -1,12 +1,15 @@
 ---
 name: "godot-game-ui"
-description: "Godot 4 游戏内 UI 搭建规范（代码构建节点 + Registry 数据源 + 手柄焦点 + 震动）。Invoke when 在本工作区新建/修改游戏界面（菜单、HUD、商店、弹卡、向导）或需要手柄可导航的 UI。"
+description: "Godot 4 游戏内 UI 搭建规范（代码构建节点 + Registry 数据源 + 手柄焦点 + 震动）。Invoke when 在本工作区新建/修改游戏界面（菜单、HUD、商店、弹卡、向导）或需要手柄可导航的 UI。运行测试、实机启动、提交推送、GDScript 语言陷阱见 godot-dev-workflow。"
 ---
 
 # Godot 游戏 UI 搭建规范（TheGreatestProject 工作区）
 
 本技能沉淀自 HUD / 商店 / 升级三选一 / 主菜单分步向导 / 创意工坊 的实战经验。
 在本工作区（Godot 4.7，项目根 `game/`）做任何界面开发时遵循。
+
+> 运行冒烟测试、拉起实机、提交推送、沙箱工具限制、GDScript 语言陷阱
+> → 见 `godot-dev-workflow`。
 
 ## 1. 场景与脚本分工
 
@@ -54,29 +57,19 @@ var picked: String = group.get_pressed_button().get_meta("id")
 - 分步向导：卡片选中即自动 `_next()`；最后一步不要自动提交，改为聚焦"开始游戏"按钮防误触。
 - 返回：`_unhandled_input` 里监听 `"ui_cancel"`（Esc/手柄B）回上一步，`get_viewport().set_input_as_handled()`。
 
-## 5. 反馈
+## 5. 视觉与反馈
 
 - 按钮/卡片选中：`Haptics.rumble(0.15, 0.0, 0.05)`；确认：`0.3, 0.0, 0.1`。Haptics 内部有 40ms 节流，不用自己防连点。
 - 标题强调色 `Color("e8b84b")`（土豆黄），次要文字 `Color("9aa3b2")`，背景 `Color("101218")`。
 - **稀有度着色**：色表统一取 `Config.rarity_color(r)`（common 白 / rare 蓝 / epic 紫 / legendary 红）；难度色阶 `Config.DIFFICULTY_COLORS`（normal 绿 / hard 橙 / nightmare 红）。卡片样式 = accent 色 9% 微底 + 2px 描边圆角，hover/focus 金边 + 20% 底（参考 `main_menu.gd` `_make_card` / `shop_ui.gd` `_rarity_style`）。
 - **侧面板页**（暂停/商店共用形态）：全屏遮罩 + MarginContainer + HBox[左属性面板 | 中内容 | 右道具面板]；属性行 = 名称灰 + 数值金（`_stat_row` 模式）；道具面板 ScrollContainer 内行式布局。暂停页打开时重建内容（数值实时变）。
+- **角色特性展示**：主菜单角色卡把特性置顶（`⚡【名称】描述`），HUD 特性行显示关键加成数字（`⚡ 弹道精通（弹速 +60%）`）而不只是特性名；动态特性（战意/光环半径）实时取值。
 
-## 6. headless 验证（改动必做）
+## 6. 输入设备
 
-- 运行：`& "D:\code\godot\Godot_v4.7.2-stable_win64_console.exe" --headless --path game res://tests/smoke_test.tscn`，退出码 0 为通过。
-- **临时检查场景用完即删**（放 `tests/_xxx_check.tscn` + `.gd`）。
-- 坑：`-s script.gd` 模式 **不加载 autoload**（Registry/Haptics 会 Identifier not found）；必须用 `.tscn` 场景跑（同 smoke_test.tscn 模式）。
-- UI 构建错误只在面板打开时触发：检查脚本要显式调用打开/切换方法并遍历各步骤断言子节点数。
-
-## 7. GDScript 通用禁忌（本项目踩过）
-
-- 跨脚本不用 `class_name` 静态类型引用（headless 类缓存未注册会 Parse Error）：用 `preload(...)` + `var x := Scene.instantiate()`，跨脚本引用保持无类型 `var player`。
-- 无类型引用的派生表达式必须显式标注：`var v: float = dict.key`。
-- 无类型变量（如 `var player`）的**返回值**也不能用 `:=` 推断（`var got := player.sell_item(id)` 报 "Cannot infer the type"），要写 `var got: int = player.sell_item(id)`。
-- **赋值不能出现在表达式内**：`f(x = VBox.new())` Parse Error "Assignment is not allowed inside an expression"，先建变量再传参。
-- JSON 数组遍历不要写 `for entry: Dictionary in arr`（非对象条目直接崩），先 `typeof(entry) == TYPE_DICTIONARY` 判断。
-- **`for kv in dict` 遍历出的是键名（String）不是键值对**：补默认值写 `for k in defaults: if not data.has(k): data[k] = defaults[k]`，写 `kv.key`/`kv.value` 会运行时才报错。
-- 赋值号后不能直接换行起表达式（`x =\n "..."` Parse Error "Expected an expression after ="），多行字符串拼接用行尾 `\` 续行或首行同行起。
-- mod/数据校验失败用 `push_warning(...)` 跳过该条目，不能中断其他内容加载。
-- **手柄 UI 确认**：project.godot 显式绑定 `ui_accept`（Enter/Space/手柄按钮 0=A）与 `ui_cancel`（Esc/按钮 1=B），不要依赖引擎默认；InputMap 重绑定系统参考 `scripts/core/settings.gd`（事件序列化为 {t:key/jbtn/jmot} 描述符存 ConfigFile，同类设备事件替换、手柄绑定快照保留）。
-- **移动端触控**：虚拟摇杆参考 `scripts/ui/touch_controls.gd`——`DisplayServer.is_touchscreen_available()` 检测 + `phase_changed` 控制显隐；`_input` 处理 ScreenTouch/ScreenDrag（多点触控用 index 独占手指）；输出写 `GameState.touch_move` 模拟量，player 优先读取；Control 全程 `MOUSE_FILTER_IGNORE`，暂停钮 `FOCUS_NONE` 不抢手柄焦点；`.godot` 缓存丢失后先跑 `--import` 重建 class_name 缓存再 headless 测试。
+- **手柄 UI 确认**：`project.godot` 显式绑定 `ui_accept`（Enter/Space/手柄按钮 0=A）与 `ui_cancel`（Esc/按钮 1=B），**不要依赖引擎默认**。InputMap 重绑定系统参考 `scripts/core/settings.gd`（事件序列化为 `{t:key/jbtn/jmot}` 描述符存 ConfigFile，同类设备事件替换、手柄绑定快照保留）。
+- **移动端触控**：虚拟摇杆参考 `scripts/ui/touch_controls.gd` ——
+  `DisplayServer.is_touchscreen_available()` 检测 + `phase_changed` 控制显隐；
+  `_input` 处理 ScreenTouch/ScreenDrag（多点触控用 index 独占手指）；
+  输出写 `GameState.touch_move` 模拟量，player 优先读取；
+  Control 全程 `MOUSE_FILTER_IGNORE`，暂停钮 `FOCUS_NONE` 不抢手柄焦点。

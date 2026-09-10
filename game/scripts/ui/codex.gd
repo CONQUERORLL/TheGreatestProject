@@ -1,5 +1,5 @@
 extends Control
-## 图鉴：状态 / 武器 / 道具 / 升级 / 敌人 五类百科
+## 图鉴：状态 / 五行 / 武器 / 道具 / 升级 / 敌人 六类百科
 ## 数据全部来自 Config + Registry（创意工坊内容自动出现）
 ## 支持名称搜索 + 全部/已解锁/未解锁筛选；未解锁条目灰态并显示解锁条件
 ## 打开：open()；Esc / 手柄 B：_close() 并发 closed 信号（由主菜单接回焦点）
@@ -8,10 +8,13 @@ signal closed
 
 const TABS := [
 	{ "id": "status", "name": "状态", "ico": "🔥" },
+	{ "id": "reaction", "name": "五行", "ico": "☯" },
 	{ "id": "weapon", "name": "武器", "ico": "🔫" },
 	{ "id": "item", "name": "道具", "ico": "🧩" },
+	{ "id": "artifact", "name": "法宝", "ico": "🔮" },
 	{ "id": "upgrade", "name": "升级", "ico": "✨" },
 	{ "id": "enemy", "name": "敌人", "ico": "👾" },
+	{ "id": "event", "name": "奇遇", "ico": "🎴" },
 	{ "id": "achieve", "name": "成就", "ico": "🏆" },
 ]
 
@@ -19,14 +22,38 @@ const AI_NAMES := { "chaser": "追击", "runner": "冲刺", "shooter": "远程",
 const SHAPE_NAMES := { "circle": "圆形", "square": "方形", "diamond": "菱形" }
 const LOCK_HINTS := {
 	"status": "在战斗中触发一次该状态即可解锁",
+	"reaction": "让同一敌人同时带上两种相异五行的状态即可解锁",
 	"weapon": "获得一次该武器即可解锁（开局武器 / 商店购买 / 进化）",
 	"item": "获得一次该道具即可解锁（商店购买 / 开局携带）",
+	"artifact": "获得一次该法宝即可解锁（精英击杀 / BOSS 必掉 / 商店）",
 	"upgrade": "选择一次该升级即可解锁（升级三选一 / 商店）",
 	"enemy": "遭遇一次该敌人即可解锁（任意波次出现）",
+	"event": "在商店后偶遇一次该奇遇即可解锁（每局最多 3~5 次，10 张不重复）",
 }
 const CAT_COLORS := {
-	"status": Color("ef8354"), "weapon": Color("e8b84b"), "item": Color("6fbf73"),
-	"upgrade": Color("7aa2f7"), "enemy": Color("d9534f"),
+	"status": Color("ef8354"), "reaction": Color("6fd6c8"), "weapon": Color("e8b84b"),
+	"item": Color("6fbf73"), "upgrade": Color("7aa2f7"), "enemy": Color("d9534f"),
+	"artifact": Color("c39bf5"), "event": Color("d8a1e8"),
+}
+
+## 法宝触发时机的中文描述（与 Config.ARTIFACT_TRIGGERS 一一对应）
+const ARTIFACT_TRIGGER_NAMES := {
+	"on_reaction": "五行反应触发时", "on_kill": "击杀敌人时",
+	"on_status_apply": "施加状态时", "on_deal_hit": "造成伤害时",
+	"on_take_hit": "受到攻击时", "on_wave_end": "每波结束时",
+}
+const ARTIFACT_PARAM_NAMES := {
+	"element": "限定五行", "key": "限定反应", "status": "限定状态",
+	"hp_below": "目标生命低于",
+}
+const ARTIFACT_EFFECT_NAMES := {
+	"patch": "改写反应效果", "bonus_dmg_pct": "追加攻击力", "chance": "触发概率",
+	"radius": "作用半径", "apply_status": "施加状态", "stacks": "施加层数",
+	"duration": "持续时长", "stat": "叠加属性", "per_stack": "每层数值",
+	"stack_max": "层数上限", "stack_reset": "层数重置", "dmg_mult": "伤害倍率",
+	"heal_pct": "回复最大生命", "high_hp": "高血阈值", "high_hp_armor": "高血护甲",
+	"low_hp": "低血阈值", "low_hp_dmg_reduce": "低血减伤", "add_stacks": "追加层数",
+	"bonus_materials": "额外材料",
 }
 
 var _tab_group := ButtonGroup.new()
@@ -128,7 +155,7 @@ func _build() -> void:
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(title)
 	var tip := Label.new()
-	tip.text = "状态 / 武器 / 道具 / 升级 / 敌人 / 成就 · 搜索 + 解锁筛选 · 未解锁条目灰态 · Esc / 手柄 B 返回"
+	tip.text = "状态 / 五行 / 武器 / 道具 / 升级 / 敌人 / 成就 · 搜索 + 解锁筛选 · 未解锁条目灰态 · Esc / 手柄 B 返回"
 	tip.add_theme_font_size_override("font_size", 12)
 	tip.add_theme_color_override("font_color", Color("9aa3b2"))
 	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -282,6 +309,12 @@ func _entries_for(tab_id: String) -> Array:
 				out.append({ "id": String(sid), "ico": String(st.get("ico", "❓")),
 					"name": String(st.get("name", sid)),
 					"accent": Color(String(st.get("color", "#e8b84b"))) })
+		"reaction":
+			for r in Registry.reaction_list():
+				var rid := String(r.get("id", ""))
+				out.append({ "id": rid, "ico": String(r.get("ico", "☯")),
+					"name": String(r.get("name", rid)),
+					"accent": Config.rarity_color(String(r.get("rarity", "common"))) })
 		"weapon":
 			for id in Registry.weapons:
 				var w: Dictionary = Registry.weapons[id]
@@ -293,6 +326,21 @@ func _entries_for(tab_id: String) -> Array:
 				out.append({ "id": String(it.get("id", "")), "ico": String(it.get("ico", "🧩")),
 					"name": String(it.get("name", "")),
 					"accent": Config.rarity_color(String(it.get("rarity", "common"))) })
+		"artifact":
+			# 按五行分组排序（Registry.artifact_list() 是字典 values，顺序不保证）
+			var arts := Registry.artifact_list()
+			arts.sort_custom(func(x: Dictionary, y: Dictionary) -> bool:
+				var ei := Config.ELEMENTS.find(String(x.get("element", "")))
+				var ej := Config.ELEMENTS.find(String(y.get("element", "")))
+				if ei != ej:
+					return ei < ej
+				return Config.RARITIES.find(String(x.get("rarity", "common"))) \
+					< Config.RARITIES.find(String(y.get("rarity", "common"))))
+			for ar in arts:
+				out.append({ "id": String(ar.get("id", "")),
+					"ico": String(ar.get("ico", "🔮")),
+					"name": String(ar.get("name", "")),
+					"accent": Config.rarity_color(String(ar.get("rarity", "common"))) })
 		"upgrade":
 			for up in Registry.upgrade_list():
 				out.append({ "id": String(up.get("id", "")), "ico": String(up.get("ico", "✨")),
@@ -304,6 +352,11 @@ func _entries_for(tab_id: String) -> Array:
 				out.append({ "id": String(id), "ico": "👾",
 					"name": String(e.get("name", id)),
 					"accent": Color(String(e.get("color", "#d9534f"))) })
+		"event":
+			for ec in Config.EVENT_CARDS:
+				out.append({ "id": String(ec.get("id", "")), "ico": String(ec.get("ico", "🎴")),
+					"name": String(ec.get("title", "")),
+					"accent": Config.rarity_color(String(ec.get("rarity", "common"))) })
 		"achieve":
 			out.append({ "id": "_stats", "ico": "📊", "name": "统计总览",
 				"accent": Color("e8b84b") })
@@ -460,10 +513,13 @@ func _refresh(id: String) -> void:
 		return
 	match _tab:
 		"status": _detail_status(id)
+		"reaction": _detail_reaction(id)
 		"weapon": _detail_weapon(id)
 		"item": _detail_item(id)
+		"artifact": _detail_artifact(id)
 		"upgrade": _detail_upgrade(id)
 		"enemy": _detail_enemy(id)
+		"event": _detail_event(id)
 
 # ---------------- 成就 / 统计详情 ----------------
 
@@ -498,7 +554,7 @@ func _detail_stats() -> void:
 			float(CodexData.unlocked_count(String(cat))),
 			float(CodexData.total_entries(String(cat))), cat_col))
 	_detail.add_child(_section("战斗"))
-	for key in ["kills", "boss_kills", "waves", "best_wave", "status_triggers"]:
+	for key in ["kills", "boss_kills", "waves", "best_wave", "status_triggers", "reactions"]:
 		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
 			str(CodexData.stat(key))))
 	_detail.add_child(_section("成长与收集"))
@@ -631,6 +687,145 @@ func _detail_status(sid: String) -> void:
 			Config.rarity_color(String(b.get("rarity", "common"))), String(b.get("desc", "")),
 			" · ".join(parts)))
 
+# ---------------- 五行反应详情 ----------------
+
+func _detail_reaction(id: String) -> void:
+	var r: Dictionary = Registry.reactions.get(id, {})
+	if r.is_empty():
+		return
+	var accent := Config.rarity_color(String(r.get("rarity", "common")))
+	var overcome := String(r.get("type", "")) == "overcome"
+	_detail.add_child(_header(String(r.get("ico", "☯")), String(r.get("name", id)), accent,
+		String(r.get("desc", ""))))
+	_detail.add_child(_section("基础信息"))
+	_detail.add_child(_stat_row("类型", "相克（爆发）" if overcome else "相生（增强）"))
+	_detail.add_child(_stat_row("稀有度", Config.rarity_name(String(r.get("rarity", "common")))))
+	_detail.add_child(_stat_row("层数消耗", "消耗参与状态层数" if overcome else "不消耗"))
+	_detail.add_child(_stat_row("震屏强度", "%.1f" % float(r.get("shake", 0.0))))
+	_detail.add_child(_section("五行组合"))
+	var elems := _reaction_elements(r)
+	if elems.size() != 2:
+		_detail.add_child(_empty("该反应未声明五行组合"))
+	for e in elems:
+		_detail.add_child(_stat_row(String(e),
+			String(Config.ELEMENT_NAME.get(String(e), String(e)))))
+	_detail.add_child(_section("触发状态"))
+	var sids := _reaction_statuses(elems)
+	if sids.is_empty():
+		_detail.add_child(_empty("无对应状态"))
+	for sid in sids:
+		var st: Dictionary = Config.STATUS.get(String(sid), {})
+		_detail.add_child(_row(String(st.get("ico", "❓")),
+			"%s · %s系" % [String(st.get("name", sid)),
+				String(Config.ELEMENT_NAME.get(Config.get_element(String(sid)), "?"))],
+			Color(String(st.get("color", "#e8b84b"))), String(st.get("desc", "")), ""))
+	_detail.add_child(_section("效果明细"))
+	var lines := _reaction_effect_lines(r.get("effect", {}))
+	if lines.is_empty():
+		_detail.add_child(_empty("无效果"))
+	for ln in lines:
+		var l := Label.new()
+		l.text = "· " + String(ln)
+		l.add_theme_font_size_override("font_size", 13)
+		l.add_theme_color_override("font_color", Color("d8dde6"))
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_detail.add_child(l)
+	var related := _reaction_related(r, elems)
+	if not related.is_empty():
+		_detail.add_child(_section("共用五行的其他反应（%d）" % related.size()))
+		for o in related:
+			_detail.add_child(_row(String(o.get("ico", "☯")), String(o.get("name", "")),
+				Config.rarity_color(String(o.get("rarity", "common"))),
+				String(o.get("desc", "")),
+				"相克" if String(o.get("type", "")) == "overcome" else "相生"))
+
+## 反应涉及的两个五行（从 key "elemA+elemB" 解析）
+func _reaction_elements(r: Dictionary) -> Array:
+	var key := String(r.get("key", ""))
+	return [] if key == "" else key.split("+")
+
+## 归属指定五行的全部状态 id（freeze / slow 同属水，两个都会列出）
+func _reaction_statuses(elems: Array) -> Array:
+	var out: Array = []
+	for sid in Config.STATUS_ELEMENT:
+		if elems.has(String(Config.STATUS_ELEMENT[sid])):
+			out.append(String(sid))
+	return out
+
+## 与当前反应共用任一五行的其他反应
+func _reaction_related(r: Dictionary, elems: Array) -> Array:
+	var out: Array = []
+	var self_id := String(r.get("id", ""))
+	for other in Registry.reaction_list():
+		var oid := String(other.get("id", ""))
+		if oid == "" or oid == self_id:
+			continue
+		for e in String(other.get("key", "")).split("+"):
+			if elems.has(String(e)):
+				out.append(other)
+				break
+	return out
+
+## effect 字典 → 中文效果行
+func _reaction_effect_lines(eff: Variant) -> Array:
+	var out: Array = []
+	if typeof(eff) != TYPE_DICTIONARY:
+		return out
+	var e: Dictionary = eff
+	for k in e:
+		var key := String(k)
+		var v: Variant = e[k]
+		match key:
+			"add_stacks": out.append("叠加层数：%s" % _status_amount_list(v))
+			"duration_add": out.append("延长时长（秒）：%s" % _status_amount_list(v))
+			"duration_mult": out.append("时长倍率：%s" % _status_amount_list(v))
+			"dmg_mult": out.append("伤害倍率：%s" % _status_amount_list(v))
+			"crit_guarantee": out.append("必定暴击：%s" % _status_name_list(v))
+			"spread": out.append("扩散半径：%s" % _status_amount_list(v))
+			"consume": out.append("消耗层数：%s" % _status_amount_list(v))
+			"convert_dmg":
+				if typeof(v) == TYPE_DICTIONARY:
+					for sid in v:
+						out.append("%s 伤害转为 %s"
+							% [_status_name(sid), _status_name(v[sid])])
+			"aoe_dmg_scale": out.append("范围伤害 = 状态强度合计 x%.1f" % float(v))
+			"aoe_radius": out.append("范围半径 %.0f" % float(v))
+			"execute_threshold": out.append("目标生命低于 %d%% 时直接碎裂"
+				% roundi(float(v) * 100.0))
+			"armor_break": out.append("目标受到伤害 +%d%%" % roundi(float(v) * 100.0))
+			"armor_break_duration": out.append("上述易伤持续 %.1f 秒" % float(v))
+			"dot_mult": out.append("持续伤害 x%.1f" % float(v))
+			"dot_duration": out.append("持续伤害强化 %.1f 秒" % float(v))
+			_: out.append("%s: %s" % [key, str(v)])
+	return out
+
+## 状态显示名（图标 + 中文名）
+func _status_name(sid: Variant) -> String:
+	var st: Dictionary = Config.STATUS.get(String(sid), {})
+	return "%s%s" % [String(st.get("ico", "")), String(st.get("name", sid))]
+
+## {状态: 数值} → “🔥燃烧 ×2、💫眩晕 ×1”
+func _status_amount_list(v: Variant) -> String:
+	if typeof(v) != TYPE_DICTIONARY:
+		return str(v)
+	var parts: Array = []
+	for sid in v:
+		parts.append("%s ×%s" % [_status_name(sid), _num_text(v[sid])])
+	return "、".join(parts)
+
+## {状态: 任意} → 只列状态名
+func _status_name_list(v: Variant) -> String:
+	if typeof(v) != TYPE_DICTIONARY:
+		return str(v)
+	var parts: Array = []
+	for sid in v:
+		parts.append(_status_name(sid))
+	return "、".join(parts)
+
+func _num_text(v: Variant) -> String:
+	var f := float(v)
+	return str(int(f)) if is_equal_approx(f, float(int(f))) else "%.1f" % f
+
 # ---------------- 武器详情 ----------------
 
 func _detail_weapon(id: String) -> void:
@@ -682,6 +877,116 @@ func _detail_upgrade(id: String) -> void:
 	if not Registry.upgrades.has(id):
 		return
 	_detail_effects_entry(Registry.upgrades[id], "升级")
+
+## 法宝详情：与道具/升级不同，法宝没有 effects 属性表，而是「触发条件 + 效果载荷」，
+## 所以不能走 _detail_effects_entry，逐段展开 trigger / params / effect
+func _detail_artifact(id: String) -> void:
+	var a := Registry.get_artifact(id)
+	if a.is_empty():
+		return
+	var accent := Config.rarity_color(String(a.get("rarity", "common")))
+	_detail.add_child(_header(String(a.get("ico", "🔮")), String(a.get("name", id)), accent,
+		String(a.get("desc", ""))))
+	_detail.add_child(_section("基础信息"))
+	_detail.add_child(_stat_row("类别", "法宝"))
+	_detail.add_child(_stat_row("五行", String(Config.ELEMENT_NAME.get(
+		String(a.get("element", "")), "-"))))
+	_detail.add_child(_stat_row("稀有度",
+		Config.rarity_name(String(a.get("rarity", "common")))))
+	_detail.add_child(_stat_row("价格", "%d ◆" % int(a.get("price", 110))))
+	_detail.add_child(_stat_row("触发时机", String(ARTIFACT_TRIGGER_NAMES.get(
+		String(a.get("trigger", "")), String(a.get("trigger", "-"))))))
+	# 触发过滤条件：params 为空 = 不限（如潮汐珠任意受击、建木枝每波）
+	var params: Dictionary = a.get("params", {})
+	_detail.add_child(_section("触发条件"))
+	if params.is_empty():
+		_detail.add_child(_empty("无额外限制（该时机任意触发）"))
+	for k in params:
+		_detail.add_child(_stat_row(String(ARTIFACT_PARAM_NAMES.get(String(k), String(k))),
+			_artifact_value(String(k), params[k])))
+	_detail.add_child(_section("效果"))
+	var effect: Dictionary = a.get("effect", {})
+	if effect.is_empty():
+		_detail.add_child(_empty("无效果"))
+	for k in effect:
+		_detail.add_child(_stat_row(String(ARTIFACT_EFFECT_NAMES.get(String(k), String(k))),
+			_artifact_value(String(k), effect[k])))
+	_detail.add_child(_section("获取渠道"))
+	_detail.add_child(_stat_row("精英击杀", "%d%% 掉落" % roundi(
+		Config.ARTIFACT_ELITE_DROP_CHANCE * 100.0)))
+	_detail.add_child(_stat_row("BOSS", "必掉（传说权重 ×%s）"
+		% str(Config.ARTIFACT_BOSS_LEGENDARY_MULT)))
+	_detail.add_child(_stat_row("商店", "%d%% 概率占一格" % roundi(
+		Config.ARTIFACT_SHOP_CHANCE * 100.0)))
+	_detail.add_child(_stat_row("重复获得", "+%d ◆ 材料补偿" % Config.ARTIFACT_DUP_MATERIALS))
+
+## 法宝 params/effect 的值转人话：百分比/倍率/秒数按语义格式化，
+## 状态与反应 id 转中文名，patch 这类嵌套字典展开为逐行子条目
+func _artifact_value(k: String, v: Variant) -> String:
+	# 注意：GDScript 的 match 多值模式不能跨行续行（会报
+	# "Expected expression for match pattern"），所以百分比类键拆成两组单行
+	match k:
+		"chance", "bonus_dmg_pct", "heal_pct", "hp_below":
+			return "%d%%" % roundi(float(v) * 100.0)
+		"low_hp_dmg_reduce", "high_hp", "low_hp":
+			return "%d%%" % roundi(float(v) * 100.0)
+		"dmg_mult":
+			return "×%.2f" % float(v)
+		"duration":
+			return "%.1f 秒" % float(v)
+		"radius":
+			return "%.0f 像素" % float(v)
+		"apply_status", "status":
+			return String(Config.STATUS.get(String(v), {}).get("name", v))
+		"element":
+			return String(Config.ELEMENT_NAME.get(String(v), v))
+		"key":
+			return _reaction_name_by_key(String(v))
+		"stat":
+			return _artifact_stat_label(String(v))
+		"stack_reset":
+			return "每波开始" if String(v) == "wave" else "仅局终"
+		"patch":
+			return _patch_summary(v)
+	return str(v)
+
+## 叠层属性中文名：目前只有断刃锋（暴击率）与玄武核（护甲）两件，
+## 未知键回退英文（mod 可注册其他属性，不强行穷举）
+func _artifact_stat_label(s: String) -> String:
+	match s:
+		"crit_ch": return "暴击率"
+		"armor": return "护甲"
+		"max_hp": return "生命上限"
+		"dmg_mult": return "伤害倍率"
+	return s
+
+## 反应 key（如 "fire+metal"）→ 反应名；mod 覆盖同 key 反应时取注册表里的当前值
+func _reaction_name_by_key(rkey: String) -> String:
+	for rid in Registry.reactions:
+		var r: Dictionary = Registry.reactions[rid]
+		if String(r.get("key", "")) == rkey:
+			return "%s（%s）" % [String(r.get("name", rid)), rkey]
+	return rkey
+
+## patch 类法宝（熔金炉/孢心/落魂钟/蛟皇目）的改写内容展开为可读行
+func _patch_summary(v: Variant) -> String:
+	if typeof(v) != TYPE_DICTIONARY:
+		return str(v)
+	var parts: Array = []
+	for op in v:
+		if typeof(v[op]) != TYPE_DICTIONARY:
+			continue
+		var verb := "设为" if String(op) == "set" else "增加"
+		for key in v[op]:
+			var raw: Variant = v[op][key]
+			if typeof(raw) == TYPE_DICTIONARY:
+				for sub in raw:
+					parts.append("%s %s·%s = %s" % [verb, String(key), String(sub),
+						_artifact_value(String(sub), raw[sub])])
+			else:
+				parts.append("%s %s = %s" % [verb, String(key),
+					_artifact_value(String(key), raw)])
+	return "；".join(parts) if not parts.is_empty() else str(v)
 
 func _detail_effects_entry(data: Dictionary, kind: String) -> void:
 	var accent := Config.rarity_color(String(data.get("rarity", "common")))
@@ -804,6 +1109,51 @@ func _enemy_waves(id: String) -> String:
 	if Registry.enemies.has(id) and _enemy_is_boss(Registry.enemies[id]):
 		return "BOSS（创意工坊 / 特殊事件）"
 	return "特殊事件 / 创意工坊"
+
+## 奇遇详情（Phase 4）：地域 / 品阶 / 触发规则 / 三种抉择
+func _detail_event(id: String) -> void:
+	var ec := Config.event_card(id)
+	if ec.is_empty():
+		return
+	var accent: Color = Config.rarity_color(String(ec.get("rarity", "common")))
+	var theme_id := String(ec.get("theme", ""))
+	_detail.add_child(_header(String(ec.get("ico", "🎴")), String(ec.get("title", id)),
+		accent, Config.map_theme_name(theme_id)))
+	_detail.add_child(_section("触景"))
+	var d := Label.new()
+	d.text = String(ec.get("desc", ""))
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	d.add_theme_font_size_override("font_size", 13)
+	d.add_theme_color_override("font_color", Color("9aa3b2"))
+	d.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_detail.add_child(d)
+	_detail.add_child(_section("奇遇信息"))
+	_detail.add_child(_stat_row("地域", Config.map_theme_name(theme_id)))
+	_detail.add_child(_stat_row("品阶", Config.rarity_name(String(ec.get("rarity", "common")))))
+	_detail.add_child(_stat_row("触发", "商店关闭后 %d%% · 每局 %d~%d 次"
+		% [roundi(Config.EVENT_CARD_CHANCE * 100.0),
+		Config.EVENT_CARD_MIN, Config.EVENT_CARD_MAX]))
+	_detail.add_child(_section("三种抉择"))
+	var choices: Array = ec.get("choices", [])
+	for i in choices.size():
+		var ch: Dictionary = choices[i]
+		var row := VBoxContainer.new()
+		row.add_theme_constant_override("separation", 2)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var t := Label.new()
+		t.text = "%d. %s" % [i + 1, String(ch.get("text", ""))]
+		t.add_theme_font_size_override("font_size", 14)
+		t.add_theme_color_override("font_color", accent.lightened(0.15))
+		t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(t)
+		var h := Label.new()
+		h.text = "    " + String(ch.get("hint", ""))
+		h.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		h.add_theme_font_size_override("font_size", 12)
+		h.add_theme_color_override("font_color", Color("9aa3b2"))
+		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(h)
+		_detail.add_child(row)
 
 # ---------------- 通用小部件 ----------------
 

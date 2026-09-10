@@ -32,8 +32,11 @@ var _vis_state := -1   # 0 常态 / 1 受击闪白 / 2 血条显示；变化才�
 var _spiral_angle := 0.0   # 螺旋织网者：当前螺旋弹幕相位
 var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
 var spawn_wave := 1        # 生成时波次（召唤物继承）
+var elite := false         # 精英实例标志（由 wave_manager.spawn 注入；掉法宝只认这个）
 var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
 var status_resist := 0.0        # 状态时长减免（BOSS 0.55）
+var reaction_debuffs: Array = []   # 五行反应 debuff：{dmg_taken_mult, dot_mult, remaining}
+var _reaction_active: Dictionary = {}   # 本敌正在执行的反应 id（禁止自我递归）
 var _status_sig := 0            # 状态签名（层数/集合变化才重绘）
 var _status_flash_t := 0.0      # 状态触发彩色扩散环剩余时间
 var _status_flash_color := Color.WHITE
@@ -42,6 +45,11 @@ var _status_flash_color := Color.WHITE
 ## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
 const SEPARATION_PAD_NORMAL := 60.0
 const SEPARATION_PAD_LARGE := 90.0
+
+## 五行反应默认参数（Config.REACTIONS 未显式给出时的兜底值）
+const REACTION_AOE_RADIUS := 100.0
+const REACTION_DEBUFF_DURATION := 3.0
+const REACTION_CONVERT_DURATION := 0.5
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
@@ -121,6 +129,8 @@ func apply_status(id: String, stacks: int = 1, duration_override: float = 0.0,
 	queue_redraw()
 	if is_new:
 		_status_trigger_feedback(id, cfg, add_stacks)
+	# 五行反应检查：新状态施加后检查是否触发相生/相克
+	check_reactions()
 
 ## 状态首次触发反馈：状态色粒子 + 飘字 + 扩散环 + EventBus 事件（音效由 Sfx 订阅节流播放）
 func _status_trigger_feedback(id: String, cfg: Dictionary, stacks: int) -> void:
@@ -161,7 +171,7 @@ func _damage_taken_mult() -> float:
 	var mult := 1.0
 	for id in statuses:
 		mult *= float(Config.status_cfg(id).get("dmg_taken_mult", 1.0))
-	return mult
+	return mult * _reaction_dmg_taken_mult()
 
 func _status_signature() -> int:
 	var sig := 0
@@ -171,6 +181,7 @@ func _status_signature() -> int:
 
 ## 每帧推进状态时长与 DoT 跳伤；到期清除
 func _tick_statuses(delta: float) -> void:
+	_tick_reaction_debuffs(delta)
 	if statuses.is_empty():
 		return
 	var expired: Array = []
@@ -200,6 +211,7 @@ func _apply_dot(id: String, cfg: Dictionary, st: Dictionary) -> void:
 		tick_dmg = max_hp * pct * float(stacks)
 	else:
 		tick_dmg = float(st.power) * float(cfg.get("dot_scale", 0.0)) * float(stacks)
+	tick_dmg *= _reaction_dot_mult()
 	if tick_dmg <= 0.0:
 		return
 	FloatingText.spawn(get_parent(), global_position + Vector2(
@@ -220,6 +232,202 @@ func _spread_poison() -> void:
 			continue
 		if global_position.distance_to(other.global_position) <= 110.0 + other.radius:
 			other.apply_status("poison", stacks, dur, power, 1.0)
+
+# ------------------------------------------------------------
+# 五行反应系统：相生（增强）+ 相克（爆发）
+# 入口：apply_status() → check_reactions()；反应表见 Config.REACTIONS
+# 相生 generate 不消耗层数；相克 overcome 消耗层数并爆发
+# ------------------------------------------------------------
+
+## 连锁深度上限：spread / AOE 会在其他敌人身上再次触发反应，限深防雪崩
+static var _reaction_depth := 0
+const MAX_REACTION_DEPTH := 3
+
+## 检查五行反应：遍历身上所有状态，查找相生/相克组合
+func check_reactions() -> void:
+	if statuses.size() < 2 or hp <= 0.0 or flee > 0.0:
+		return
+	var status_list := statuses.keys()
+	for i in range(status_list.size()):
+		for j in range(i + 1, status_list.size()):
+			var reaction := Registry.find_reaction(String(status_list[i]), String(status_list[j]))
+			# 跳过正在执行的反应：效果里再次上状态不得把自己套娃
+			# （金生水 convert_dmg 会再上冰冻，bleed+freeze 否则递归到深度上限）
+			if reaction.is_empty() \
+					or _reaction_active.has(String(reaction.get("id", ""))):
+				continue
+			trigger_reaction(reaction)
+			return  # 每次只触发一个反应（避免同帧连锁爆炸）
+
+## 触发五行反应：执行效果 + 解锁图鉴 + 发出特效信号
+func trigger_reaction(reaction: Dictionary) -> void:
+	if reaction.is_empty() or hp <= 0.0 or flee > 0.0 \
+			or _reaction_depth >= MAX_REACTION_DEPTH:
+		return
+	var reaction_id := String(reaction.get("id", ""))
+	# 法宝改写（熔金炉/孢心/落魂钟/蛟皇目）必须在执行效果【之前】应用：
+	# element_reaction 信号在本函数末尾才发，那时破甲/阈值/扩散半径已经结算完了
+	var effect: Dictionary = ArtifactSystem.patch_reaction_effect(player,
+		String(reaction.get("key", "")), reaction.get("effect", {}))
+	_reaction_active[reaction_id] = true
+	_reaction_depth += 1
+	if String(reaction.get("type", "")) == "overcome":
+		_execute_overcome_effect(effect)
+	else:
+		_execute_generate_effect(effect)
+	_reaction_depth -= 1
+	_reaction_active.erase(reaction_id)
+	queue_redraw()
+	CodexData.unlock("reaction", reaction_id)
+	EventBus.element_reaction.emit(reaction_id, global_position, [self])
+
+## 取状态条目引用（字典按引用传递，可直接改 stacks/remaining/power）
+func _status_entry(id: String) -> Dictionary:
+	return statuses.get(id, {})
+
+## 相生效果：加层 / 延时 / 提伤 / 必暴 / 转属 / 扩散（不消耗层数）
+func _execute_generate_effect(effect: Dictionary) -> void:
+	var add: Dictionary = effect.get("add_stacks", {})
+	for sid in add:
+		var st := _status_entry(String(sid))
+		if st.is_empty():
+			continue
+		var cap := int(Config.status_cfg(String(sid)).get("stack_max", 1))
+		st.stacks = mini(cap, int(st.stacks) + int(add[sid]))
+	var dmul: Dictionary = effect.get("duration_mult", {})
+	for sid2 in dmul:
+		var st2 := _status_entry(String(sid2))
+		if not st2.is_empty():
+			st2.remaining = float(st2.remaining) * float(dmul[sid2])
+	var dadd: Dictionary = effect.get("duration_add", {})
+	for sid3 in dadd:
+		var st3 := _status_entry(String(sid3))
+		if not st3.is_empty():
+			st3.remaining = float(st3.remaining) + float(dadd[sid3])
+	# DoT 提伤（火生土：燃烧伤害 +30%）
+	var pmul: Dictionary = effect.get("dmg_mult", {})
+	for sid4 in pmul:
+		var st4 := _status_entry(String(sid4))
+		if not st4.is_empty():
+			st4.power = float(st4.power) * float(pmul[sid4])
+	# 必暴（土生金：眩晕期间流血 DoT 按暴击倍率结算）
+	var crit: Dictionary = effect.get("crit_guarantee", {})
+	for sid5 in crit:
+		var st5 := _status_entry(String(sid5))
+		if not st5.is_empty() and bool(crit[sid5]):
+			st5.power = float(st5.power) * _reaction_crit_mult()
+	# 转属（金生水：流血转冰伤 → 附加短时冰冻易伤）
+	var conv: Dictionary = effect.get("convert_dmg", {})
+	for sid6 in conv:
+		if statuses.has(String(sid6)):
+			apply_status(String(conv[sid6]), 1, REACTION_CONVERT_DURATION, 0.0, 1.0)
+	# 扩散（水生木：中毒扩散到周围敌人）
+	var spread: Dictionary = effect.get("spread", {})
+	for sid7 in spread:
+		var st7 := _status_entry(String(sid7))
+		if st7.is_empty():
+			continue
+		_apply_status_in_radius(String(sid7), int(st7.stacks), float(st7.remaining),
+			float(st7.power), float(spread[sid7]))
+
+## 相克效果：消耗层数 + 爆发（AOE / 处决 / 破甲 / DoT 翻倍）
+func _execute_overcome_effect(effect: Dictionary) -> void:
+	# 爆发基数必须在消耗前结算：消耗会清空层数，之后 power×stacks 归零。
+	# 同时取「施加这些状态时的玩家单次命中伤害」作为爆发上限的参考值
+	# （power 记录的就是施加时那一次命中的伤害）
+	var burst := 0.0
+	var ref_hit := 0.0
+	for sid in statuses:
+		var st: Dictionary = statuses[String(sid)]
+		burst += float(st.power) * float(int(st.stacks))
+		ref_hit = maxf(ref_hit, float(st.power))
+	var consume: Dictionary = effect.get("consume", {})
+	for sid2 in consume:
+		var st2 := _status_entry(String(sid2))
+		if st2.is_empty():
+			continue
+		st2.stacks = int(st2.stacks) - int(consume[sid2])
+		if int(st2.stacks) <= 0:
+			statuses.erase(String(sid2))
+	# AOE 爆发（含自身；status_resist 减免，BOSS 抗反应）
+	if effect.has("aoe_dmg_scale"):
+		var raw_burst := burst * float(effect.aoe_dmg_scale) * (1.0 - status_resist)
+		# 平衡护栏（Config.REACTION_BURST_CAP_MULT）：防止异常叠层堆到极端时一击清场
+		var cap := ref_hit * Config.REACTION_BURST_CAP_MULT
+		if cap > 0.0:
+			raw_burst = minf(raw_burst, cap)
+		_damage_in_radius(raw_burst, float(effect.get("aoe_radius", REACTION_AOE_RADIUS)))
+	# 处决（土克水：血量低于阈值直接碎裂）
+	if effect.has("execute_threshold") and max_hp > 0.0 \
+			and hp / max_hp < float(effect.execute_threshold):
+		take_damage(hp + 1.0, false, false)
+		# 蛟皇目：碎裂成功时回复生命（execute_heal 由法宝 patch 注入，内置反应没这个键）
+		# queue_free 是延迟的，此处 self / player 仍有效
+		if effect.has("execute_heal") and player and is_instance_valid(player):
+			player.heal(float(effect.execute_heal))
+		return
+	# 破甲（火克金：护甲无效化 → 受伤提升，持续 armor_break_duration）
+	if effect.has("armor_break"):
+		_add_reaction_debuff(1.0 + float(effect.armor_break), 1.0,
+			float(effect.get("armor_break_duration", REACTION_DEBUFF_DURATION)))
+	# DoT 翻倍（金克木：持续伤害提升，持续 dot_duration）
+	if effect.has("dot_mult"):
+		_add_reaction_debuff(1.0, float(effect.dot_mult),
+			float(effect.get("dot_duration", REACTION_DEBUFF_DURATION)))
+
+## 对半径内其他敌人施加状态（水生木扩散）
+func _apply_status_in_radius(id: String, stacks: int, dur: float, power: float,
+		r: float) -> void:
+	for other in Combat.enemies_near(global_position, r + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or other.is_queued_for_deletion():
+			continue
+		if global_position.distance_to(other.global_position) <= r + other.radius:
+			other.apply_status(id, stacks, dur, power, 1.0)
+
+## 对半径内敌人造成伤害，最后结算自身（自身可能死亡，避免提前失效位置）
+func _damage_in_radius(dmg: float, r: float) -> void:
+	if dmg <= 0.0:
+		return
+	for other in Combat.enemies_near(global_position, r + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or other.is_queued_for_deletion():
+			continue
+		if global_position.distance_to(other.global_position) <= r + other.radius:
+			other.take_damage(dmg * (1.0 - other.status_resist), false, false)
+	take_damage(dmg, false, false)
+
+## 暴击倍率（土生金“必暴”用；玩家已升级则取玩家值）
+func _reaction_crit_mult() -> float:
+	if player and is_instance_valid(player):
+		return float(player.stats.get("crit_mult", Config.PLAYER.crit_mult))
+	return float(Config.PLAYER.crit_mult)
+
+func _add_reaction_debuff(dmg_mult: float, dot_mult: float, duration: float) -> void:
+	if duration <= 0.0:
+		return
+	reaction_debuffs.append({
+		"dmg_taken_mult": maxf(1.0, dmg_mult),
+		"dot_mult": maxf(1.0, dot_mult),
+		"remaining": duration,
+	})
+
+func _tick_reaction_debuffs(delta: float) -> void:
+	for i in range(reaction_debuffs.size() - 1, -1, -1):
+		var d: Dictionary = reaction_debuffs[i]
+		d.remaining = float(d.remaining) - delta
+		if float(d.remaining) <= 0.0:
+			reaction_debuffs.remove_at(i)
+
+func _reaction_dmg_taken_mult() -> float:
+	var mult := 1.0
+	for d in reaction_debuffs:
+		mult *= float(d.get("dmg_taken_mult", 1.0))
+	return mult
+
+func _reaction_dot_mult() -> float:
+	var mult := 1.0
+	for d in reaction_debuffs:
+		mult *= float(d.get("dot_mult", 1.0))
+	return mult
 
 func _ready() -> void:
 	add_to_group("enemies")
@@ -330,6 +538,9 @@ func _physics_process(delta: float) -> void:
 				other.global_position = other.global_position.clamp(
 					Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
 				Combat.update_enemy_position(other)
+	# 障碍物推出（Phase 5）：本项目未使用物理引擎，障碍物是手写判定，
+	# 放在最终边界钳制之前，推出结果仍在世界内
+	global_position = Obstacles.resolve_circle(global_position, radius)
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
 	Combat.update_enemy_position(self)
@@ -390,7 +601,9 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	if hp <= 0.0 or flee > 0.0:
 		return
-	var final_dmg := dmg * _damage_taken_mult()
+	# 刑天斧：低血加成必须在 hp 扣减【之前】按当前血量比例判定，扣完再算就晚了
+	var final_dmg := dmg * ArtifactSystem.execute_damage_mult(player, self) \
+		* _damage_taken_mult()
 	hp -= final_dmg
 	bar_t = 0.9
 	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
@@ -410,6 +623,9 @@ func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 
 func die() -> void:
 	EventBus.enemy_killed.emit(type)
+	# 携带节点引用的死亡事件：法宝 on_kill 要读死前身上的状态（凤凰翎要燃烧、断刃锋要流血）
+	# 必须在 queue_free 之前发，订阅者才能安全访问节点；BOSS 也要发（无尽模式 BOSS 每波都死）
+	EventBus.enemy_died.emit(self)
 	if is_boss():
 		# 原型：BOSS 死亡大爆发（40 粒 / 260 速度）+ 震屏 14，直接胜利结算不掉落
 		Burst.spawn(get_parent(), global_position, color, 40, 260.0)
@@ -439,6 +655,29 @@ func _drop_loot() -> void:
 	var heart_ch: float = float(cfg.get("heart_chance", Config.HEAL_DROP_CHANCE))
 	if heart_ch > 0.0 and GameRng.chance(heart_ch):
 		_spawn_loot("heart", 8, Vector2.ZERO)
+	# 精英怪掉法宝（spec：精英是三大获取渠道之一）
+	# 只认实例 elite 标志，不按敌人类型判定 —— Config.wave_composition 里
+	# guard/wizard/shadow/bomber 在 W7+ 常规波就会出现，按类型会误伤大量常规怪。
+	# 先判 sys 再掷 RNG：无 ArtifactSystem 的环境（冒烟测试）不消耗随机数，保持确定性
+	if elite:
+		var sys = _artifact_system()   # 不用 := ：返回不定型节点，无法标注类型供推断
+		if sys != null and GameRng.chance(Config.ARTIFACT_ELITE_DROP_CHANCE):
+			var aid := String(sys.pick_artifact(false))
+			if aid != "":
+				_spawn_artifact(aid)
+
+## 法宝系统节点（main.tscn 下）：精英掉落需要它抽取法宝 id
+## 用组查找而非 preload/单例：ArtifactSystem 随 main.tscn 生灭，
+## 冒烟测试等无此节点的场景返回 null 自然降级
+func _artifact_system():
+	return get_tree().get_first_node_in_group("artifact_system")
+
+## 法宝掉落物：Loot.setup 的 value 是 int，承载不了法宝字符串 id，走独立入口
+func _spawn_artifact(id: String) -> void:
+	var l := LootScene.instantiate()
+	l.setup_artifact(id, global_position + Vector2(0.0, -6.0), Vector2(0.0, -70.0))
+	l.player = player
+	get_parent().add_child(l)
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
 	var l := LootScene.instantiate()

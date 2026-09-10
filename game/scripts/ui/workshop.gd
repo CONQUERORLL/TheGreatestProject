@@ -5,6 +5,42 @@ extends Control
 const CATS := [
 	["characters", "角色"], ["weapons", "武器"], ["items", "道具"],
 	["upgrades", "升级"], ["enemies", "敌人"], ["difficulties", "难度"],
+	["artifacts", "法宝"],
+]
+
+## 法宝 params / effect 分组字段（键白名单见 Registry.ARTIFACT_PARAM_KEYS / ARTIFACT_EFFECT_KEYS）
+## 「未设置哨兵」：choice/text 的空串、f/i 的 0 一律不写该键，收集后交 Registry 校验。
+## patch 类法宝（熔金炉/孢心/落魂钟/蛟皇目）的效果是嵌套字典，表单不承载，
+## 需要手写 mods/*/manifest.json —— 数据管线本身已支持，编辑器只是不做嵌套录入。
+const ARTIFACT_PARAM_FIELDS := [
+	["element", "限定五行（反应含该行）", "choice", "",
+		["", "earth", "fire", "metal", "water", "wood"]],
+	["key", "限定反应 key（如 fire+metal，空=不限）", "text", ""],
+	["status", "限定状态（空=不限）", "choice", "",
+		["", "burn", "poison", "bleed", "freeze", "slow", "stun"]],
+	["hp_below", "限定目标血量比例 <（0=不限）", "f", 0.0, 0.0, 1.0, 0.05],
+]
+
+const ARTIFACT_EFFECT_FIELDS := [
+	["chance", "触发概率（0~1）", "f", 0.0, 0.0, 1.0, 0.01],
+	["bonus_dmg_pct", "追加攻击力比例", "f", 0.0, 0.0, 10.0, 0.05],
+	["radius", "作用半径", "f", 0.0, 1.0, 600.0, 5.0],
+	["apply_status", "施加状态", "choice", "",
+		["", "burn", "poison", "bleed", "freeze", "slow", "stun"]],
+	["stacks", "施加层数", "i", 0, 1, 100, 1],
+	["duration", "施加时长（秒）", "f", 0.0, 0.0, 30.0, 0.1],
+	["stat", "叠加属性键（如 crit_ch / armor）", "text", ""],
+	["per_stack", "每层属性加成", "f", 0.0, 0.0, 1000.0, 0.01],
+	["stack_max", "层数上限", "i", 0, 1, 100, 1],
+	["stack_reset", "层数重置时机", "choice", "wave", ["wave", "run"]],
+	["dmg_mult", "低血目标伤害倍率", "f", 0.0, 0.0, 10.0, 0.05],
+	["heal_pct", "波末回复最大生命比例", "f", 0.0, 0.0, 1.0, 0.01],
+	["high_hp", "高血阈值", "f", 0.0, 0.0, 1.0, 0.05],
+	["high_hp_armor", "高血护甲加成", "f", 0.0, 0.0, 1000.0, 0.5],
+	["low_hp", "低血阈值", "f", 0.0, 0.0, 1.0, 0.05],
+	["low_hp_dmg_reduce", "低血减伤比例", "f", 0.0, 0.0, 1.0, 0.01],
+	["add_stacks", "追加状态层数", "i", 0, 1, 100, 1],
+	["bonus_materials", "额外材料数", "i", 0, 1, 100, 1],
 ]
 
 ## effects/stats 属性组（键 = player.stats 键；SpinBox 步长/默认 0）
@@ -85,8 +121,18 @@ const FIELD_DEFS := {
 		["id", "ID（英文唯一）", "text", "my_character"],
 		["name", "名称", "text", "新角色"], ["ico", "图标（emoji）", "text", "🧑"],
 		["color", "主题色（#RRGGBB）", "text", "#e8b84b"],
-		["start_weapon", "初始武器 ID", "text", "pistol"],
 		["desc", "描述", "text", "自定义角色"],
+	],
+	"artifacts": [
+		["id", "ID（英文唯一，如 art_my_relic）", "text", "art_my_relic"],
+		["name", "名称", "text", "新法宝"], ["ico", "图标（emoji）", "text", "🔮"],
+		["element", "五行归属", "choice", "fire", ["earth", "fire", "metal", "water", "wood"]],
+		["rarity", "稀有度", "choice", "common", ["common", "rare", "epic", "mythic", "legendary"]],
+		["trigger", "触发时机", "choice", "on_reaction",
+			["on_reaction", "on_kill", "on_status_apply", "on_deal_hit", "on_take_hit", "on_wave_end"]],
+		["price", "商店售价", "i", 110, 0, 400, 10],
+		["shop_weight", "抽取权重", "f", 1.0, 0.0, 5.0, 0.1],
+		["desc", "描述", "text", "自定义法宝"],
 	],
 	"difficulties": [
 		["id", "ID（英文唯一）", "text", "my_difficulty"],
@@ -106,6 +152,8 @@ var _editor_cat := "weapons"
 var _form_box: VBoxContainer
 var _form_fields: Array = []     # [{key, ctrl, type}]
 var _form_effects: Array = []    # [{key, spin}]
+var _form_art_params: Array = []  # 法宝 params 分组字段（同 _form_fields 结构）
+var _form_art_effects: Array = []  # 法宝 effect 分组字段
 var _editor_status: Label
 
 func _ready() -> void:
@@ -213,6 +261,7 @@ func _rebuild_list() -> void:
 		"upgrades": data = Registry.upgrades
 		"enemies": data = Registry.enemies
 		"difficulties": data = Registry.difficulties
+		"artifacts": data = Registry.artifacts
 	for id in data:
 		_list_box.add_child(_make_row(data[id]))
 
@@ -238,9 +287,10 @@ func _summary(d: Dictionary) -> String:
 	match _cat:
 		"characters":
 			var s: Dictionary = d.get("stats", {})
-			return "生命 %.0f ｜ 移速 %.0f ｜ 初始武器 %s ｜ %s" % [
+			var t: Dictionary = d.get("trait", {})
+			return "生命 %.0f ｜ 移速 %.0f ｜ 特性 %s ｜ %s" % [
 				float(s.get("max_hp", 0.0)), float(s.get("base_speed", 0.0)),
-				d.get("start_weapon", "-"), d.get("desc", "")]
+				String(t.get("name", "无")), d.get("desc", "")]
 		"weapons":
 			return "CD %.2fs ｜ 伤害 %.0f ｜ %s ｜ 售价 %d◆ ｜ %s" % [
 				float(d.get("cd", 0.0)), float(d.get("dmg", 0.0)),
@@ -260,6 +310,13 @@ func _summary(d: Dictionary) -> String:
 			return "%s ｜ 血量 x%.1f ｜ 伤害 x%.1f ｜ 刷怪 x%.1f" % [
 				d.get("desc", ""), float(d.get("hp_mult", 1.0)),
 				float(d.get("dmg_mult", 1.0)), float(d.get("spawn_mult", 1.0))]
+		"artifacts":
+			# params/effect 是嵌套字典，摘要只点出触发时机与效果键，细节看图鉴详情页
+			return "%s ｜ %s ｜ 触发 %s ｜ %d◆ ｜ %s ｜ effect=%s" % [
+				d.get("rarity", "-"),
+				Config.ELEMENT_NAME.get(String(d.get("element", "")), "-"),
+				d.get("trigger", "-"), int(d.get("price", 0)), d.get("desc", ""),
+				(d.get("effect", {}) as Dictionary).keys()]
 	return ""
 
 # ================= 编辑器面板 =================
@@ -354,9 +411,19 @@ func _build_form() -> void:
 		c.queue_free()
 	_form_fields = []
 	_form_effects = []
+	_form_art_params = []
+	_form_art_effects = []
 	for def in FIELD_DEFS[_editor_cat]:
-		_form_box.add_child(_make_field(def))
-	if _editor_cat == "items" or _editor_cat == "upgrades" or _editor_cat == "characters":
+		_form_box.add_child(_make_field(def, _form_fields))
+	if _editor_cat == "artifacts":
+		_form_box.add_child(_make_section("触发过滤 params（留空 = 不限条件）"))
+		for pdef in ARTIFACT_PARAM_FIELDS:
+			_form_box.add_child(_make_field(pdef, _form_art_params))
+		_form_box.add_child(_make_section(
+			"效果 effect（0 / 空 = 不写该键；patch 类法宝请手写 manifest.json）"))
+		for edef in ARTIFACT_EFFECT_FIELDS:
+			_form_box.add_child(_make_field(edef, _form_art_effects))
+	elif _editor_cat == "items" or _editor_cat == "upgrades" or _editor_cat == "characters":
 		_form_box.add_child(_make_section("属性效果（0 = 不加成；倍率类 0.1 = +10%）"))
 		var grid := GridContainer.new()
 		grid.columns = 3
@@ -378,8 +445,8 @@ func _make_section(text: String) -> Label:
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
 
-## def: [key, label, type, default, (min,max,step|choices)]
-func _make_field(def: Array) -> Control:
+## def: [key, label, type, default, (min,max,step|choices)]；bucket = 收集到的字段落哪一组
+func _make_field(def: Array, bucket: Array) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	var lab := Label.new()
@@ -416,7 +483,7 @@ func _make_field(def: Array) -> Control:
 		_:
 			return row
 	row.add_child(ctrl)
-	_form_fields.append({ "key": def[0], "ctrl": ctrl, "type": ftype })
+	bucket.append({ "key": def[0], "ctrl": ctrl, "type": ftype })
 	return row
 
 func _make_effect_field(ef: Array) -> Control:
@@ -437,6 +504,34 @@ func _make_effect_field(ef: Array) -> Control:
 	_form_effects.append({ "key": ef[0], "spin": s })
 	return row
 
+## 收集一组法宝字段为字典：choice/text 空串、f/i 的 0 都视作「未设置」直接跳过，
+## 这样表单默认值不会污染 params/effect，缺字段由 Registry 校验给出明确拒绝原因
+func _collect_artifact_fields(fields: Array) -> Dictionary:
+	var out := {}
+	for f in fields:
+		var v: Variant
+		match String(f.type):
+			"text":
+				v = f.ctrl.text.strip_edges()
+				if String(v) == "":
+					continue
+			"choice":
+				v = f.ctrl.get_item_text(f.ctrl.selected)
+				if String(v) == "":
+					continue
+			"f":
+				v = float(f.ctrl.value)
+				if is_zero_approx(v):
+					continue
+			"i":
+				v = int(round(f.ctrl.value))
+				if int(v) == 0:
+					continue
+			_:
+				continue
+		out[String(f.key)] = v
+	return out
+
 ## 收集表单 → Registry 校验注册 → 持久化
 func _save_entry() -> void:
 	var entry := {}
@@ -448,6 +543,14 @@ func _save_entry() -> void:
 			"i": v = int(round(f.ctrl.value))
 			"choice": v = f.ctrl.get_item_text(f.ctrl.selected)
 		entry[f.key] = v
+	# 法宝：params / effect 是嵌套字典，表单拍平后按「未设置哨兵」收集回来
+	if _editor_cat == "artifacts":
+		entry["params"] = _collect_artifact_fields(_form_art_params)
+		var art_effect: Dictionary = _collect_artifact_fields(_form_art_effects)
+		if not art_effect.has("stat"):
+			# 非叠层法宝不带重置时机，免得 manifest 里留一串无意义键
+			art_effect.erase("stack_reset")
+		entry["effect"] = art_effect
 	# effects 组：收集非零值
 	var effects := {}
 	for ef in _form_effects:

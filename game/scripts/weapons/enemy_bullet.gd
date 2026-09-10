@@ -31,6 +31,16 @@ func _physics_process(delta: float) -> void:
 	var previous := global_position
 	var next := global_position + velocity * delta
 	life -= delta
+	# 障碍物遮挡（Phase 5）：地形会吃掉敌弹——这是障碍物给玩家的主要收益（掩体）。
+	# 必须显式 is_finite：INF 表示「没被挡住」，而 INF > 0.0 为真，
+	# 漏判会让每一颗敌弹都在第一帧凭空消失。
+	# 只认 t > 0：贴墙的敌人射出的弹丸起点可能落在障碍物内，放它飞出去而不是凭空消失
+	var block_t := Obstacles.first_block_t(previous, next, radius)
+	if is_finite(block_t) and block_t > 0.0:
+		# 刻意不播撞击特效：敌弹数量最多，若每颗撞墙都迸发粒子，会吃掉
+		# Burst.MAX_LIVE 的全局预算，把「击杀/受击」这类关键打击感的粒子挤掉
+		queue_free()
+		return
 	if player != null and is_instance_valid(player) and Combat.segment_hits_circle(
 			previous, next, player.global_position, radius + float(Config.PLAYER.radius)):
 		global_position = next

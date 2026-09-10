@@ -15,6 +15,17 @@ var _status_juice_cd := 0
 var _status_juice_count := 0   # 测试观测：状态打击感触发次数
 var _codex_scan_t := 0.0
 
+## 五行反应打击感：粒子 + 震屏 + 顿帧 + 屏幕中央提示（音效由 Sfx 订阅同一信号）
+const REACTION_HIT_STOP_MS := 45
+const REACTION_JUICE_CD_MS := 90     # 全局节流：连锁反应不叠成卡帧
+const REACTION_POPUP_HOLD := 0.64    # 中央提示驻留（含淡入淡出共 1.2s）
+const REACTION_POPUP_CD_MS := 400    # 同名反应提示节流
+var _reaction_juice_cd := 0
+var _reaction_count := 0             # 测试观测：反应打击感触发次数
+var _reaction_popup_cd: Dictionary = {}   # reaction_id -> 下次可弹提示时间戳
+var _reaction_label: Label = null
+var _reaction_tween: Tween = null
+
 ## 图鉴/成就解锁 toast：右上角轻量提示，队列化（最多 4 条，1.15s/条）
 var _toast_panel: PanelContainer
 var _toast_label: Label
@@ -36,9 +47,15 @@ var _victory_menu: Control = null
 @onready var banner_title: Label = $UI/BannerTitle
 @onready var banner_sub: Label = $UI/BannerSub
 @onready var wave_manager: Node = $WaveManager
+@onready var artifact_system: Node = $ArtifactSystem
 @onready var level_up_ui: Control = $UI/LevelUp
 @onready var shop_ui: Control = $UI/Shop
 @onready var hud: Control = $UI/HUD
+
+## 江湖奇遇事件卡（Phase 4）：与 dev_panel / touch_controls 同一策略，代码 instantiate
+var event_card_ui: Control = null
+var _pending_wave_after_event := 0   # 事件选择结束后要启动的波次（0 = 无待处理）
+var event_cards_played := 0          # 测试观测：本局实际弹出的奇遇次数
 
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
@@ -62,15 +79,24 @@ func _ready() -> void:
 	EventBus.wave_ended.connect(_on_wave_ended)
 	EventBus.wave_started.connect(_on_wave_started)
 	EventBus.status_applied.connect(_on_status_applied)
+	EventBus.element_reaction.connect(_on_element_reaction)
 	EventBus.codex_unlocked.connect(_on_codex_unlocked)
+	EventBus.artifact_acquired.connect(_on_artifact_acquired)
 	EventBus.achievement_unlocked.connect(_on_achievement_unlocked)
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
 	wave_manager.player = player
+	artifact_system.player = player
 	level_up_ui.player = player
 	shop_ui.player = player
 	shop_ui.wave_manager = wave_manager
+	shop_ui.main = self   # 商店关闭后由 main 决定是否先弹奇遇（见 shop_ui.next_wave）
 	hud.player = player
 	hud.wave_manager = wave_manager
+	# 江湖奇遇事件卡（Phase 4）
+	event_card_ui = preload("res://scenes/ui/event_card.tscn").instantiate()
+	$UI.add_child(event_card_ui)
+	event_card_ui.player = player
+	event_card_ui.chosen.connect(_on_event_choice)
 	# 开发者面板（F1 呼出）
 	var dev := preload("res://scenes/ui/dev_panel.tscn").instantiate()
 	$UI.add_child(dev)
@@ -108,6 +134,7 @@ func _ready() -> void:
 	_build_pause_menu()
 	_build_end_menus()
 	_build_toast()
+	_build_reaction_popup()
 	queue_redraw()
 
 func _process(delta: float) -> void:
@@ -157,6 +184,25 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_1: level_up_ui._choose(0); get_viewport().set_input_as_handled()
 				KEY_2: level_up_ui._choose(1); get_viewport().set_input_as_handled()
 				KEY_3: level_up_ui._choose(2); get_viewport().set_input_as_handled()
+	# ---- 奇遇事件卡期间：根节点直接处理输入（与升级 UI 同策略） ----
+	# 事件卡发生在商店关闭之后、下一波开始之前，此时 phase 仍是 SHOP（安全暂停态）
+	elif GameState.phase == GameState.Phase.SHOP and event_card_ui != null and event_card_ui.visible:
+		if event.is_action_pressed("ui_accept"):
+			var e_focus: Control = get_viewport().gui_get_focus_owner()
+			if e_focus is Button and not e_focus.disabled \
+					and e_focus.get_parent() == event_card_ui.get_node("Center/Box/Cards"):
+				event_card_ui._choose(e_focus.get_index())
+			else:
+				for i in event_card_ui.choice_count():
+					if event_card_ui.is_choice_enabled(i):
+						event_card_ui._choose(i)
+						break
+			get_viewport().set_input_as_handled()
+		elif event is InputEventKey and event.pressed and not event.echo:
+			match event.physical_keycode:
+				KEY_1: event_card_ui._choose(0); get_viewport().set_input_as_handled()
+				KEY_2: event_card_ui._choose(1); get_viewport().set_input_as_handled()
+				KEY_3: event_card_ui._choose(2); get_viewport().set_input_as_handled()
 	# ---- 临时调试：1-5 换武器 / 6 射手 / 7 BOSS（限定 PLAYING，避免与升级卡 1-3 冲突） ----
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if GameState.phase == GameState.Phase.PLAYING:
@@ -193,6 +239,79 @@ func _on_status_applied(status_id: String, _stacks: int, _pos: Vector2) -> void:
 	_on_screen_shake(2.2)
 	_trigger_hit_stop(HIT_STOP_MS, HIT_STOP_SCALE)
 
+## 五行反应特效：粒子常驻播放，震屏/顿帧/中央提示走全局节流
+func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) -> void:
+	var reaction: Dictionary = Registry.get_reaction(reaction_id)
+	var accent := _reaction_color(reaction)
+	var overcome := String(reaction.get("type", "")) == "overcome"
+	# 相克爆发更猛（复用 Burst，无额外场景开销）
+	Burst.spawn(self, pos, accent, 22 if overcome else 12, 300.0 if overcome else 190.0)
+	var now := Time.get_ticks_msec()
+	if now < _reaction_juice_cd:
+		return
+	_reaction_juice_cd = now + REACTION_JUICE_CD_MS
+	_reaction_count += 1
+	var fallback_shake := 4.0 if overcome else 1.8
+	_on_screen_shake(float(reaction.get("shake", fallback_shake)))
+	_trigger_hit_stop(REACTION_HIT_STOP_MS, HIT_STOP_SCALE)
+	_show_reaction_popup(reaction, accent, overcome, now)
+
+## 反应主色：两五行配色混合（key = "elemA+elemB"）；无 key 时退回稀有度色
+func _reaction_color(reaction: Dictionary) -> Color:
+	var parts := String(reaction.get("key", "")).split("+")
+	if parts.size() != 2:
+		return Config.rarity_color(String(reaction.get("rarity", "common")))
+	var a := Color(String(Config.ELEMENT_COLOR.get(String(parts[0]), "#ffffff")))
+	var b := Color(String(Config.ELEMENT_COLOR.get(String(parts[1]), "#ffffff")))
+	return a.lerp(b, 0.5)
+
+## 中央反应提示（如“💧🔥 水克火 · 蒸汽爆炸！”）：弹入 → 驻留 → 淡出
+func _show_reaction_popup(reaction: Dictionary, accent: Color, overcome: bool,
+		now: int) -> void:
+	if _reaction_label == null:
+		return
+	var rid := String(reaction.get("id", ""))
+	if now < int(_reaction_popup_cd.get(rid, 0)):
+		return
+	_reaction_popup_cd[rid] = now + REACTION_POPUP_CD_MS
+	_reaction_label.text = "%s %s%s" % [String(reaction.get("ico", "☯")),
+		String(reaction.get("name", rid)), "！" if overcome else ""]
+	_reaction_label.add_theme_color_override("font_color", accent)
+	_reaction_label.visible = true
+	_reaction_label.modulate.a = 0.0
+	_reaction_label.scale = Vector2(0.88, 0.88)
+	if _reaction_tween != null and _reaction_tween.is_valid():
+		_reaction_tween.kill()
+	_reaction_tween = create_tween()
+	_reaction_tween.set_parallel(true)
+	_reaction_tween.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_reaction_tween.tween_property(_reaction_label, "modulate:a", 1.0, 0.12)
+	_reaction_tween.tween_property(_reaction_label, "scale", Vector2.ONE, 0.16)
+	_reaction_tween.chain().tween_interval(REACTION_POPUP_HOLD)
+	_reaction_tween.chain().tween_property(_reaction_label, "modulate:a", 0.0, 0.4)
+	_reaction_tween.chain().tween_callback(func() -> void:
+		_reaction_label.visible = false)
+
+## 中央提示标签：屏幕正中，不与顶部横幅（48~118px）重叠
+func _build_reaction_popup() -> void:
+	_reaction_label = Label.new()
+	_reaction_label.set_anchors_preset(Control.PRESET_CENTER)
+	_reaction_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_reaction_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_reaction_label.offset_left = -340.0
+	_reaction_label.offset_right = 340.0
+	_reaction_label.offset_top = -28.0
+	_reaction_label.offset_bottom = 28.0
+	_reaction_label.pivot_offset = Vector2(340.0, 28.0)
+	_reaction_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_reaction_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_reaction_label.add_theme_font_size_override("font_size", 30)
+	_reaction_label.add_theme_color_override("font_outline_color", Color(0.02, 0.03, 0.05, 0.92))
+	_reaction_label.add_theme_constant_override("outline_size", 9)
+	_reaction_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_reaction_label.visible = false
+	$UI.add_child(_reaction_label)
+
 func _trigger_hit_stop(duration_ms: int, scale: float) -> void:
 	if duration_ms <= 0:
 		return
@@ -214,6 +333,16 @@ func _scan_codex_weapons() -> void:
 func _on_codex_unlocked(cat: String, id: String) -> void:
 	_enqueue_toast("📖 图鉴解锁", "%s %s · ✦%d" % [CodexData.display_icon(cat, id),
 		CodexData.display_name(cat, id), CodexData.unlock_reward(cat)], cat, id)
+
+## 获得法宝：精英掉落 / BOSS 必掉 / 商店购买 三条渠道的统一出口
+## 刻意走队列化 toast 而非 banner：BOSS 掉落时本函数会紧接着发「BOSS 击破！」横幅，
+## banner 是单例式后发覆盖先发，两边会互相吃掉；toast 队列（上限 4 条）则依次展示
+func _on_artifact_acquired(id: String) -> void:
+	var a := Registry.get_artifact(id)
+	if a.is_empty():
+		return
+	_enqueue_toast("🔮 法宝入手", "%s %s · %s" % [String(a.get("ico", "")),
+		String(a.get("name", id)), String(a.get("desc", ""))], "artifact", id)
 
 func _on_achievement_unlocked(id: String) -> void:
 	_enqueue_toast("🏆 成就达成", "%s %s · ✦%d 精华" % [CodexData.display_icon("achieve", id),
@@ -314,9 +443,227 @@ func _on_codex_closed() -> void:
 		_codex_phase_before = -1
 	_next_toast()
 
-## 每波开始：BOSS 波切激烈曲，普通波切战斗曲
+## 每波开始：BOSS 波切激烈曲，普通波切战斗曲；并按地图主题重建障碍物与氛围粒子
 func _on_wave_started(w: int) -> void:
 	Music.play_track(Music.track_for_wave(w), 0.35)
+	_apply_map_theme(GameState.map_theme)
+	if player != null and is_instance_valid(player):
+		player.on_wave_start()   # 角色特性：战意按"本波击杀"重新累积
+
+# ------------------------------------------------------------
+# 地图主题化（Phase 5）
+# 主题由波次推导（Config.map_theme_for_wave），每波开始时应用到背景/障碍物/粒子。
+# 障碍物是「纯数据 + 手写判定」（见 systems/obstacles.gd），不是物理体
+# ------------------------------------------------------------
+
+var _theme_fx: Node2D = null
+var obstacles_spawned := 0   # 测试观测：本波实际生成的障碍物数量
+
+## 应用地图主题：重建障碍物 → 换氛围粒子 → 重绘竞技场
+func _apply_map_theme(theme_id: String) -> void:
+	var theme := Config.map_theme(theme_id)
+	if theme.is_empty():
+		return
+	var target := GameRng.range_i(Config.OBSTACLE_MIN, Config.OBSTACLE_MAX)
+	# BOSS 波压缩障碍物：既给 BOSS 弹幕留出走位空间，也避免地形把 BOSS 卡在角落
+	if Config.is_boss_wave(wave_manager.wave):
+		target = mini(target, Config.OBSTACLE_BOSS_MAX)
+	obstacles_spawned = spawn_obstacles(theme_id, target)
+	_rebuild_theme_fx(String(theme.get("particle", "bamboo_leaf")))
+	queue_redraw()
+
+## 生成本波障碍物并重建索引，返回实际数量。
+## 拒绝采样：避开玩家出生点（世界中心）安全半径与四周边界，且块与块之间留出通道。
+## 单点 12 次尝试失败就放弃该点，不做「强行塞到边上」的兜底——
+## 否则会在出生点或角落堆出无法通行的死角
+func spawn_obstacles(theme_id: String, count: int) -> int:
+	var theme := Config.map_theme(theme_id)
+	var kind := String(theme.get("obstacle", "bamboo"))
+	var r := Obstacle.radius(kind)
+	var wr := float(Config.WORLD.w)
+	var hr := float(Config.WORLD.h)
+	var origin := Vector2(wr, hr) * 0.5
+	var margin := r + 48.0
+	var min_gap := r * 2.0 + 56.0   # 块间最小间距：保证任何方向都走得过去
+	var entries: Array = []
+	for _i in count:
+		for _try in 12:
+			var p := Vector2(GameRng.range_f(margin, wr - margin),
+				GameRng.range_f(margin, hr - margin))
+			if p.distance_to(origin) < Config.OBSTACLE_SAFE_RADIUS + r:
+				continue
+			var blocked := false
+			for e in entries:
+				var ep: Vector2 = e.pos
+				if p.distance_to(ep) < min_gap:
+					blocked = true
+					break
+			if blocked:
+				continue
+			entries.append({ "pos": p, "kind": kind, "r": r })
+			break
+	Obstacles.rebuild(entries)
+	return Obstacles.count()
+
+## 换主题氛围粒子：同屏只留一套，切主题时销毁旧的
+func _rebuild_theme_fx(particle_kind: String) -> void:
+	if _theme_fx != null and is_instance_valid(_theme_fx):
+		_theme_fx.queue_free()
+	_theme_fx = null
+	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
+	match particle_kind:
+		"bamboo_leaf":
+			_theme_fx = BambooLeaf.spawn(self, world)
+		"incense":
+			_theme_fx = Incense.spawn(self, world)
+		"ghost_fire":
+			_theme_fx = GhostFire.spawn(self, world)
+
+# ------------------------------------------------------------
+# 江湖奇遇事件卡（Phase 4）
+# 流程：商店关闭 → try_trigger_event_card()（30% / 每局 3~5 次上限）
+#       → 命中则弹卡（phase 保持 SHOP = 安全暂停态）
+#       → 玩家三选一 → _execute_event_effect() → 启动被推迟的下一波
+# 不新增 GameState.Phase：事件本就属于「商店后的间歇」，复用 SHOP 可避免
+# 动到存档/暂停/商店三处的阶段判断，风险最低
+# ------------------------------------------------------------
+
+## 商店关闭后调用（由 shop_ui.next_wave 触发）。
+## 返回 true = 已弹出事件卡，调用方不要再启动下一波（选择结束后由 main 启动）
+func try_trigger_event_card(next_wave: int) -> bool:
+	if event_card_ui == null:
+		return false
+	if GameState.event_card_count >= GameState.event_card_cap:
+		return false
+	if not GameRng.chance(Config.EVENT_CARD_CHANCE):
+		return false
+	var pool: Array = Config.event_card_pool(GameState.events_seen, wave_manager.wave)
+	if pool.is_empty():
+		return false
+	var card: Dictionary = GameRng.weighted_pick(pool)
+	if card.is_empty():
+		return false
+	_pending_wave_after_event = next_wave
+	GameState.event_card_count += 1
+	GameState.events_seen.append(String(card.get("id", "")))
+	event_cards_played += 1
+	event_card_ui.open(card)
+	Sfx.play("ui_select")
+	return true
+
+## 玩家做出选择：执行效果 → 图鉴/统计/信号 → 横幅 → 启动下一波
+func _on_event_choice(card_id: String, choice_index: int) -> void:
+	var card: Dictionary = Config.event_card(card_id)
+	var choices: Array = card.get("choices", [])
+	if choice_index < 0 or choice_index >= choices.size():
+		_finish_event_flow()
+		return
+	var ch: Dictionary = choices[choice_index]
+	_execute_event_effect(ch.get("effect", {}))
+	CodexData.add_stat("events")
+	CodexData.unlock("event", card_id)
+	EventBus.event_card_triggered.emit(card_id, "%s:%d" % [card_id, choice_index])
+	EventBus.banner_requested.emit("奇遇 · %s" % String(card.get("title", "")),
+		"%s · %s" % [String(ch.get("text", "")), String(ch.get("hint", ""))], 2.6)
+	_finish_event_flow()
+
+## 事件流程收尾：启动被推迟的那一波
+func _finish_event_flow() -> void:
+	var w := _pending_wave_after_event
+	_pending_wave_after_event = 0
+	if w > 0:
+		wave_manager.start_wave(w)
+
+## 执行事件选项效果。载荷键定义见 Config.EVENT_CARDS 头部注释；
+## 未知键一律忽略（mod 内容前向兼容：新键在旧版本上不会炸）
+func _execute_event_effect(effect: Dictionary) -> void:
+	# ---- 前置消耗（UI 已置灰付不起的选项，这里只做二次保险）----
+	var cost := int(effect.get("cost_materials", 0))
+	if cost > 0:
+		GameState.add_materials(-mini(cost, GameState.materials))
+	var hp_pct := float(effect.get("hp_pct_cost", 0.0))
+	if hp_pct > 0.0:
+		# 至少保留 1 点生命：代价型选项不该变成自杀键
+		var pay: float = minf(maxf(0.0, player.hp - 1.0), float(player.stats.max_hp) * hp_pct)
+		if pay > 0.0:
+			player.hp -= pay
+			FloatingText.spawn(self, player.global_position + Vector2(0.0, -26.0),
+				"-%d" % roundi(pay), Color("ff8a80"))
+	# ---- 属性增益（与升级共用同一套 数据驱动 effects）----
+	if effect.has("effects"):
+		player.apply_effects(effect.get("effects", {}))
+	# ---- 资源 ----
+	var mats := int(effect.get("grant_materials", 0))
+	if mats > 0:
+		GameState.add_materials(mats)
+	# ---- 随机道具（按品阶）----
+	var ir := String(effect.get("grant_item_rarity", ""))
+	if ir != "":
+		_grant_random_item(ir)
+	# ---- 随机武器 ----
+	if bool(effect.get("grant_weapon", false)):
+		_grant_random_weapon()
+	# ---- 随机法宝 ----
+	if bool(effect.get("grant_relic", false)):
+		_grant_random_relic()
+	# ---- 免费升级（下波开场补弹升级三选一）----
+	var free_up := int(effect.get("free_upgrade", 0))
+	if free_up > 0:
+		GameState.level_queue += free_up
+	# ---- 下波额外精英（风险代价）----
+	var elites := int(effect.get("next_wave_elite", 0))
+	if elites > 0:
+		GameState.next_wave_elite += elites
+
+## 按品阶随机获得一件道具；该品阶无内容时退回全量加权池（mod 内容变动时不吞奖励）
+func _grant_random_item(rarity: String) -> void:
+	var pool: Array = []
+	for it in Registry.item_list():
+		if String(it.get("rarity", "common")) == rarity:
+			pool.append({ "item": it, "w": 1.0 })
+	if pool.is_empty():
+		for it2 in Registry.item_list():
+			pool.append({ "item": it2,
+				"w": Config.rarity_weight(String(it2.get("rarity", "common")), wave_manager.wave) })
+	if pool.is_empty():
+		return
+	var picked: Dictionary = GameRng.weighted_pick(pool)
+	var id := String(picked.get("id", ""))
+	if id == "":
+		return
+	player.apply_item(id)
+	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+		"获得 %s %s" % [String(picked.get("ico", "")), String(picked.get("name", id))],
+		Color("ffd24a"))
+
+## 随机获得一把武器；武器槽已满时转材料补偿（别让奖励凭空消失）
+func _grant_random_weapon() -> void:
+	if player.weapons.size() >= MetaProgress.weapon_slots():
+		var comp := 90
+		GameState.add_materials(comp)
+		FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+			"武器槽已满 · +%d ◆" % comp, Color("ffd24a"))
+		return
+	var wid := String(GameRng.weighted_pick(Registry.shop_weapon_pool()))
+	if wid == "":
+		return
+	player.weapons.append({ "type": wid, "cd": 0.1 })
+	var cfg: Dictionary = Registry.weapons.get(wid, {})
+	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+		"获得 %s %s" % [String(cfg.get("ico", "")), String(cfg.get("name", wid))], Color("ffd24a"))
+
+## 随机获得一件未持有法宝；集齐后转等比材料补偿
+func _grant_random_relic() -> void:
+	var aff := Config.affinity_tags(GameState.character_id,
+		player.weapons, player.artifacts_owned)
+	var pool := Registry.artifact_pool(player.artifacts_owned, wave_manager.wave, false, aff)
+	if pool.is_empty():
+		GameState.add_materials(Config.ARTIFACT_DUP_MATERIALS)
+		return
+	var aid := String(GameRng.weighted_pick(pool))
+	if aid == "":
+		return
+	player.apply_artifact(aid)   # 内部发 artifact_acquired → 队列化 toast 展示详情
 
 func _exit_tree() -> void:
 	Engine.time_scale = 1.0   # 双保险：切场景/测试结束不残留慢动作
@@ -494,10 +841,13 @@ func toggle_pause() -> void:
 		_pause_overlay.visible = false
 
 func _draw() -> void:
+	var theme := Config.map_theme(GameState.map_theme)
 	var g := 64.0
 	var w := Config.WORLD.w
 	var h := Config.WORLD.h
-	var grid_color := Color("222730")
+	# 主题底色（Phase 5）：氛围主要交给背景色，网格与边框取同系色保证可读性
+	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("bg", "#101218"))), true)
+	var grid_color := Color(String(theme.get("grid", "#222730")))
 	var x := 0.0
 	while x <= w:
 		draw_line(Vector2(x, 0.0), Vector2(x, h), grid_color, 1.0)
@@ -506,7 +856,9 @@ func _draw() -> void:
 	while y <= h:
 		draw_line(Vector2(0.0, y), Vector2(w, y), grid_color, 1.0)
 		y += g
-	draw_rect(Rect2(0.0, 0.0, w, h), Color("4a5262"), false, 4.0)
+	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("accent", "#4a5262"))), false, 4.0)
+	# 障碍物：与背景同一遍绘制（静态内容，由 CanvasItem 缓存，不产生逐帧开销）
+	Obstacles.draw_all(self)
 
 # ---- 暂停 / 死亡 / 胜利 按钮菜单（代码构建，手柄可导航） ----
 
@@ -717,7 +1069,7 @@ func _refresh_pause_content() -> void:
 	trait_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	trait_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_left.add_child(trait_l)
-	# 右：已购道具（相同叠加显示数量）
+	# 右：已购道具（相同叠加显示数量）+ 法宝区
 	for c in _pause_items.get_children():
 		_pause_items.remove_child(c)
 		c.queue_free()
@@ -727,25 +1079,76 @@ func _refresh_pause_content() -> void:
 		empty.add_theme_font_size_override("font_size", 12)
 		empty.add_theme_color_override("font_color", Color("5a6270"))
 		_pause_items.add_child(empty)
+	else:
+		for id: String in player.items_owned:
+			var it: Dictionary = Registry.items.get(id, {})
+			var row := HBoxContainer.new()
+			row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var l2 := Label.new()
+			l2.text = "%s %s" % [it.get("ico", "🧩"), it.get("name", id)]
+			l2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			l2.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			l2.add_theme_font_size_override("font_size", 13)
+			l2.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
+			l2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(l2)
+			var ct := Label.new()
+			ct.text = "x%d" % int(player.items_owned[id])
+			ct.add_theme_font_size_override("font_size", 13)
+			ct.add_theme_color_override("font_color", Color("f2e7c7"))
+			ct.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(ct)
+			_pause_items.add_child(row)
+	_pause_artifact_rows()
+
+## 暂停面板法宝区：法宝不占常驻 HUD（spec 第五章），这里是局内查看持有与叠层的入口。
+## 叠层必须显示：断刃锋/玄武核的属性随层数涨，看不到层数就无法判断构筑强度。
+func _pause_artifact_rows() -> void:
+	var sep := ColorRect.new()
+	sep.color = Color("2c3340")
+	sep.custom_minimum_size = Vector2(0.0, 1.0)
+	sep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(sep)
+	var t := Label.new()
+	t.text = "法宝"
+	t.add_theme_font_size_override("font_size", 13)
+	t.add_theme_color_override("font_color", Color("e8b84b"))
+	t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(t)
+	if player.artifacts_owned.is_empty():
+		var empty := Label.new()
+		empty.text = "暂无法宝（精英击杀 / BOSS / 商店可得）"
+		empty.add_theme_font_size_override("font_size", 12)
+		empty.add_theme_color_override("font_color", Color("5a6270"))
+		_pause_items.add_child(empty)
 		return
-	for id: String in player.items_owned:
-		var it: Dictionary = Registry.items.get(id, {})
+	for aid: String in player.artifacts_owned:
+		var a: Dictionary = Registry.get_artifact(aid)
+		if a.is_empty():
+			continue   # mod 卸载后的残留持有，不画空行
 		var row := HBoxContainer.new()
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var l2 := Label.new()
-		l2.text = "%s %s" % [it.get("ico", "🧩"), it.get("name", id)]
-		l2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		l2.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		l2.add_theme_font_size_override("font_size", 13)
-		l2.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
-		l2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(l2)
-		var ct := Label.new()
-		ct.text = "x%d" % int(player.items_owned[id])
-		ct.add_theme_font_size_override("font_size", 13)
-		ct.add_theme_color_override("font_color", Color("f2e7c7"))
-		ct.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(ct)
+		var nm := Label.new()
+		nm.text = "%s %s" % [a.get("ico", "🔮"), a.get("name", aid)]
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		nm.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		nm.add_theme_font_size_override("font_size", 13)
+		nm.add_theme_color_override("font_color", Config.rarity_color(a.get("rarity", "common")))
+		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(nm)
+		var bits: Array[String] = []
+		var elem := String(a.get("element", ""))
+		if elem != "" and Config.ELEMENT_NAME.has(elem):
+			bits.append(String(Config.ELEMENT_NAME[elem]))
+		var stacks := int(player.artifact_stacks.get(aid, 0))
+		if stacks > 0:
+			bits.append("x%d 层" % stacks)
+		var st := Label.new()
+		st.text = " ".join(bits)
+		st.add_theme_font_size_override("font_size", 13)
+		st.add_theme_color_override("font_color", Color("f2e7c7"))
+		st.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(st)
 		_pause_items.add_child(row)
 
 func _build_end_menus() -> void:

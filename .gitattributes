@@ -1,0 +1,11 @@
+# 换行符策略
+#
+# Windows 上 core.autocrlf 会在检出时把文本文件转成 CRLF。
+# 对 shell 脚本是致命的：bash 执行 CRLF 脚本会报
+#   $'\r': command not found
+# 本仓库 game/tools/push.sh 依赖 .sh 可直接执行，因此强制 LF。
+*.sh   text eol=lf
+
+# 音频资源为二进制，禁止任何换行符转换（否则 Godot 会认为资源损坏）
+*.wav  binary
+*.png  binary
