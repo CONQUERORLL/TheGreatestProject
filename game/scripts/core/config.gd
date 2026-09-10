@@ -241,7 +241,7 @@ const WEAPONS := {
 	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "evolve_need": 4, "evolve_to": "blade_ex", "desc": "近战弧形挥砍，概率造成流血" },
 	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "status": "burn", "status_chance": 0.45, "rarity": "epic", "desc": "命中范围爆炸 AOE，概率点燃" },
 	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "status": "bleed", "status_chance": 0.35, "rarity": "epic", "desc": "一发入魂的超远距重击，概率造成流血" },
-	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 108.0, "swing_arc": 1.9, "status": "bleed", "status_chance": 0.45, "rarity": "epic", "desc": "大开大合的宽弧重斩，高概率造成流血" },
+	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 120.0, "swing_arc": 1.9, "status": "bleed", "status_chance": 0.45, "rarity": "epic", "desc": "刀身更长的大开大合宽弧重斩，高概率造成流血" },
 	# ---- 状态效果武器（数据驱动：status = Config.STATUS 键） ----
 	"flamethrower": { "name": "火焰喷射器", "ico": "🔥", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 4.0, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.34, "status": "burn", "status_chance": 0.85, "rarity": "rare", "desc": "短程火舌，高频叠加燃烧" },
 	"frost_staff": { "name": "霜冻法杖", "ico": "❄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.80, "dmg": 9.0, "bspeed": 420.0, "splash": 58.0, "status": "freeze", "status_chance": 0.55, "rarity": "epic", "desc": "范围冰冻定身，冻结目标受到额外伤害" },
@@ -264,7 +264,7 @@ const WEAPONS := {
 	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：双联齐射，单发伤害 +67%" },
 	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：三管齐喷的弹幕风暴" },
 	"shotgun_ex": { "name": "毁灭炮", "ico": "💣", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.75, "dmg": 12.0, "bspeed": 520.0, "pellets": 8, "arc": 1.1, "bullet_life": 0.6, "splash": 60.0, "shake": 3.0, "rarity": "legendary", "shop_weight": 0.001, "desc": "进化：8 弹丸 + 爆炸溅射" },
-	"blade_ex": { "name": "斩魄刀", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.34, "dmg": 42.0, "range": 132.0, "swing_arc": 2.4, "shake": 1.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：全域横扫，伤害 +162%" },
+	"blade_ex": { "name": "斩魄刀", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.34, "dmg": 42.0, "range": 145.0, "swing_arc": 2.4, "shake": 1.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：更长的刀身全域横扫，伤害 +162%" },
 }
 
 const WEAPON_SLOTS := 6
@@ -391,6 +391,12 @@ const UPGRADES := [
 	{ "id": "pyromancy", "ico": "🔥", "name": "纵火", "desc": "状态伤害 +25%", "rarity": "rare", "effects": { "status_dmg_mult": 0.25 } },
 	{ "id": "lingering", "ico": "⏳", "name": "延烧", "desc": "异常持续时间 +30%", "rarity": "epic", "effects": { "status_dur_mult": 0.30 } },
 	{ "id": "hex", "ico": "🕯", "name": "咒术", "desc": "异常命中率 +10%", "rarity": "epic", "effects": { "status_chance": 0.10 } },
+	# ---- 武器向升级：只强化特定武器形态，属于「构筑向」而非泛用强化 ----
+	# （这些键在角色特性里先出现，此处把它们开放给升级池，让构筑有成长路径）
+	{ "id": "edge", "ico": "🗡", "name": "开刃", "desc": "斩击范围 +18%（近战武器）", "rarity": "rare", "effects": { "melee_range_bonus": 0.18 } },
+	{ "id": "barrel", "ico": "🏹", "name": "加长枪管", "desc": "弹丸射程 +20%（投射武器）", "rarity": "rare", "effects": { "bullet_range_bonus": 0.20 } },
+	{ "id": "velocity", "ico": "💨", "name": "高初速", "desc": "子弹速度 +20%，命中更跟手", "rarity": "rare", "effects": { "bullet_speed_bonus": 0.20 } },
+	{ "id": "warhead", "ico": "💥", "name": "高爆装药", "desc": "爆炸范围 +20%（溅射武器：火箭筒 / 冰霜新星 / 震雷法锣…）", "rarity": "rare", "effects": { "aoe_radius_bonus": 0.20 } },
 ]
 
 ## 商店道具（被动 = 永久属性；effects 键 = player.stats 键，创意工坊数据驱动；
@@ -434,6 +440,13 @@ const ITEMS := [
 	{ "id": "i-focus", "ico": "🔮", "name": "凝神宝珠", "desc": "攻速 +20%；代价：伤害 -8%", "price": 46, "rarity": "rare", "effects": { "as_mult": 0.20, "dmg_mult": -0.08 } },
 	{ "id": "i-plaguevial", "ico": "⚗", "name": "疫病瓶", "desc": "命中时 25% 概率使目标中毒，状态伤害 +25%", "price": 72, "rarity": "epic", "effects": { "on_hit_poison": 0.25, "status_dmg_mult": 0.25 } },
 	{ "id": "i-sunstone", "ico": "☀", "name": "日曜石", "desc": "生命回复 +1.6 / 秒，最大生命 +30", "price": 68, "rarity": "epic", "effects": { "regen": 1.6, "max_hp": 30.0 } },
+	# ---- 武器向道具（Phase 3.5）：把「武器形态强化」做成可购买的构筑件 ----
+	# 与泛用道具不同，这些只对特定武器形态生效 —— 买之前先想清楚自己在玩什么
+	{ "id": "i-whetstone", "ico": "🪨", "name": "磨刀石", "desc": "斩击范围 +35%：近战刀光挥得更远，太刀/长剑尤其明显", "price": 58, "rarity": "epic", "effects": { "melee_range_bonus": 0.35 } },
+	{ "id": "i-longbarrel", "ico": "🔩", "name": "铳匠长管", "desc": "弹丸射程 +35%：火焰喷射距离、弹药飞行距离同步拉长", "price": 62, "rarity": "epic", "effects": { "bullet_range_bonus": 0.35 } },
+	{ "id": "i-frostcore", "ico": "🧊", "name": "霜核", "desc": "爆炸范围 +42%：冰冻、毒爆、火箭的覆盖面大幅提升", "price": 66, "rarity": "epic", "effects": { "aoe_radius_bonus": 0.42 } },
+	{ "id": "i-accelerator", "ico": "⚙", "name": "高速膛线", "desc": "子弹速度 +38%，弹道更直更难被走位躲开", "price": 48, "rarity": "rare", "effects": { "bullet_speed_bonus": 0.38 } },
+	{ "id": "i-venomsac", "ico": "☣", "name": "毒囊", "desc": "爆炸范围 +22%，异常持续时间 +20%", "price": 44, "rarity": "rare", "effects": { "aoe_radius_bonus": 0.22, "status_dur_mult": 0.20 } },
 ]
 
 ## ============================================================

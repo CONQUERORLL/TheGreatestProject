@@ -61,28 +61,45 @@ func _arc_poly(a0: float, span: float, r: float, c: Color) -> void:
 		pts.append(Vector2.from_angle(a0 + span * float(i) / float(steps)) * r)
 	draw_colored_polygon(pts, c)
 
-## 月牙刀光：残影铺满整弧 + 刀光沿弧扫过 + 扫过前线的高亮刀锋
+## 月牙刀身多边形：外缘取弧（刃口），内缘用 sin 包络收窄 ——
+## 两端自然收成刀尖、中段最厚，这才是一把刀划过去的形状
+func _blade_poly(a0: float, span: float, r_outer: float, max_thickness: float, c: Color) -> void:
+	var steps := maxi(10, int(span * 16.0))
+	var pts := PackedVector2Array()
+	for i in steps + 1:                        # 外缘：从起始角扫到结束角
+		pts.append(Vector2.from_angle(a0 + span * float(i) / float(steps)) * r_outer)
+	for i in steps + 1:                        # 内缘：反向回程，半径按 sin 收窄
+		var u := 1.0 - float(i) / float(steps)
+		var thin := sin(u * PI)
+		pts.append(Vector2.from_angle(a0 + span * u) * (r_outer - max_thickness * thin))
+	draw_colored_polygon(pts, c)
+
+## 刀光：画成月牙刀身而不是等宽弧线 ——
+## 等宽弧读起来是「一个扇形亮了一下」，月牙才像「一把刀划过去」。
+## 扫过前线额外点一道短亮痕表示刀锋指向。
 func _draw_slash(t: float) -> void:
 	var a0 := dir - arc / 2.0
 	var fade := maxf(0.0, 1.0 - t * 1.15)
 	if fade <= 0.0:
 		return
-	# ① 刀风残影：整弧低透明，快速淡出（让「大开大合」的宽度可见）
-	_arc_poly(a0, arc, range_r * 0.95, Color(col.r, col.g, col.b, 0.11 * fade))
-	# ② 已扫过区域的刀光（前 60% 时间扫完整弧）
+	# ① 刀风残影：整弧极淡铺底，交代挥砍覆盖范围
+	_arc_poly(a0, arc, range_r * 0.92, Color(col.r, col.g, col.b, 0.07 * fade))
+	# ② 已扫过区域（前 60% 时间扫完整弧）
 	var sweep := arc * clampf(t / 0.6, 0.0, 1.0)
 	if sweep <= 0.001:
 		return
-	var steps := maxi(6, int(sweep * 22.0))
-	draw_arc(Vector2.ZERO, range_r, a0, a0 + sweep, steps,
-		Color(col.r, col.g, col.b, 0.72 * fade), 4.0, true)
-	draw_arc(Vector2.ZERO, range_r * 0.78, a0, a0 + sweep, steps,
-		Color(1.0, 1.0, 0.95, 0.45 * fade), 2.0, true)
-	# ③ 刀锋：扫过前线的一道径向亮线
+	var reach := range_r * (0.9 + 0.1 * (1.0 - t))
+	# ③ 刀身
+	_blade_poly(a0, sweep, reach, range_r * 0.20, Color(col.r, col.g, col.b, 0.42 * fade))
+	# ④ 刃口：外缘一条更亮的细弧
+	var steps := maxi(8, int(sweep * 24.0))
+	draw_arc(Vector2.ZERO, reach, a0, a0 + sweep, steps,
+		Color(1.0, 1.0, 0.96, 0.85 * fade), 2.2, true)
+	# ⑤ 刀锋：扫过前线的一道短亮痕
 	var edge_a := a0 + sweep
-	draw_line(Vector2.from_angle(edge_a) * range_r * 0.22,
-		Vector2.from_angle(edge_a) * range_r,
-		Color(1.0, 1.0, 1.0, 0.8 * fade), 2.4, true)
+	draw_line(Vector2.from_angle(edge_a) * range_r * 0.72,
+		Vector2.from_angle(edge_a) * range_r * 1.02,
+		Color(1.0, 1.0, 1.0, 0.9 * fade), 3.2, true)
 
 ## 鞭影：一条从近到远、角度滞后的曲线（末端甩出去），像真的抽了一鞭
 func _draw_whip(t: float) -> void:

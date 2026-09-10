@@ -119,7 +119,9 @@ func _draw() -> void:
 	var d := velocity.normalized()
 	if d == Vector2.ZERO:
 		d = Vector2.RIGHT
-	_draw_trail(d, velocity.length())
+	# 火焰不画速度线：拖尾是「弹丸」的视觉语言，喷射器要的是连续的雾
+	if fx != "flame":
+		_draw_trail(d, velocity.length())
 	match fx:
 		"flame":
 			_draw_flame(d)
@@ -161,21 +163,36 @@ func _draw_pellet() -> void:
 	draw_circle(Vector2.ZERO, radius * 0.8, col)
 	draw_circle(Vector2.ZERO, radius * 0.35, Color(1.0, 1.0, 1.0, 0.7))
 
-## 火舌：沿运动方向拉长的水滴形，外焰暗红 → 内焰橙 → 芯部亮黄白；
-## 长度随存活时间收缩，模拟火焰在空中消散（这才是「喷射」该有的样子）
+## 火焰喷雾：沿运动方向铺一条长雾带，而不是一颗颗独立的「小火箭」。
+##
+## 关键在于长度：火焰喷射器 0.10s 一发、弹速 300 → 相邻弹丸只隔 30px，
+## 而单条雾带长 56~82px，于是前后首尾自然叠在一起，整体读起来是**一条持续的火柱**。
+## 三层（外焰暗红 / 中焰橙 / 内焰亮黄白）各撒 7 团，越靠尾端越大越淡（扩散消散），
+## 再补几粒向上跳的火星 —— 火是往上走的，这一点让「喷雾」不再像「飞行物」。
 func _draw_flame(d: Vector2) -> void:
 	var t := clampf(life / maxf(0.01, base_life), 0.0, 1.0)
 	var perp := Vector2(-d.y, d.x)
-	var half := 3.0 + 3.8 * t
-	var tail := -d * (8.0 + 14.0 * t)
-	var tip := d * (5.0 + 7.0 * t)
-	draw_colored_polygon(PackedVector2Array([
-		tail, tail + perp * half * 0.62, tip, tail - perp * half * 0.62]),
-		Color(0.93, 0.29, 0.08, 0.40))
-	draw_colored_polygon(PackedVector2Array([
-		tail * 0.55, tip * 0.78 + perp * half * 0.34, tip, tip * 0.78 - perp * half * 0.34]),
-		Color(1.0, 0.62, 0.15, 0.70))
-	draw_circle(d * 1.5, 1.7 + 1.6 * t, Color(1.0, 0.95, 0.72, 0.92))
+	var span := 56.0 + 26.0 * t
+	var layers := [
+		{ "r": 13.5, "col": Color(0.86, 0.24, 0.06, 0.20) },
+		{ "r": 9.0, "col": Color(1.00, 0.55, 0.12, 0.38) },
+		{ "r": 5.2, "col": Color(1.00, 0.88, 0.48, 0.58) },
+	]
+	for li in layers.size():
+		var l: Dictionary = layers[li]
+		for i in 7:
+			var u := float(i) / 6.0                    # 0 = 尾端，1 = 前端
+			var wob := sin(float(i * 5 + li * 11) * 2.3) * 2.4
+			var p := -d * (span * (1.0 - u)) + perp * wob * (0.35 + 0.65 * (1.0 - u))
+			var rr: float = float(l.r) * (0.45 + 0.55 * u) * (0.55 + 0.45 * t)
+			var a: float = float(l.col.a) * (0.25 + 0.75 * u) * (0.45 + 0.55 * t)
+			draw_circle(p, rr, Color(l.col.r, l.col.g, l.col.b, a))
+	# 升腾的火星（逐帧重绘，配合 life 相位轻微跳动）
+	for k in 3:
+		var u2 := float(k) / 2.0
+		var jit := sin(float(k * 9) * 1.7 + life * 34.0) * 3.4
+		draw_circle(-d * (span * 0.42 * (1.0 - u2)) + perp * jit + Vector2(0.0, -3.0 - u2 * 5.0),
+			1.5, Color(1.0, 0.9, 0.62, 0.7 * t))
 
 ## 火箭弹：尖头弹体 + 尾翼 + 摆动尾焰（火箭筒打的是「弹」不是「球」）
 func _draw_rocket(d: Vector2) -> void:
