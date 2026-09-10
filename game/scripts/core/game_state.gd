@@ -33,6 +33,12 @@ var score := 0         # 无尽模式积分（击杀 / BOSS 击破 / 清波奖�
 var daily := false     # 每日挑战（当日日期做种子，全服同局：同角色/难度/商店/BOSS）
 var daily_date := ""   # 每日挑战绑定的日期（YYYY-MM-DD，跨天防护）
 
+## ---- 江湖奇遇事件卡（Phase 4）----
+var event_card_count := 0    # 本局已触发次数
+var event_card_cap := 4      # 本局上限（reset_run 时在 EVENT_CARD_MIN~MAX 间随机）
+var events_seen: Array = []  # 本局已出现过的卡 id（不重复抽，保证 10 张都能见到）
+var next_wave_elite := 0     # 下一波开始时额外生成的精英数量（事件风险选项写入）
+
 func add_score(v: int) -> void:
 	score = maxi(0, score + v)
 
@@ -72,6 +78,11 @@ func reset_run() -> void:
 	touch_move = Vector2.ZERO
 	mouse_move = Vector2.ZERO
 	score = 0   # endless 为本局开局选定/存档恢复的配置，不在重置之列
+	# 奇遇：每局上限随机 3~5 次，已见卡清空（与每日挑战/无尽无关，本局独立）
+	event_card_count = 0
+	event_card_cap = GameRng.range_i(Config.EVENT_CARD_MIN, Config.EVENT_CARD_MAX)
+	events_seen = []
+	next_wave_elite = 0
 
 func start_run() -> void:
 	reset_run()

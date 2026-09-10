@@ -14,6 +14,7 @@ const TABS := [
 	{ "id": "artifact", "name": "法宝", "ico": "🔮" },
 	{ "id": "upgrade", "name": "升级", "ico": "✨" },
 	{ "id": "enemy", "name": "敌人", "ico": "👾" },
+	{ "id": "event", "name": "奇遇", "ico": "🎴" },
 	{ "id": "achieve", "name": "成就", "ico": "🏆" },
 ]
 
@@ -27,11 +28,12 @@ const LOCK_HINTS := {
 	"artifact": "获得一次该法宝即可解锁（精英击杀 / BOSS 必掉 / 商店）",
 	"upgrade": "选择一次该升级即可解锁（升级三选一 / 商店）",
 	"enemy": "遭遇一次该敌人即可解锁（任意波次出现）",
+	"event": "在商店后偶遇一次该奇遇即可解锁（每局最多 3~5 次，10 张不重复）",
 }
 const CAT_COLORS := {
 	"status": Color("ef8354"), "reaction": Color("6fd6c8"), "weapon": Color("e8b84b"),
 	"item": Color("6fbf73"), "upgrade": Color("7aa2f7"), "enemy": Color("d9534f"),
-	"artifact": Color("c39bf5"),
+	"artifact": Color("c39bf5"), "event": Color("d8a1e8"),
 }
 
 ## 法宝触发时机的中文描述（与 Config.ARTIFACT_TRIGGERS 一一对应）
@@ -350,6 +352,11 @@ func _entries_for(tab_id: String) -> Array:
 				out.append({ "id": String(id), "ico": "👾",
 					"name": String(e.get("name", id)),
 					"accent": Color(String(e.get("color", "#d9534f"))) })
+		"event":
+			for ec in Config.EVENT_CARDS:
+				out.append({ "id": String(ec.get("id", "")), "ico": String(ec.get("ico", "🎴")),
+					"name": String(ec.get("title", "")),
+					"accent": Config.rarity_color(String(ec.get("rarity", "common"))) })
 		"achieve":
 			out.append({ "id": "_stats", "ico": "📊", "name": "统计总览",
 				"accent": Color("e8b84b") })
@@ -512,6 +519,7 @@ func _refresh(id: String) -> void:
 		"artifact": _detail_artifact(id)
 		"upgrade": _detail_upgrade(id)
 		"enemy": _detail_enemy(id)
+		"event": _detail_event(id)
 
 # ---------------- 成就 / 统计详情 ----------------
 
@@ -1101,6 +1109,51 @@ func _enemy_waves(id: String) -> String:
 	if Registry.enemies.has(id) and _enemy_is_boss(Registry.enemies[id]):
 		return "BOSS（创意工坊 / 特殊事件）"
 	return "特殊事件 / 创意工坊"
+
+## 奇遇详情（Phase 4）：地域 / 品阶 / 触发规则 / 三种抉择
+func _detail_event(id: String) -> void:
+	var ec := Config.event_card(id)
+	if ec.is_empty():
+		return
+	var accent: Color = Config.rarity_color(String(ec.get("rarity", "common")))
+	var theme_id := String(ec.get("theme", ""))
+	_detail.add_child(_header(String(ec.get("ico", "🎴")), String(ec.get("title", id)),
+		accent, Config.map_theme_name(theme_id)))
+	_detail.add_child(_section("触景"))
+	var d := Label.new()
+	d.text = String(ec.get("desc", ""))
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	d.add_theme_font_size_override("font_size", 13)
+	d.add_theme_color_override("font_color", Color("9aa3b2"))
+	d.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_detail.add_child(d)
+	_detail.add_child(_section("奇遇信息"))
+	_detail.add_child(_stat_row("地域", Config.map_theme_name(theme_id)))
+	_detail.add_child(_stat_row("品阶", Config.rarity_name(String(ec.get("rarity", "common")))))
+	_detail.add_child(_stat_row("触发", "商店关闭后 %d%% · 每局 %d~%d 次"
+		% [roundi(Config.EVENT_CARD_CHANCE * 100.0),
+		Config.EVENT_CARD_MIN, Config.EVENT_CARD_MAX]))
+	_detail.add_child(_section("三种抉择"))
+	var choices: Array = ec.get("choices", [])
+	for i in choices.size():
+		var ch: Dictionary = choices[i]
+		var row := VBoxContainer.new()
+		row.add_theme_constant_override("separation", 2)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var t := Label.new()
+		t.text = "%d. %s" % [i + 1, String(ch.get("text", ""))]
+		t.add_theme_font_size_override("font_size", 14)
+		t.add_theme_color_override("font_color", accent.lightened(0.15))
+		t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(t)
+		var h := Label.new()
+		h.text = "    " + String(ch.get("hint", ""))
+		h.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		h.add_theme_font_size_override("font_size", 12)
+		h.add_theme_color_override("font_color", Color("9aa3b2"))
+		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(h)
+		_detail.add_child(row)
 
 # ---------------- 通用小部件 ----------------
 

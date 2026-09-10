@@ -52,6 +52,11 @@ var _victory_menu: Control = null
 @onready var shop_ui: Control = $UI/Shop
 @onready var hud: Control = $UI/HUD
 
+## 江湖奇遇事件卡（Phase 4）：与 dev_panel / touch_controls 同一策略，代码 instantiate
+var event_card_ui: Control = null
+var _pending_wave_after_event := 0   # 事件选择结束后要启动的波次（0 = 无待处理）
+var event_cards_played := 0          # 测试观测：本局实际弹出的奇遇次数
+
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
 	for arg in OS.get_cmdline_user_args():
@@ -84,8 +89,14 @@ func _ready() -> void:
 	level_up_ui.player = player
 	shop_ui.player = player
 	shop_ui.wave_manager = wave_manager
+	shop_ui.main = self   # 商店关闭后由 main 决定是否先弹奇遇（见 shop_ui.next_wave）
 	hud.player = player
 	hud.wave_manager = wave_manager
+	# 江湖奇遇事件卡（Phase 4）
+	event_card_ui = preload("res://scenes/ui/event_card.tscn").instantiate()
+	$UI.add_child(event_card_ui)
+	event_card_ui.player = player
+	event_card_ui.chosen.connect(_on_event_choice)
 	# 开发者面板（F1 呼出）
 	var dev := preload("res://scenes/ui/dev_panel.tscn").instantiate()
 	$UI.add_child(dev)
@@ -169,6 +180,25 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_1: level_up_ui._choose(0); get_viewport().set_input_as_handled()
 				KEY_2: level_up_ui._choose(1); get_viewport().set_input_as_handled()
 				KEY_3: level_up_ui._choose(2); get_viewport().set_input_as_handled()
+	# ---- 奇遇事件卡期间：根节点直接处理输入（与升级 UI 同策略） ----
+	# 事件卡发生在商店关闭之后、下一波开始之前，此时 phase 仍是 SHOP（安全暂停态）
+	elif GameState.phase == GameState.Phase.SHOP and event_card_ui != null and event_card_ui.visible:
+		if event.is_action_pressed("ui_accept"):
+			var e_focus: Control = get_viewport().gui_get_focus_owner()
+			if e_focus is Button and not e_focus.disabled \
+					and e_focus.get_parent() == event_card_ui.get_node("Center/Box/Cards"):
+				event_card_ui._choose(e_focus.get_index())
+			else:
+				for i in event_card_ui.choice_count():
+					if event_card_ui.is_choice_enabled(i):
+						event_card_ui._choose(i)
+						break
+			get_viewport().set_input_as_handled()
+		elif event is InputEventKey and event.pressed and not event.echo:
+			match event.physical_keycode:
+				KEY_1: event_card_ui._choose(0); get_viewport().set_input_as_handled()
+				KEY_2: event_card_ui._choose(1); get_viewport().set_input_as_handled()
+				KEY_3: event_card_ui._choose(2); get_viewport().set_input_as_handled()
 	# ---- 临时调试：1-5 换武器 / 6 射手 / 7 BOSS（限定 PLAYING，避免与升级卡 1-3 冲突） ----
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if GameState.phase == GameState.Phase.PLAYING:
@@ -412,6 +442,150 @@ func _on_codex_closed() -> void:
 ## 每波开始：BOSS 波切激烈曲，普通波切战斗曲
 func _on_wave_started(w: int) -> void:
 	Music.play_track(Music.track_for_wave(w), 0.35)
+
+# ------------------------------------------------------------
+# 江湖奇遇事件卡（Phase 4）
+# 流程：商店关闭 → try_trigger_event_card()（30% / 每局 3~5 次上限）
+#       → 命中则弹卡（phase 保持 SHOP = 安全暂停态）
+#       → 玩家三选一 → _execute_event_effect() → 启动被推迟的下一波
+# 不新增 GameState.Phase：事件本就属于「商店后的间歇」，复用 SHOP 可避免
+# 动到存档/暂停/商店三处的阶段判断，风险最低
+# ------------------------------------------------------------
+
+## 商店关闭后调用（由 shop_ui.next_wave 触发）。
+## 返回 true = 已弹出事件卡，调用方不要再启动下一波（选择结束后由 main 启动）
+func try_trigger_event_card(next_wave: int) -> bool:
+	if event_card_ui == null:
+		return false
+	if GameState.event_card_count >= GameState.event_card_cap:
+		return false
+	if not GameRng.chance(Config.EVENT_CARD_CHANCE):
+		return false
+	var pool: Array = Config.event_card_pool(GameState.events_seen, wave_manager.wave)
+	if pool.is_empty():
+		return false
+	var card: Dictionary = GameRng.weighted_pick(pool)
+	if card.is_empty():
+		return false
+	_pending_wave_after_event = next_wave
+	GameState.event_card_count += 1
+	GameState.events_seen.append(String(card.get("id", "")))
+	event_cards_played += 1
+	event_card_ui.open(card)
+	Sfx.play("ui_select")
+	return true
+
+## 玩家做出选择：执行效果 → 图鉴/统计/信号 → 横幅 → 启动下一波
+func _on_event_choice(card_id: String, choice_index: int) -> void:
+	var card: Dictionary = Config.event_card(card_id)
+	var choices: Array = card.get("choices", [])
+	if choice_index < 0 or choice_index >= choices.size():
+		_finish_event_flow()
+		return
+	var ch: Dictionary = choices[choice_index]
+	_execute_event_effect(ch.get("effect", {}))
+	CodexData.add_stat("events")
+	CodexData.unlock("event", card_id)
+	EventBus.event_card_triggered.emit(card_id, "%s:%d" % [card_id, choice_index])
+	EventBus.banner_requested.emit("奇遇 · %s" % String(card.get("title", "")),
+		"%s · %s" % [String(ch.get("text", "")), String(ch.get("hint", ""))], 2.6)
+	_finish_event_flow()
+
+## 事件流程收尾：启动被推迟的那一波
+func _finish_event_flow() -> void:
+	var w := _pending_wave_after_event
+	_pending_wave_after_event = 0
+	if w > 0:
+		wave_manager.start_wave(w)
+
+## 执行事件选项效果。载荷键定义见 Config.EVENT_CARDS 头部注释；
+## 未知键一律忽略（mod 内容前向兼容：新键在旧版本上不会炸）
+func _execute_event_effect(effect: Dictionary) -> void:
+	# ---- 前置消耗（UI 已置灰付不起的选项，这里只做二次保险）----
+	var cost := int(effect.get("cost_materials", 0))
+	if cost > 0:
+		GameState.add_materials(-mini(cost, GameState.materials))
+	var hp_pct := float(effect.get("hp_pct_cost", 0.0))
+	if hp_pct > 0.0:
+		# 至少保留 1 点生命：代价型选项不该变成自杀键
+		var pay: float = minf(maxf(0.0, player.hp - 1.0), float(player.stats.max_hp) * hp_pct)
+		if pay > 0.0:
+			player.hp -= pay
+			FloatingText.spawn(self, player.global_position + Vector2(0.0, -26.0),
+				"-%d" % roundi(pay), Color("ff8a80"))
+	# ---- 属性增益（与升级共用同一套 数据驱动 effects）----
+	if effect.has("effects"):
+		player.apply_effects(effect.get("effects", {}))
+	# ---- 资源 ----
+	var mats := int(effect.get("grant_materials", 0))
+	if mats > 0:
+		GameState.add_materials(mats)
+	# ---- 随机道具（按品阶）----
+	var ir := String(effect.get("grant_item_rarity", ""))
+	if ir != "":
+		_grant_random_item(ir)
+	# ---- 随机武器 ----
+	if bool(effect.get("grant_weapon", false)):
+		_grant_random_weapon()
+	# ---- 随机法宝 ----
+	if bool(effect.get("grant_relic", false)):
+		_grant_random_relic()
+	# ---- 免费升级（下波开场补弹升级三选一）----
+	var free_up := int(effect.get("free_upgrade", 0))
+	if free_up > 0:
+		GameState.level_queue += free_up
+	# ---- 下波额外精英（风险代价）----
+	var elites := int(effect.get("next_wave_elite", 0))
+	if elites > 0:
+		GameState.next_wave_elite += elites
+
+## 按品阶随机获得一件道具；该品阶无内容时退回全量加权池（mod 内容变动时不吞奖励）
+func _grant_random_item(rarity: String) -> void:
+	var pool: Array = []
+	for it in Registry.item_list():
+		if String(it.get("rarity", "common")) == rarity:
+			pool.append({ "item": it, "w": 1.0 })
+	if pool.is_empty():
+		for it2 in Registry.item_list():
+			pool.append({ "item": it2,
+				"w": Config.rarity_weight(String(it2.get("rarity", "common")), wave_manager.wave) })
+	if pool.is_empty():
+		return
+	var picked: Dictionary = GameRng.weighted_pick(pool)
+	var id := String(picked.get("id", ""))
+	if id == "":
+		return
+	player.apply_item(id)
+	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+		"获得 %s %s" % [String(picked.get("ico", "")), String(picked.get("name", id))],
+		Color("ffd24a"))
+
+## 随机获得一把武器；武器槽已满时转材料补偿（别让奖励凭空消失）
+func _grant_random_weapon() -> void:
+	if player.weapons.size() >= MetaProgress.weapon_slots():
+		var comp := 90
+		GameState.add_materials(comp)
+		FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+			"武器槽已满 · +%d ◆" % comp, Color("ffd24a"))
+		return
+	var wid := String(GameRng.weighted_pick(Registry.shop_weapon_pool()))
+	if wid == "":
+		return
+	player.weapons.append({ "type": wid, "cd": 0.1 })
+	var cfg: Dictionary = Registry.weapons.get(wid, {})
+	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
+		"获得 %s %s" % [String(cfg.get("ico", "")), String(cfg.get("name", wid))], Color("ffd24a"))
+
+## 随机获得一件未持有法宝；15 件集齐后转等比材料补偿
+func _grant_random_relic() -> void:
+	var pool := Registry.artifact_pool(player.artifacts_owned, wave_manager.wave)
+	if pool.is_empty():
+		GameState.add_materials(Config.ARTIFACT_DUP_MATERIALS)
+		return
+	var aid := String(GameRng.weighted_pick(pool))
+	if aid == "":
+		return
+	player.apply_artifact(aid)   # 内部发 artifact_acquired → 队列化 toast 展示详情
 
 func _exit_tree() -> void:
 	Engine.time_scale = 1.0   # 双保险：切场景/测试结束不残留慢动作

@@ -170,22 +170,32 @@ func status_sources() -> Dictionary:
 	return out
 
 ## 应用升级效果（数据驱动：effects 键 = stats 键，创意工坊自定义升级直接生效）
-## 特例：heal_flat = 最大生命+立即回复同值；heal_pct = 立即回复最大生命百分比
 func apply_upgrade(id: String) -> void:
 	var u: Dictionary = Registry.upgrades.get(id, {})
 	if u.is_empty():
 		return
 	CodexData.unlock("upgrade", id)
-	for k in u.get("effects", {}):
-		var v: float = float(u.effects[k])
-		match k:
+	apply_effects(u.get("effects", {}))
+
+## 应用一组属性效果（数据驱动：键 = stats 键）
+## 特例：heal_flat = 最大生命 + 立即回复同值；heal_pct = 立即回复最大生命百分比
+## 升级 / 事件卡奖励共用此入口，新增效果只需扩字典，不必改调用方
+func apply_effects(effects: Dictionary) -> void:
+	if effects.is_empty():
+		return
+	for k in effects:
+		var raw: Variant = effects[k]
+		if typeof(raw) != TYPE_INT and typeof(raw) != TYPE_FLOAT:
+			continue
+		var v := float(raw)
+		match String(k):
 			"heal_flat":
 				stats.max_hp += v
 				hp = minf(stats.max_hp, hp + v)
 			"heal_pct":
 				hp = minf(stats.max_hp, hp + stats.max_hp * v)
 			_:
-				stats[k] = stats.get(k, 0.0) + v
+				stats[k] = float(stats.get(k, 0.0)) + v
 	_sanitize_stats()
 	queue_redraw()   # 拾取范围圈等自绘跟随刷新
 

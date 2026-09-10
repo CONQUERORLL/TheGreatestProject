@@ -24,6 +24,9 @@ signal artifact_acquired(artifact_id: String)
 signal codex_unlocked(category: String, id: String)
 signal achievement_unlocked(id: String)
 
+## 江湖奇遇事件卡：玩家做出选择后广播（图鉴解锁 / 统计 / 后续扩展的统一出口）
+signal event_card_triggered(card_id: String, choice_id: String)
+
 signal player_damaged(amount: float)
 signal player_died
 

@@ -7,10 +7,10 @@ extends Node
 
 const SAVE_PATH := "user://codex.json"
 const CATEGORIES := ["status", "reaction", "weapon", "item", "artifact",
-	"upgrade", "enemy"]
+	"upgrade", "enemy", "event"]
 const CAT_NAMES := {
 	"status": "状态", "reaction": "五行", "weapon": "武器", "item": "道具",
-	"artifact": "法宝", "upgrade": "升级", "enemy": "敌人",
+	"artifact": "法宝", "upgrade": "升级", "enemy": "敌人", "event": "奇遇",
 }
 
 ## 图鉴首次解锁奖励（土豆精华）：收集越多，局外天赋成型越快
@@ -20,7 +20,7 @@ const CAT_NAMES := {
 ## （冒烟测试限定每类奖励在 [4, 7]，超出会被判为失衡）
 const UNLOCK_REWARDS := {
 	"status": 4, "reaction": 7, "weapon": 7, "item": 5, "artifact": 6,
-	"upgrade": 4, "enemy": 6,
+	"upgrade": 4, "enemy": 6, "event": 6,
 }
 
 ## 成就定义：stat 计数器达到 target 即达成（desc 同时用于图鉴详情）
@@ -159,6 +159,7 @@ func total_entries(cat: String) -> int:
 		"artifact": return Registry.artifacts.size()
 		"upgrade": return Registry.upgrades.size()
 		"enemy": return Registry.enemies.size()
+		"event": return Config.EVENT_CARDS.size()
 		"achieve": return ACHIEVEMENTS.size()
 	return 0
 
@@ -171,6 +172,7 @@ func display_name(cat: String, id: String) -> String:
 		"artifact": return String(Registry.get_artifact(id).get("name", id))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("name", id))
 		"enemy": return String(Registry.enemies.get(id, {}).get("name", id))
+		"event": return String(Config.event_card(id).get("title", id))
 		"achieve": return String(ACHIEVEMENTS.get(id, {}).get("name", id))
 	return id
 
@@ -183,6 +185,7 @@ func display_icon(cat: String, id: String) -> String:
 		"artifact": return String(Registry.get_artifact(id).get("ico", "🔮"))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("ico", "✨"))
 		"enemy": return "👾"
+		"event": return String(Config.event_card(id).get("ico", "🎴"))
 		"achieve": return String(ACHIEVEMENTS.get(id, {}).get("ico", "🏆"))
 	return "❓"
 

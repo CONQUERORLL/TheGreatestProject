@@ -7,6 +7,7 @@ extends Control
 
 var player  # characters/player.gd 引用，由 main 注入
 var wave_manager: Node   # systems/wave_manager.gd 引用，由 main 注入
+var main: Node           # scripts/main.gd 引用（商店关闭后询问是否先弹江湖奇遇）
 var goods: Array = []    # 商品 [{kind, wtype/id, ico, name, desc, rarity, base_price, sold, locked}]
 
 var _reroll_cost := 0
@@ -645,11 +646,16 @@ func _flush_save() -> void:
 		EventBus.banner_requested.emit("存档失败", "进度未写入，请检查磁盘空间", 2.0)
 
 ## 下一波：强制落盘后关闭商店并进入 intro。
+## 江湖奇遇（Phase 4）：30% 概率先弹事件卡；命中时由 main 在三选一结束后
+## 再启动这一波（本函数直接 return，不重复推进）
 func next_wave() -> void:
 	_flush_save()
 	visible = false
 	goods = []
-	wave_manager.start_wave(_wave + 1)
+	var target := _wave + 1
+	if main != null and main.try_trigger_event_card(target):
+		return
+	wave_manager.start_wave(target)
 
 func _grab_first_focus() -> void:
 	# 默认焦点给第一张可购买的卡片按钮，供手柄直接操作

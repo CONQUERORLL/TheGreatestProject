@@ -15,6 +15,8 @@ var _last_ended := 0
 var _mats_at_end := -1      # 第 1 波收波结算后的材料数（含自动回收）
 var _xp_at_end := -1        # 第 1 波收波结算后的经验/等级收益
 var _failed := false        # 失败标记：await 协程内 _fail 后外层不再继续输出 PASS
+var _event_suppress_count := 0   # 奇遇抑制：原 event_card_count
+var _event_suppress_cap := 0     # 奇遇抑制：原 event_card_cap
 
 const TEST_SAVE_ROOT := "user://tests/smoke_run"
 const TEST_CODEX_PATH := "user://tests/codex_data.json"
@@ -271,7 +273,9 @@ func _check_wave() -> void:
 			or not get_tree().get_nodes_in_group("enemy_bullets").is_empty():
 		_fail("波末未清理双方弹丸")
 		return
+	_suppress_event_cards()
 	shop.next_wave()
+	_restore_event_cards()
 	if wm.wave != 2 or GameState.phase != GameState.Phase.INTRO:
 		_fail("商店下一波未生效（wave=%d phase=%d）" % [wm.wave, GameState.phase])
 		return
@@ -507,7 +511,9 @@ func _check_shop() -> void:
 		_fail("刷新后商店焦点丢失（手柄断导航）")
 		return
 	# 下一波
+	_suppress_event_cards()
 	shop.next_wave()
+	_restore_event_cards()
 	var wm: Node = _main.get_node("WaveManager")
 	print("SMOKE: next wave=%d phase=%d" % [wm.wave, GameState.phase])
 	if wm.wave != 3 or GameState.phase != GameState.Phase.INTRO:
@@ -744,6 +750,7 @@ func _check_items() -> void:
 	_check_reactions()
 	_check_phase2_content()
 	_check_phase3_artifacts()
+	_check_event_cards()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -2705,6 +2712,221 @@ func _check_phase3_artifacts() -> void:
 	GameState.set_phase(phase_before)
 	print("SMOKE: Phase 3 artifacts OK")
 
+## 江湖奇遇事件卡（Phase 4）：数据完整性 / 抽取池 / UI 可负担性 / 效果执行 / 图鉴 / 触发门控
+## 注意：不在这里真正走 shop_ui.next_wave() → start_wave()，否则会把当前波次重置，
+## 后续「触控驱动移动」「暂停面板」等用例会因阶段退回 INTRO 而误报。
+## 波次推迟的契约由 _suppress_event_cards + _pending_wave_after_event 归零共同验证。
+func _check_event_cards() -> void:
+	if Config.EVENT_CARDS.size() != 10:
+		_fail("奇遇事件卡数量不对（%d，应为 10）" % Config.EVENT_CARDS.size())
+		return
+	var choice_total := 0
+	var theme_seen := {}
+	for ec in Config.EVENT_CARDS:
+		var cid := String(ec.get("id", ""))
+		if cid == "" or String(ec.get("title", "")) == "" or String(ec.get("desc", "")) == "":
+			_fail("奇遇卡缺少 id/title/desc（%s）" % cid)
+			return
+		var theme_id := String(ec.get("theme", ""))
+		if not Config.MAP_THEMES.has(theme_id):
+			_fail("奇遇卡 theme 非法（%s → %s）" % [cid, theme_id])
+			return
+		theme_seen[theme_id] = true
+		if not Config.RARITIES.has(String(ec.get("rarity", ""))):
+			_fail("奇遇卡 rarity 非法（%s → %s）" % [cid, String(ec.get("rarity", ""))])
+			return
+		var cs: Array = ec.get("choices", [])
+		if cs.size() != 3:
+			_fail("奇遇卡选项数不是 3（%s → %d）" % [cid, cs.size()])
+			return
+		for ch in cs:
+			if String(ch.get("text", "")) == "" or String(ch.get("hint", "")) == "":
+				_fail("奇遇选项缺少 text/hint（%s）" % cid)
+				return
+			if typeof(ch.get("effect")) != TYPE_DICTIONARY:
+				_fail("奇遇选项 effect 不是字典（%s）" % cid)
+				return
+		choice_total += cs.size()
+	if theme_seen.size() != Config.MAP_THEMES.size():
+		_fail("奇遇卡未覆盖全部地图主题（%d/%d）" % [theme_seen.size(), Config.MAP_THEMES.size()])
+		return
+	# 每张卡至少有一个无前置消耗的选项：资源枯竭时全部禁用会让玩家卡在事件里
+	for ec2 in Config.EVENT_CARDS:
+		var free_ok := false
+		for ch2 in ec2.get("choices", []):
+			var ef: Dictionary = ch2.get("effect", {})
+			if int(ef.get("cost_materials", 0)) <= 0 and float(ef.get("hp_pct_cost", 0.0)) <= 0.0:
+				free_ok = true
+				break
+		if not free_ok:
+			_fail("奇遇卡没有免费选项，资源不足时会卡死（%s）" % String(ec2.get("id", "")))
+			return
+	print("SMOKE: event cards data OK (%d cards / %d choices)"
+		% [Config.EVENT_CARDS.size(), choice_total])
+	# ---- 抽取池：10 张全覆盖，已见的被排除 ----
+	var pool_all: Array = Config.event_card_pool([], 1)
+	if pool_all.size() != Config.EVENT_CARDS.size():
+		_fail("奇遇抽取池未覆盖全部卡（%d）" % pool_all.size())
+		return
+	var first_id := String(Config.EVENT_CARDS[0].get("id", ""))
+	if Config.event_card_pool([first_id], 1).size() != Config.EVENT_CARDS.size() - 1:
+		_fail("奇遇抽取池未排除已出现的卡")
+		return
+	var pulled: Dictionary = GameRng.weighted_pick(pool_all)
+	if pulled.is_empty() or String(pulled.get("id", "")) == "":
+		_fail("奇遇加权抽取未返回合法卡片")
+		return
+	# ---- 概率与每局上限（验证点：30% + 3~5 次）----
+	if not is_equal_approx(Config.EVENT_CARD_CHANCE, 0.30):
+		_fail("奇遇触发概率不是 30%%（当前 %.2f）" % Config.EVENT_CARD_CHANCE)
+		return
+	if Config.EVENT_CARD_MIN != 3 or Config.EVENT_CARD_MAX != 5:
+		_fail("奇遇每局上限区间不是 3~5（%d~%d）"
+			% [Config.EVENT_CARD_MIN, Config.EVENT_CARD_MAX])
+		return
+	if GameState.event_card_cap < Config.EVENT_CARD_MIN \
+			or GameState.event_card_cap > Config.EVENT_CARD_MAX:
+		_fail("奇遇每局上限未落在区间内（%d）" % GameState.event_card_cap)
+		return
+	# ---- 触发门控：次数顶满应当拒绝 ----
+	var cap_before: int = GameState.event_card_cap
+	var cnt_before: int = GameState.event_card_count
+	GameState.event_card_count = GameState.event_card_cap
+	if _main.try_trigger_event_card(2):
+		_fail("奇遇次数已达上限仍然触发")
+		return
+	GameState.event_card_count = cnt_before
+	# ---- UI：三选一构建 + 代价类选项的可负担性 ----
+	var ui: Control = _main.event_card_ui
+	if ui == null:
+		_fail("主场景未挂载奇遇事件卡 UI")
+		return
+	var paid_card := Config.event_card("ev_ghost_lantern")   # 选项 0 = 消耗 60 ◆
+	if paid_card.is_empty():
+		_fail("找不到含代价选项的奇遇卡 ev_ghost_lantern")
+		return
+	var mats_saved: int = GameState.materials
+	var hp_saved: float = _main.get_node("Player").hp
+	GameState.set_materials(0)
+	ui.open(paid_card)
+	if ui.choice_count() != 3:
+		_fail("奇遇 UI 未构建 3 个选项（%d）" % ui.choice_count())
+		return
+	if ui.is_choice_enabled(0):
+		_fail("材料不足时消耗型选项应禁用")
+		return
+	if not ui.is_choice_enabled(1):
+		_fail("免费选项不应被禁用")
+		return
+	GameState.set_materials(1000)
+	ui.open(paid_card)
+	if not ui.is_choice_enabled(0):
+		_fail("材料充足时消耗型选项应可选")
+		return
+	ui.visible = false
+	GameState.set_materials(mats_saved)
+	# ---- 效果执行：逐个载荷键 ----
+	var p_ev: Node2D = _main.get_node("Player")
+	var m0: int = GameState.materials
+	_main._execute_event_effect({ "grant_materials": 55 })
+	if GameState.materials != m0 + 55:
+		_fail("奇遇 grant_materials 未生效（%d → %d）" % [m0, GameState.materials])
+		return
+	m0 = GameState.materials
+	_main._execute_event_effect({ "cost_materials": 30 })
+	if GameState.materials != m0 - 30:
+		_fail("奇遇 cost_materials 未扣费（%d → %d）" % [m0, GameState.materials])
+		return
+	var dmg0: float = float(p_ev.stats.dmg_mult)
+	_main._execute_event_effect({ "effects": { "dmg_mult": 0.18 } })
+	if not is_equal_approx(float(p_ev.stats.dmg_mult), dmg0 + 0.18):
+		_fail("奇遇属性增益未生效（%.2f → %.2f）" % [dmg0, float(p_ev.stats.dmg_mult)])
+		return
+	# 生命代价必须保底 1 点：代价型选项不能变成自杀键
+	p_ev.hp = 50.0
+	_main._execute_event_effect({ "hp_pct_cost": 0.90 })
+	if _main.get_node("Player").hp < 1.0:
+		_fail("奇遇生命代价把玩家扣到 %.1f（应保底 1）" % _main.get_node("Player").hp)
+		return
+	# 按品阶发道具
+	var item_total := 0
+	for k_item in p_ev.items_owned:
+		item_total += int(p_ev.items_owned[k_item])
+	_main._execute_event_effect({ "grant_item_rarity": "epic" })
+	var item_after := 0
+	for k_item2 in p_ev.items_owned:
+		item_after += int(p_ev.items_owned[k_item2])
+	if item_after != item_total + 1:
+		_fail("奇遇 grant_item_rarity 未按品阶发放（%d → %d）" % [item_total, item_after])
+		return
+	# 下波额外精英 + 免费升级（立即还原，避免污染后续升级 UI 与波次流程）
+	var elite0: int = GameState.next_wave_elite
+	_main._execute_event_effect({ "next_wave_elite": 2 })
+	if GameState.next_wave_elite != elite0 + 2:
+		_fail("奇遇 next_wave_elite 未累计（%d）" % GameState.next_wave_elite)
+		return
+	GameState.next_wave_elite = elite0
+	var q0: int = GameState.level_queue
+	_main._execute_event_effect({ "free_upgrade": 1 })
+	if GameState.level_queue != q0 + 1:
+		_fail("奇遇 free_upgrade 未入队（%d）" % GameState.level_queue)
+		return
+	GameState.level_queue = q0
+	print("SMOKE: event card effects OK")
+	# ---- 图鉴：event 分类 + 10 条目 + 解锁奖励与幂等 ----
+	if not CodexData.CATEGORIES.has("event"):
+		_fail("图鉴缺少 event 分类")
+		return
+	if CodexData.total_entries("event") != Config.EVENT_CARDS.size():
+		_fail("图鉴奇遇条目数不对（%d）" % CodexData.total_entries("event"))
+		return
+	var ev_cat: String = "event"
+	var ev_ess0: int = MetaProgress.essence
+	if not CodexData.unlock(ev_cat, "ev_blood_moon"):
+		_fail("图鉴奇遇解锁未生效")
+		return
+	if MetaProgress.essence <= ev_ess0:
+		_fail("奇遇图鉴解锁未发放精华（%d → %d）" % [ev_ess0, MetaProgress.essence])
+		return
+	if CodexData.unlock(ev_cat, "ev_blood_moon"):
+		_fail("重复解锁奇遇未保持幂等")
+		return
+	# ---- 完整链路：open → 三选一 → 效果 + 信号 + pending 消费 ----
+	var sig_hits: Array = []
+	var probe := func(cid2: String, choice2: String) -> void:
+		sig_hits.append([cid2, choice2])
+	EventBus.event_card_triggered.connect(probe)
+	var chain_card := Config.event_card("ev_bamboo_spring")   # 选项 2 = 获得 55 ◆
+	_main._pending_wave_after_event = 0   # 置零：收尾不应启动任何波次，避免扰动后续用例
+	GameState.set_materials(0)
+	ui.open(chain_card)
+	ui._choose(2)
+	EventBus.event_card_triggered.disconnect(probe)
+	if ui.visible:
+		_fail("奇遇选择后 UI 未关闭")
+		return
+	if sig_hits.size() != 1 or String(sig_hits[0][0]) != "ev_bamboo_spring":
+		_fail("event_card_triggered 未按契约广播（%s）" % str(sig_hits))
+		return
+	if GameState.materials != 55:
+		_fail("奇遇选项效果未执行（材料 %d，应为 55）" % GameState.materials)
+		return
+	if not CodexData.is_unlocked("event", "ev_bamboo_spring"):
+		_fail("奇遇触发后未登记图鉴")
+		return
+	if _main._pending_wave_after_event != 0:
+		_fail("奇遇收尾未消费 pending wave（%d）" % _main._pending_wave_after_event)
+		return
+	if CodexData.stat("events") <= 0:
+		_fail("奇遇未累计统计 events")
+		return
+	# ---- 还原现场，避免污染后续用例 ----
+	GameState.set_materials(mats_saved)
+	GameState.event_card_cap = cap_before
+	GameState.event_card_count = cnt_before
+	p_ev.hp = minf(hp_saved, float(p_ev.stats.max_hp))
+	print("SMOKE: event cards OK")
+
 ## 递归找第一个文本包含 frag 的 Label，返回其完整文本（找不到返回空串）
 func _find_label_text(node: Node, frag: String) -> String:
 	if node is Label and String((node as Label).text).contains(frag):
@@ -2974,6 +3196,26 @@ func _node_text(node: Node) -> String:
 	for c in node.get_children():
 		out += _node_text(c)
 	return out
+
+## 抑制江湖奇遇触发：奇遇以 30% 概率把「商店 → 下一波」推迟到三选一之后，
+## 会让波次流向断言变成抽奖（70% 通过）。这里受控地把本局次数顶满来关闭触发，
+## 奇遇自身的行为在 _check_event_cards() 中用受控方式单独验证。
+func _suppress_event_cards() -> void:
+	_event_suppress_count = GameState.event_card_count
+	_event_suppress_cap = GameState.event_card_cap
+	GameState.event_card_count = GameState.event_card_cap
+
+func _restore_event_cards() -> void:
+	GameState.event_card_count = _event_suppress_count
+	GameState.event_card_cap = _event_suppress_cap
+
+## 选中第一个可负担的奇遇选项（代价类选项资源不足时是禁用态，直接 _choose(0) 会空转）
+func _pick_enabled_event_choice() -> bool:
+	for i in _main.event_card_ui.choice_count():
+		if _main.event_card_ui.is_choice_enabled(i):
+			_main.event_card_ui._choose(i)
+			return true
+	return false
 
 func _fail(reason: String) -> void:
 	if _failed:

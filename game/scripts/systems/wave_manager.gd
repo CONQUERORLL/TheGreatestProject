@@ -68,6 +68,14 @@ func start_wave(n: int) -> void:
 		EventBus.banner_requested.emit("第 %d 波%s" % [wave,
 				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱"],
 			"武器会自动攻击，专心走位", 2.2)
+	# 江湖奇遇的风险代价（如「挥手驱赶」「跃龙门」）：上一波约定「下一波多 N 个精英」，
+	# 在这里兑现并清零。刻意放在横幅之后、wave_started 之前——精英立刻入场，
+	# 但 intro 阶段（2.2s）玩家尚有反应时间
+	if GameState.next_wave_elite > 0:
+		var extra: int = GameState.next_wave_elite
+		GameState.next_wave_elite = 0
+		for _i in extra:
+			spawn(String(GameRng.weighted_pick(Config.ELITE_POOL)), true)
 	EventBus.wave_started.emit(wave)
 
 ## BOSS 轮换：从 BOSS_POOL 按当前波次确定性选取（同种子同波次同 BOSS，

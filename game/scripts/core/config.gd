@@ -513,6 +513,169 @@ const ARTIFACTS := [
 			"stack_reset": "run" }, "price": 300, "shop_weight": 1.0 },
 ]
 
+## ============================================================
+## 江湖奇遇事件卡（Phase 4）—— 商店后的三选一叙事决策
+## 触发：每波商店关闭后 30% 概率，每局上限随局随机 3~5 次
+## 字段说明：
+##   theme   所属地域主题（bamboo/temple/nether），与 Phase 5 地图主题呼应
+##   rarity  稀有度，仅用于抽取权重与卡面配色（复用 RARITY_*）
+##   choices 三选一，每项 { text, hint, effect }
+## choice.effect 载荷约定（由 main._execute_event_effect 按存在的键分派）：
+##   cost_materials  前置消耗；材料不足时该选项禁用（不出现在可选状态）
+##   hp_pct_cost     前置消耗：按最大生命百分比扣血（可能致死，不致死时保底 1 点）
+##   effects         属性增益字典，键 = player.stats 键（走 player.apply_effects）
+##   grant_materials 直接获得材料
+##   grant_item_rarity  随机获得该品阶道具（"epic"/"mythic"/"legendary"）
+##   grant_weapon    随机获得一把武器（占用武器槽，槽满则转材料补偿）
+##   grant_relic     随机获得一件未持有法宝
+##   free_upgrade    免费升级次数（进 GameState.level_queue，下波开场补弹）
+##   next_wave_elite 下一波开始时额外生成的精英数量（风险选项）
+## ============================================================
+const EVENT_CARD_CHANCE := 0.30        # 商店关闭后触发概率
+const EVENT_CARD_MIN := 3              # 每局触发次数下限
+const EVENT_CARD_MAX := 5              # 每局触发次数上限
+
+const EVENT_CARDS := [
+	{ "id": "ev_bamboo_spring", "title": "竹海清泉", "ico": "🎋", "theme": "bamboo", "rarity": "common",
+		"desc": "林间一泓清泉，水面浮着薄薄竹叶。饮下它，能洗去一路风尘。",
+		"choices": [
+			{ "text": "掬水而饮", "hint": "回复 30% 生命", "effect": { "effects": { "heal_pct": 0.30 } } },
+			{ "text": "涤荡经脉", "hint": "最大生命 +22", "effect": { "effects": { "max_hp": 22.0 } } },
+			{ "text": "取竹而去", "hint": "获得 55 ◆", "effect": { "grant_materials": 55 } },
+		] },
+	{ "id": "ev_old_monk", "title": "古刹老僧", "ico": "🪷", "theme": "temple", "rarity": "common",
+		"desc": "破败古刹只剩一位老僧，他不看你，只看着你身后的路。",
+		"choices": [
+			{ "text": "静听禅音", "hint": "免费升级一次", "effect": { "free_upgrade": 1 } },
+			{ "text": "布施香火", "hint": "消耗 80 ◆ · 随机法宝", "effect": { "cost_materials": 80, "grant_relic": true } },
+			{ "text": "合十而去", "hint": "回复 15% 生命 · 获得 40 ◆", "effect": { "effects": { "heal_pct": 0.15 }, "grant_materials": 40 } },
+		] },
+	{ "id": "ev_ghost_lantern", "title": "幽冥鬼灯", "ico": "🏮", "theme": "nether", "rarity": "rare",
+		"desc": "一盏青灯悬在岔路口，灯芯是冷的，火是活的。",
+		"choices": [
+			{ "text": "续上灯油", "hint": "消耗 60 ◆ · 伤害 +18%", "effect": { "cost_materials": 60, "effects": { "dmg_mult": 0.18 } } },
+			{ "text": "一口吹灭", "hint": "回复 40% 生命", "effect": { "effects": { "heal_pct": 0.40 } } },
+			{ "text": "提灯照路", "hint": "暴击率 +8%", "effect": { "effects": { "crit_ch": 0.08 } } },
+		] },
+	{ "id": "ev_sword_grave", "title": "剑冢遗藏", "ico": "🗡", "theme": "temple", "rarity": "rare",
+		"desc": "万剑插于荒丘，剑锋皆朝内。最中央那一柄，还在轻轻震颤。",
+		"choices": [
+			{ "text": "拔剑出鞘", "hint": "随机获得一把武器", "effect": { "grant_weapon": true } },
+			{ "text": "只取剑穗", "hint": "暴击伤害 +35%", "effect": { "effects": { "crit_mult": 0.35 } } },
+			{ "text": "以血祭剑", "hint": "消耗 15% 生命 · 伤害 +22%", "effect": { "hp_pct_cost": 0.15, "effects": { "dmg_mult": 0.22 } } },
+		] },
+	{ "id": "ev_fox_spirit", "title": "白狐讨封", "ico": "🦊", "theme": "bamboo", "rarity": "rare",
+		"desc": "白狐立起身子，学人作揖：「你看我，像人还是像仙？」",
+		"choices": [
+			{ "text": "封它作仙", "hint": "收获率 +35%", "effect": { "effects": { "harvesting": 0.35 } } },
+			{ "text": "讨要好处", "hint": "获得 110 ◆", "effect": { "grant_materials": 110 } },
+			{ "text": "挥手驱赶", "hint": "伤害 +20% · 下波多 2 精英", "effect": { "effects": { "dmg_mult": 0.20 }, "next_wave_elite": 2 } },
+		] },
+	{ "id": "ev_iron_abbot", "title": "铁臂武僧", "ico": "🥋", "theme": "temple", "rarity": "epic",
+		"desc": "武僧双臂如铁，在石阶上等你开口。他不出招，只等你先动。",
+		"choices": [
+			{ "text": "与他对练", "hint": "护甲 +4 · 最大生命 +15", "effect": { "effects": { "armor": 4.0, "max_hp": 15.0 } } },
+			{ "text": "切磋招式", "hint": "攻速 +15% · 移速 +6%", "effect": { "effects": { "as_mult": 0.15, "speed_mult": 0.06 } } },
+			{ "text": "供奉兵器", "hint": "消耗 140 ◆ · 随机史诗道具", "effect": { "cost_materials": 140, "grant_item_rarity": "epic" } },
+		] },
+	{ "id": "ev_nether_market", "title": "鬼市交易", "ico": "👺", "theme": "nether", "rarity": "epic",
+		"desc": "鬼市只在子时开张，摊主不收钱，只收你身上还热着的东西。",
+		"choices": [
+			{ "text": "买下无名之物", "hint": "消耗 180 ◆ · 随机法宝", "effect": { "cost_materials": 180, "grant_relic": true } },
+			{ "text": "典当一块血肉", "hint": "消耗 25% 生命 · 获得 240 ◆", "effect": { "hp_pct_cost": 0.25, "grant_materials": 240 } },
+			{ "text": "转身离开", "hint": "拾取范围 +60", "effect": { "effects": { "pickup_range": 60.0 } } },
+		] },
+	{ "id": "ev_bamboo_spirit", "title": "竹灵赐福", "ico": "🌱", "theme": "bamboo", "rarity": "epic",
+		"desc": "竹节裂开，走出一位只有半尺高的竹灵，捧着一枚沉甸甸的竹实。",
+		"choices": [
+			{ "text": "收下竹实", "hint": "回复 +1.6/秒 · 最大生命 +20", "effect": { "effects": { "regen": 1.6, "max_hp": 20.0 } } },
+			{ "text": "求一段灵竹", "hint": "随机获得一把武器", "effect": { "grant_weapon": true } },
+			{ "text": "求一场富贵", "hint": "获得 150 ◆", "effect": { "grant_materials": 150 } },
+		] },
+	{ "id": "ev_blood_moon", "title": "血月当空", "ico": "🌑", "theme": "nether", "rarity": "legendary",
+		"desc": "月亮红了。你听见自己的心跳，比平时快了一倍。",
+		"choices": [
+			{ "text": "沐浴血光", "hint": "消耗 30% 生命 · 伤害 +45%", "effect": { "hp_pct_cost": 0.30, "effects": { "dmg_mult": 0.45 } } },
+			{ "text": "持咒镇之", "hint": "护甲 +6 · 闪避 +6%", "effect": { "effects": { "armor": 6.0, "dodge": 0.06 } } },
+			{ "text": "远遁避祸", "hint": "移速 +20%", "effect": { "effects": { "speed_mult": 0.20 } } },
+		] },
+	{ "id": "ev_dragon_gate", "title": "龙门试炼", "ico": "🐉", "theme": "temple", "rarity": "legendary",
+		"desc": "石门高百丈，门上刻着一行字：「跃过者，脱胎换骨；落败者，尸骨无存。」",
+		"choices": [
+			{ "text": "跃龙门", "hint": "伤害 +35% · 暴击 +10% · 下波多 3 精英",
+				"effect": { "effects": { "dmg_mult": 0.35, "crit_ch": 0.10 }, "next_wave_elite": 3 } },
+			{ "text": "取龙门鳞", "hint": "随机法宝 · 最大生命 +25", "effect": { "grant_relic": true, "effects": { "max_hp": 25.0 } } },
+			{ "text": "养精蓄锐", "hint": "回复 60% 生命 · 最大生命 +40", "effect": { "effects": { "heal_pct": 0.60, "max_hp": 40.0 } } },
+		] },
+]
+
+static func event_card(id: String) -> Dictionary:
+	for e in EVENT_CARDS:
+		if String(e.get("id", "")) == id:
+			return e
+	return {}
+
+static func event_card_ids() -> Array:
+	var out: Array = []
+	for e in EVENT_CARDS:
+		out.append(String(e.get("id", "")))
+	return out
+
+## 事件卡抽取池：[{ item: 卡片, w: rarity_weight(稀有度, 当前波次) }]
+## 排除本局已抽到过的卡，保证 10 个事件都能被见到
+static func event_card_pool(seen: Array, wave: int) -> Array:
+	var pool: Array = []
+	for e in EVENT_CARDS:
+		if seen.has(String(e.get("id", ""))):
+			continue
+		pool.append({ "item": e,
+			"w": rarity_weight(String(e.get("rarity", "common")), wave) })
+	return pool
+
+## ============================================================
+## 地图主题（Phase 5）—— 按波次切换的竞技场氛围
+## 字段说明：
+##   name    中文名（横幅/图鉴展示）
+##   bg      竞技场底色（main._draw 填充）
+##   grid    网格线颜色（与底色同系，保持可读性）
+##   accent  边框与装饰强调色
+##   obstacle 障碍物外观 id（obstacle.gd 的 SHAPES 键）
+##   particle 主题氛围粒子（fx/ 下的粒子脚本键）
+##   waves   适用波次区间 [起, 止]（含两端；无尽模式只有首段生效，之后循环）
+## ============================================================
+const MAP_THEMES := {
+	"bamboo": { "name": "幽篁竹林", "bg": "#16221a", "grid": "#1f3325", "accent": "#3f6b46",
+		"obstacle": "bamboo", "particle": "bamboo_leaf", "waves": [1, 3] },
+	"temple": { "name": "荒古废庙", "bg": "#241a17", "grid": "#33241f", "accent": "#6b4a3a",
+		"obstacle": "pillar", "particle": "incense", "waves": [4, 6] },
+	"nether": { "name": "幽冥鬼域", "bg": "#141728", "grid": "#1d2138", "accent": "#4a3f7a",
+		"obstacle": "stele", "particle": "ghost_fire", "waves": [7, 10] },
+}
+
+const MAP_THEME_ORDER := ["bamboo", "temple", "nether"]
+
+## 障碍物数量：普通波 30-50，BOSS 波压到 15 以内（性能与走位空间取舍）
+const OBSTACLE_MIN := 30
+const OBSTACLE_MAX := 50
+const OBSTACLE_BOSS_MAX := 15
+const OBSTACLE_SAFE_RADIUS := 200.0   # 玩家出生点周围禁放半径
+
+## 波次 → 主题 id；无尽模式超过最后一个区间后按 ORDER 循环
+static func map_theme_for_wave(w: int) -> String:
+	for tid in MAP_THEME_ORDER:
+		var r: Array = MAP_THEMES[tid].waves
+		if w >= int(r[0]) and w <= int(r[1]):
+			return String(tid)
+	# 无尽：10 波之后按 (w-1)/3 在 ORDER 内循环，保持换景节奏
+	var idx := (maxi(1, w) - 1) / 3
+	return String(MAP_THEME_ORDER[idx % MAP_THEME_ORDER.size()])
+
+static func map_theme(id: String) -> Dictionary:
+	return MAP_THEMES.get(id, {})
+
+static func map_theme_name(id: String) -> String:
+	return String(MAP_THEMES.get(id, {}).get("name", id))
+
 const WAVES_TOTAL := 10
 const BOSS_WAVE := 10
 const ENDLESS_MAX_WAVE := 9999   # 无尽模式波次上限（防溢出的护栏值）
