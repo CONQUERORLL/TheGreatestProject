@@ -47,6 +47,16 @@ if [ -n "$r_sha" ] && [ "$r_sha" = "$local_sha" ]; then
 fi
 
 for i in $(seq 1 "$ATTEMPTS"); do
+	# 递增等待：链路故障是波动型的（同一分钟内 502 与成功可能交替出现），
+	# 固定 4 秒的节奏太密，容易连续撞在同一段故障窗口里。后几次拉长间隔。
+	if [ "$i" -le 2 ]; then
+		wait_s=4
+	elif [ "$i" -le 4 ]; then
+		wait_s=8
+	else
+		wait_s=15
+	fi
+
 	echo "--- 第 $i/$ATTEMPTS 次 ---"
 	timeout "$PER_TRY_TIMEOUT" git push "$REMOTE" "$BRANCH" 2>&1 | tail -4
 	code="${PIPESTATUS[0]}"
@@ -59,11 +69,17 @@ for i in $(seq 1 "$ATTEMPTS"); do
 		echo "✅ 推送成功：$REMOTE/$BRANCH = ${local_sha:0:7}"
 		exit 0
 	fi
-	echo "远端仍为 ${r_sha:0:7}，4 秒后重试"
-	sleep 4
+	if [ -n "$r_sha" ]; then
+		echo "远端仍为 ${r_sha:0:7}，${wait_s} 秒后重试"
+	else
+		echo "远端不可达（ls-remote 无响应），${wait_s} 秒后重试"
+	fi
+	sleep "$wait_s"
 done
 
+r_disp="${r_sha:0:7}"
+[ -z "$r_sha" ] && r_disp="<不可达>"
 echo "❌ $ATTEMPTS 次尝试后仍未推送成功"
-echo "   本地 ${local_sha:0:7} / 远端 ${r_sha:0:7}"
+echo "   本地 ${local_sha:0:7} / 远端 $r_disp"
 echo "   请在本地终端直接执行：git push $REMOTE $BRANCH"
 exit 1
