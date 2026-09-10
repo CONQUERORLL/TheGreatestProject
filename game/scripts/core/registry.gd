@@ -800,6 +800,51 @@ func _register_builtin() -> void:
 			"stats": { "max_hp": 140.0, "armor": 4.0, "regen": 0.4, "status_chance": 0.10,
 				"dmg_mult": 0.95, "speed_mult": 0.90 },
 		},
+		# ---- Phase 3 内容扩充（6 个：攻速 / 重击 / 闪避 / 回复 / 多元素异常 / 重装输出） ----
+		# 设计原则：只使用 Config.PLAYER 已有的 stats 键，不引入新机制——
+		# 内容量靠数值取舍拉开差异，而不是靠新系统（否则每加一个角色都要改战斗代码）
+		"gunner": {
+			"id": "gunner", "name": "弹雨枪手", "ico": "🎯",
+			"desc": "弹幕压制：攻速 +50%、移速 +5%、生命 90，代价是单发伤害 -30%、暴击率 -2%。初始武器：冲锋枪",
+			"color": "#ffd24a", "start_weapon": "smg",
+			"stats": { "as_mult": 1.50, "dmg_mult": 0.70, "speed_mult": 1.05,
+				"crit_ch": 0.03, "max_hp": 90.0 },
+		},
+		"artillery": {
+			"id": "artillery", "name": "炮术家", "ico": "💣",
+			"desc": "一发制敌：伤害 +35%、暴伤 2.4，代价是攻速 -22%、移速 -6%。初始武器：火箭筒",
+			"color": "#e8902a", "start_weapon": "rocket",
+			"stats": { "dmg_mult": 1.35, "crit_mult": 2.4, "as_mult": 0.78,
+				"speed_mult": 0.94, "max_hp": 95.0 },
+		},
+		"monk": {
+			"id": "monk", "name": "无相武僧", "ico": "🥋",
+			"desc": "以巧破力：闪避 +22%、移速 +15%、攻速 +12%，代价是生命仅 68、护甲 -2。初始武器：砍刀",
+			"color": "#dfe6f0", "start_weapon": "knife",
+			"stats": { "dodge": 0.22, "speed_mult": 1.15, "as_mult": 1.12,
+				"max_hp": 68.0, "armor": -2.0, "dmg_mult": 0.95 },
+		},
+		"ascetic": {
+			"id": "ascetic", "name": "苦修者", "ico": "🧘",
+			"desc": "生生不息：回复 +2.8/秒、生命 130、护甲 +2，代价是伤害 -12%、攻速 -8%。初始武器：砍刀",
+			"color": "#7ec850", "start_weapon": "knife",
+			"stats": { "regen": 2.8, "max_hp": 130.0, "armor": 2.0,
+				"dmg_mult": 0.88, "as_mult": 0.92 },
+		},
+		"alchemist": {
+			"id": "alchemist", "name": "丹鼎术士", "ico": "⚗",
+			"desc": "万毒归元：异常命中 +25%、状态伤害 +30%、拾取范围 180，代价是伤害 -10%。初始武器：毒牙匕首",
+			"color": "#6fd6c8", "start_weapon": "venom_dagger",
+			"stats": { "status_chance": 0.25, "status_dmg_mult": 0.30,
+				"pickup_range": 180.0, "dmg_mult": 0.90, "max_hp": 92.0 },
+		},
+		"warlord": {
+			"id": "warlord", "name": "百战军侯", "ico": "🛡",
+			"desc": "力战不退：生命 150、护甲 +5、伤害 +12%，代价是攻速 -14%、移速 -12%。初始武器：太刀",
+			"color": "#993c1d", "start_weapon": "blade",
+			"stats": { "max_hp": 150.0, "armor": 5.0, "dmg_mult": 1.12,
+				"as_mult": 0.86, "speed_mult": 0.88 },
+		},
 	}
 	weapons = {}
 	for id in Config.WEAPONS:

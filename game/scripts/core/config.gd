@@ -255,6 +255,11 @@ const WEAPONS := {
 	"frost_nova": { "name": "玄冰新星", "ico": "🧊", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 18.0, "bspeed": 320.0, "splash": 110.0, "status": "freeze", "status_chance": 0.40, "status_stacks": 1, "shake": 1.5, "rarity": "epic", "desc": "寒冰爆发大范围冰冻，冻结目标易伤" },
 	"flame_jian": { "name": "火焰长剑", "ico": "🌋", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.48, "dmg": 24.0, "range": 118.0, "swing_arc": 2.2, "status": "burn", "status_chance": 0.75, "status_stacks": 3, "shake": 1.5, "rarity": "legendary", "desc": "剑身缠火，横扫三层燃烧，火系构筑顶点" },
 	"chaos_hammer": { "name": "混沌重锤", "ico": "🔨", "attack_type": "melee", "sfx": "shoot_knife", "cd": 1.20, "dmg": 45.0, "range": 130.0, "swing_arc": 2.4, "status": "stun", "status_chance": 0.60, "status_stacks": 1, "shake": 4.0, "rarity": "mythic", "desc": "开天一锤，眩晕 + 高爆发伤害" },
+	# ---- Phase 3 内容扩充（4 把：超重单发 / 双发连弩 / 冰系近战 / 佛门爆发） ----
+	"railgun": { "name": "磁轨炮", "ico": "🛰", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 2.40, "dmg": 120.0, "bspeed": 1200.0, "bullet_life": 1.8, "shake": 4.0, "status": "bleed", "status_chance": 0.40, "status_stacks": 2, "rarity": "legendary", "desc": "蓄力后的一发贯穿重击，弹速拉满，命中附带双层流血" },
+	"blight_bow": { "name": "疫病连弩", "ico": "🏹", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.70, "dmg": 9.0, "bspeed": 560.0, "pellets": 2, "arc": 0.18, "status": "poison", "status_chance": 0.50, "status_stacks": 1, "rarity": "rare", "desc": "每次双发，高频铺毒，按最大生命持续掉血" },
+	"frost_hammer": { "name": "霜牙重锤", "ico": "🔨", "attack_type": "melee", "sfx": "shoot_knife", "cd": 1.30, "dmg": 48.0, "range": 122.0, "swing_arc": 2.6, "status": "freeze", "status_chance": 0.35, "status_stacks": 1, "shake": 3.0, "rarity": "epic", "desc": "范围重砸，概率冻结，冻结目标受到额外伤害" },
+	"gold_scepter": { "name": "鎏金权杖", "ico": "🪄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 28.0, "bspeed": 380.0, "splash": 105.0, "status": "stun", "status_chance": 0.30, "status_stacks": 1, "shake": 2.5, "rarity": "legendary", "desc": "范围震荡，伤害更高但眩晕概率低于震雷法锣" },
 	# ---- 进化形态（不进商店池：shop_weight 极低但保持可注册校验；波末合成获得） ----
 	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：双联齐射，单发伤害 +67%" },
 	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：三管齐喷的弹幕风暴" },
@@ -264,8 +269,8 @@ const WEAPONS := {
 
 const WEAPON_SLOTS := 6
 const WEAPON_SHOP_CHANCE := 0.42
-const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "thunder_gong": 0.9, "tar_whip": 1.5, "ember_fan": 1.3, "vine_lash": 1.2, "gold_bell": 1.0, "frost_nova": 0.9, "flame_jian": 1.2, "chaos_hammer": 1.0, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
-const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "thunder_gong": 72, "tar_whip": 42, "ember_fan": 46, "vine_lash": 48, "gold_bell": 74, "frost_nova": 78, "flame_jian": 145, "chaos_hammer": 105, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
+const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "thunder_gong": 0.9, "tar_whip": 1.5, "ember_fan": 1.3, "vine_lash": 1.2, "gold_bell": 1.0, "frost_nova": 0.9, "flame_jian": 1.2, "chaos_hammer": 1.0, "railgun": 0.55, "blight_bow": 1.3, "frost_hammer": 0.85, "gold_scepter": 0.6, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
+const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "thunder_gong": 72, "tar_whip": 42, "ember_fan": 46, "vine_lash": 48, "gold_bell": 74, "frost_nova": 78, "flame_jian": 145, "chaos_hammer": 105, "railgun": 250, "blight_bow": 52, "frost_hammer": 92, "gold_scepter": 235, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {
@@ -342,11 +347,16 @@ static func daily_hash(date_str: String) -> int:
 		h = ((h ^ (date_str.unicode_at(i) & 0xFF)) * 0x01000193) & 0xFFFFFFFF
 	return h
 
+## 每日挑战的角色池。抽出来单独放，是为了让冒烟测试能断言「池子覆盖了全部已注册角色」——
+## 之前它是 daily_setup 里的局部变量，新增角色忘了加进来时完全静默（新角色永远不出现在每日挑战）
+const DAILY_CHARACTERS := ["potato", "berserker", "ranger", "gambler", "farmer", "vampire",
+	"guardian", "pyromancer", "druid", "swordmaster", "tidecaller", "geomancer",
+	"gunner", "artillery", "monk", "ascetic", "alchemist", "warlord"]
+
 ## 今日挑战配置：{seed, character_id, difficulty_id, boss_id}（全服一致）
 static func daily_setup(date_str: String) -> Dictionary:
 	var h := daily_hash(date_str)
-	var chars := ["potato", "berserker", "ranger", "gambler", "farmer", "vampire", "guardian",
-		"pyromancer", "druid", "swordmaster", "tidecaller", "geomancer"]
+	var chars: Array = DAILY_CHARACTERS
 	var diffs := ["normal", "hard", "nightmare"]
 	var pool: Array = BOSS_POOL.duplicate()
 	return {
@@ -415,6 +425,15 @@ const ITEMS := [
 	{ "id": "i-gale", "ico": "🌪", "name": "风神羽靴", "desc": "移速 +35%，攻速 +30%，闪避 +10%", "price": 250, "rarity": "legendary", "effects": { "speed_mult": 0.35, "as_mult": 0.30, "dodge": 0.10 } },
 	{ "id": "i-sanguine", "ico": "🧛", "name": "血族圣冠", "desc": "击杀回血 +3，生命回复 +2 / 秒", "price": 280, "rarity": "legendary", "effects": { "lifesteal": 3.0, "regen": 2.0 } },
 	{ "id": "i-crown", "ico": "👑", "name": "王者桂冠", "desc": "伤害 +15%，攻速 +15%，暴击 +8%，暴伤 +50%", "price": 300, "rarity": "legendary", "effects": { "dmg_mult": 0.15, "as_mult": 0.15, "crit_ch": 0.08, "crit_mult": 0.50 } },
+	# ---- Phase 3 内容扩充（8 件：低阶补位 3 + 带代价的中阶取舍 3 + 高阶 2） ----
+	{ "id": "i-warden", "ico": "🛡", "name": "守望徽章", "desc": "护甲 +2，闪避 +4%", "price": 30, "rarity": "common", "effects": { "armor": 2.0, "dodge": 0.04 } },
+	{ "id": "i-hunter", "ico": "📕", "name": "猎人手记", "desc": "暴击率 +7%，移速 +5%", "price": 28, "rarity": "common", "effects": { "crit_ch": 0.07, "speed_mult": 0.05 } },
+	{ "id": "i-lodestone", "ico": "🧿", "name": "磁极核心", "desc": "拾取范围 +85，材料获取 +10%", "price": 32, "rarity": "common", "effects": { "pickup_range": 85.0, "harvesting": 0.10 } },
+	{ "id": "i-thorn", "ico": "🌵", "name": "荆棘重铠", "desc": "生命 +45，护甲 +3；代价：移速 -5%", "price": 44, "rarity": "rare", "effects": { "max_hp": 45.0, "armor": 3.0, "speed_mult": -0.05 } },
+	{ "id": "i-feather", "ico": "🪶", "name": "轻羽披风", "desc": "移速 +18%，闪避 +5%；代价：护甲 -2", "price": 40, "rarity": "rare", "effects": { "speed_mult": 0.18, "dodge": 0.05, "armor": -2.0 } },
+	{ "id": "i-focus", "ico": "🔮", "name": "凝神宝珠", "desc": "攻速 +20%；代价：伤害 -8%", "price": 46, "rarity": "rare", "effects": { "as_mult": 0.20, "dmg_mult": -0.08 } },
+	{ "id": "i-plaguevial", "ico": "⚗", "name": "疫病瓶", "desc": "命中时 25% 概率使目标中毒，状态伤害 +25%", "price": 72, "rarity": "epic", "effects": { "on_hit_poison": 0.25, "status_dmg_mult": 0.25 } },
+	{ "id": "i-sunstone", "ico": "☀", "name": "日曜石", "desc": "生命回复 +1.6 / 秒，最大生命 +30", "price": 68, "rarity": "epic", "effects": { "regen": 1.6, "max_hp": 30.0 } },
 ]
 
 ## ============================================================
