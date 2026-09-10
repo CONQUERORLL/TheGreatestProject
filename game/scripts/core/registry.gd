@@ -602,6 +602,42 @@ func _register_builtin() -> void:
 			"stats": { "max_hp": 165.0, "armor": 6.0, "regen": 0.5,
 				"speed_mult": 0.82, "dodge": 0.0, "as_mult": 1.08 },
 		},
+		# ---- Phase 2 五行门派修士（5 个，每人专精一个五行状态） ----
+		"pyromancer": {
+			"id": "pyromancer", "name": "焚天祭司", "ico": "🔥",
+			"desc": "火系爆发：状态伤害 +35%，异常持续 +25%，命中率 +10%；代价是血薄甲脆。初始武器：火焰喷射器",
+			"color": "#ff7a3c", "start_weapon": "flamethrower",
+			"stats": { "status_dmg_mult": 0.35, "status_dur_mult": 0.25, "status_chance": 0.10,
+				"max_hp": 85.0, "armor": -1.0, "dmg_mult": 0.95 },
+		},
+		"druid": {
+			"id": "druid", "name": "青囊药王", "ico": "🌿",
+			"desc": "毒扩散流：异常命中 +20%，持续 +35%，中毒扩散 +60%；材料获取微幅加成。初始武器：毒牙匕首",
+			"color": "#7ec850", "start_weapon": "venom_dagger",
+			"stats": { "status_chance": 0.20, "status_dur_mult": 0.35, "status_spread": 0.60,
+				"max_hp": 90.0, "dmg_mult": 0.92, "harvesting": 0.15 },
+		},
+		"swordmaster": {
+			"id": "swordmaster", "name": "太白剑客", "ico": "⚔",
+			"desc": "剑道宗师：暴击 +12%、暴伤 +230%、攻速 +5%、伤害 +10%、异常命中 +8%。初始武器：太刀",
+			"color": "#dfe6f0", "start_weapon": "blade",
+			"stats": { "crit_ch": 0.12, "crit_mult": 2.3, "as_mult": 1.05, "dmg_mult": 1.10,
+				"status_chance": 0.08, "max_hp": 88.0 },
+		},
+		"tidecaller": {
+			"id": "tidecaller", "name": "沧海鲛人", "ico": "💧",
+			"desc": "冰控场：异常命中 +15%，异常持续 +30%，移速 +8%，护甲 +1。血薄。初始武器：霜冻法杖",
+			"color": "#8fd8ff", "start_weapon": "frost_staff",
+			"stats": { "status_chance": 0.15, "status_dur_mult": 0.30, "speed_mult": 1.08,
+				"armor": 1.0, "max_hp": 82.0 },
+		},
+		"geomancer": {
+			"id": "geomancer", "name": "厚土方士", "ico": "⛰",
+			"desc": "眩晕坦克：生命 140、护甲 4、回复 0.4/s、异常命中 +10%；代价是移速 -10%、伤害 -5%。初始武器：砍刀",
+			"color": "#ffd24a", "start_weapon": "knife",
+			"stats": { "max_hp": 140.0, "armor": 4.0, "regen": 0.4, "status_chance": 0.10,
+				"dmg_mult": 0.95, "speed_mult": 0.90 },
+		},
 	}
 	weapons = {}
 	for id in Config.WEAPONS:
@@ -623,7 +659,14 @@ func _register_builtin() -> void:
 	var ai_map := { "grunt": "chaser", "runner": "runner", "tank": "chaser",
 		"shooter": "shooter", "boss": "boss", "boss_spiral": "boss", "boss_summoner": "boss",
 		"swarm": "chaser", "bomber": "runner", "wizard": "shooter",
-		"shadow": "runner", "guard": "chaser", "chest_guard": "chaser" }
+		"shadow": "runner", "guard": "chaser", "chest_guard": "chaser",
+		# ---- Phase 2 五行阵营（10 敌人 + 3 BOSS） ----
+		"fire_imp": "runner", "fire_shaman": "shooter",
+		"wood_sprite": "chaser", "vine_beast": "chaser",
+		"metal_puppet": "chaser", "blade_monk": "runner",
+		"water_nymph": "shooter", "ice_witch": "shooter",
+		"earth_golem": "chaser", "stone_titan": "chaser",
+		"boss_phoenix": "boss", "boss_leviathan": "boss", "boss_titan": "boss" }
 	for id2 in Config.ENEMIES:
 		var e: Dictionary = Config.ENEMIES[id2].duplicate()
 		e["id"] = id2

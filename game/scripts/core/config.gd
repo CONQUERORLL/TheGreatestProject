@@ -198,6 +198,15 @@ const WEAPONS := {
 	"flamethrower": { "name": "火焰喷射器", "ico": "🔥", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 4.0, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.34, "status": "burn", "status_chance": 0.85, "rarity": "rare", "desc": "短程火舌，高频叠加燃烧" },
 	"frost_staff": { "name": "霜冻法杖", "ico": "❄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.80, "dmg": 9.0, "bspeed": 420.0, "splash": 58.0, "status": "freeze", "status_chance": 0.55, "rarity": "epic", "desc": "范围冰冻定身，冻结目标受到额外伤害" },
 	"venom_dagger": { "name": "毒牙匕首", "ico": "🐍", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.42, "dmg": 12.0, "range": 88.0, "swing_arc": 1.6, "status": "poison", "status_chance": 0.70, "rarity": "rare", "desc": "淬毒近战，按最大生命持续掉血" },
+	# ---- Phase 2 主题包新增（8 把，补齐五行状态覆盖） ----
+	"thunder_gong": { "name": "震雷法锣", "ico": "🔔", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 22.0, "bspeed": 340.0, "splash": 90.0, "status": "stun", "status_chance": 0.45, "status_stacks": 1, "shake": 2.5, "rarity": "epic", "desc": "锣声震荡，范围眩晕，控场利器" },
+	"tar_whip": { "name": "沥青长鞭", "ico": "🕸", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.55, "dmg": 14.0, "range": 110.0, "swing_arc": 2.0, "status": "slow", "status_chance": 0.65, "status_stacks": 1, "rarity": "rare", "desc": "长鞭横扫，高频减速，牵制群敌" },
+	"ember_fan": { "name": "赤焰折扇", "ico": "🪭", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.70, "dmg": 10.0, "bspeed": 460.0, "pellets": 3, "arc": 0.55, "status": "burn", "status_chance": 0.50, "status_stacks": 1, "rarity": "rare", "desc": "扇形三射火舌，快速铺设燃烧" },
+	"vine_lash": { "name": "青藤缠索", "ico": "🌱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.90, "dmg": 13.0, "bspeed": 380.0, "splash": 60.0, "status": "poison", "status_chance": 0.55, "status_stacks": 2, "rarity": "rare", "desc": "藤蔓爆裂散毒，双层中毒叠加" },
+	"gold_bell": { "name": "金铃破空", "ico": "🛎", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.85, "dmg": 26.0, "bspeed": 720.0, "bullet_life": 1.2, "status": "bleed", "status_chance": 0.55, "status_stacks": 2, "rarity": "epic", "desc": "金铃高速激射，双层流血叠加" },
+	"frost_nova": { "name": "玄冰新星", "ico": "🧊", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 18.0, "bspeed": 320.0, "splash": 110.0, "status": "freeze", "status_chance": 0.40, "status_stacks": 1, "shake": 1.5, "rarity": "epic", "desc": "寒冰爆发大范围冰冻，冻结目标易伤" },
+	"flame_jian": { "name": "火焰长剑", "ico": "🌋", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.48, "dmg": 24.0, "range": 118.0, "swing_arc": 2.2, "status": "burn", "status_chance": 0.75, "status_stacks": 3, "shake": 1.5, "rarity": "legendary", "desc": "剑身缠火，横扫三层燃烧，火系构筑顶点" },
+	"chaos_hammer": { "name": "混沌重锤", "ico": "🔨", "attack_type": "melee", "sfx": "shoot_knife", "cd": 1.20, "dmg": 45.0, "range": 130.0, "swing_arc": 2.4, "status": "stun", "status_chance": 0.60, "status_stacks": 1, "shake": 4.0, "rarity": "mythic", "desc": "开天一锤，眩晕 + 高爆发伤害" },
 	# ---- 进化形态（不进商店池：shop_weight 极低但保持可注册校验；波末合成获得） ----
 	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：双联齐射，单发伤害 +67%" },
 	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "shop_weight": 0.001, "desc": "进化：三管齐喷的弹幕风暴" },
@@ -207,8 +216,8 @@ const WEAPONS := {
 
 const WEAPON_SLOTS := 6
 const WEAPON_SHOP_CHANCE := 0.42
-const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
-const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
+const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "thunder_gong": 0.9, "tar_whip": 1.5, "ember_fan": 1.3, "vine_lash": 1.2, "gold_bell": 1.0, "frost_nova": 0.9, "flame_jian": 1.2, "chaos_hammer": 1.0, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
+const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "thunder_gong": 72, "tar_whip": 42, "ember_fan": 46, "vine_lash": 48, "gold_bell": 74, "frost_nova": 78, "flame_jian": 145, "chaos_hammer": 105, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {
@@ -222,25 +231,43 @@ const ENEMIES := {
 	"shadow": { "name": "暗影刺客", "hp": 18.0, "speed": 205.0, "dmg": 12.0, "xp": 6, "mat": 4, "r": 10.0, "color": "#3d4356", "shape": "diamond", "heart_chance": 0.05 },
 	"guard": { "name": "重装卫兵", "hp": 120.0, "speed": 42.0, "dmg": 20.0, "xp": 14, "mat": 10, "r": 30.0, "color": "#5a6dbf", "shape": "square", "heart_chance": 0.18 },
 	"chest_guard": { "name": "宝箱守卫", "hp": 90.0, "speed": 60.0, "dmg": 14.0, "xp": 12, "mat": 15, "r": 24.0, "color": "#c9a24a", "shape": "square", "heart_chance": 0.10 },
+	# ---- Phase 2 主题包新增（10 敌人 + 3 BOSS，五行阵营） ----
+	"fire_imp": { "name": "火鸦童子", "hp": 12.0, "speed": 175.0, "dmg": 7.0, "xp": 3, "mat": 2, "r": 11.0, "color": "#ff7a3c", "shape": "diamond", "heart_chance": 0.04, "status_resist": 0.30 },
+	"fire_shaman": { "name": "赤焰巫师", "hp": 24.0, "speed": 62.0, "dmg": 11.0, "xp": 8, "mat": 5, "r": 15.0, "color": "#ff5e3a", "shape": "circle", "keep_dist": 300.0, "shoot_cd": 2.0, "bspeed": 320.0, "heart_chance": 0.08, "status_resist": 0.30 },
+	"wood_sprite": { "name": "木灵幼芽", "hp": 18.0, "speed": 80.0, "dmg": 6.0, "xp": 3, "mat": 3, "r": 12.0, "color": "#7ec850", "shape": "circle", "heart_chance": 0.05, "status_resist": 0.30 },
+	"vine_beast": { "name": "藤蔓妖", "hp": 30.0, "speed": 92.0, "dmg": 10.0, "xp": 6, "mat": 4, "r": 14.0, "color": "#5aa040", "shape": "diamond", "heart_chance": 0.06, "status_resist": 0.30 },
+	"metal_puppet": { "name": "金傀武士", "hp": 42.0, "speed": 62.0, "dmg": 14.0, "xp": 7, "mat": 6, "r": 18.0, "color": "#dfe6f0", "shape": "square", "heart_chance": 0.10, "status_resist": 0.30 },
+	"blade_monk": { "name": "刀锋武僧", "hp": 20.0, "speed": 190.0, "dmg": 13.0, "xp": 6, "mat": 4, "r": 11.0, "color": "#c0c8d4", "shape": "diamond", "heart_chance": 0.06, "status_resist": 0.30 },
+	"water_nymph": { "name": "水泽鲛奴", "hp": 16.0, "speed": 68.0, "dmg": 8.0, "xp": 5, "mat": 4, "r": 13.0, "color": "#8fd8ff", "shape": "circle", "keep_dist": 280.0, "shoot_cd": 2.4, "bspeed": 280.0, "heart_chance": 0.06, "status_resist": 0.30 },
+	"ice_witch": { "name": "玄冰女妖", "hp": 28.0, "speed": 58.0, "dmg": 12.0, "xp": 10, "mat": 7, "r": 16.0, "color": "#5aa8d8", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.8, "bspeed": 340.0, "heart_chance": 0.10, "status_resist": 0.40 },
+	"earth_golem": { "name": "土灵石俑", "hp": 75.0, "speed": 38.0, "dmg": 18.0, "xp": 12, "mat": 8, "r": 24.0, "color": "#ffd24a", "shape": "square", "heart_chance": 0.12, "status_resist": 0.30 },
+	"stone_titan": { "name": "山岳巨人", "hp": 140.0, "speed": 32.0, "dmg": 24.0, "xp": 16, "mat": 12, "r": 30.0, "color": "#c8a030", "shape": "square", "heart_chance": 0.18, "status_resist": 0.40 },
 	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "status_resist": 0.55, "heart_chance": 1.0 },
 	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "status_resist": 0.55, "heart_chance": 1.0 },
 	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "status_resist": 0.55, "heart_chance": 1.0 },
+	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "status_resist": 0.70, "heart_chance": 1.0 },
 }
 
 ## BOSS 轮换池：标准第 10 波 / 无尽每 10 波，按种子随机轮换（每日挑战全服同 BOSS）
-const BOSS_POOL := ["boss", "boss_spiral", "boss_summoner"]
+const BOSS_POOL := ["boss", "boss_spiral", "boss_summoner", "boss_phoenix", "boss_leviathan", "boss_titan"]
 
 ## BOSS id → 中文称号（HUD/横幅展示用）
 const BOSS_TITLES := {
 	"boss": "土豆之王 · 弹幕压制",
 	"boss_spiral": "深渊织网者 · 螺旋封锁",
 	"boss_summoner": "腐土孵化者 · 群海战术",
+	"boss_phoenix": "焚天凤凰 · 烈焰风暴",
+	"boss_leviathan": "沧溟蛟皇 · 寒潮召唤",
+	"boss_titan": "玄武岩王 · 山岳镇压",
 }
 
 ## 高难度精英替换池（难度 elite_chance 触发时从中抽取，W4+ 生效）
 const ELITE_POOL := [
-	{ "item": "guard", "w": 0.30 }, { "item": "wizard", "w": 0.30 },
-	{ "item": "shadow", "w": 0.22 }, { "item": "bomber", "w": 0.18 },
+	{ "item": "guard", "w": 0.22 }, { "item": "wizard", "w": 0.22 },
+	{ "item": "shadow", "w": 0.18 }, { "item": "bomber", "w": 0.14 },
+	{ "item": "ice_witch", "w": 0.14 }, { "item": "stone_titan", "w": 0.10 },
 ]
 
 ## 事件波：每 4 波触发一次（波 3/7/11/15…，跳过 BOSS 波），从 3 种事件随机
@@ -270,7 +297,8 @@ static func daily_hash(date_str: String) -> int:
 ## 今日挑战配置：{seed, character_id, difficulty_id, boss_id}（全服一致）
 static func daily_setup(date_str: String) -> Dictionary:
 	var h := daily_hash(date_str)
-	var chars := ["potato", "berserker", "ranger", "gambler", "farmer", "vampire", "guardian"]
+	var chars := ["potato", "berserker", "ranger", "gambler", "farmer", "vampire", "guardian",
+		"pyromancer", "druid", "swordmaster", "tidecaller", "geomancer"]
 	var diffs := ["normal", "hard", "nightmare"]
 	var pool: Array = BOSS_POOL.duplicate()
 	return {
@@ -448,20 +476,29 @@ static func wave_composition(w: int) -> Array:
 		return [{ "item": "grunt", "w": 0.26 }, { "item": "swarm", "w": 0.14 }, { "item": "runner", "w": 0.24 },
 			{ "item": "tank", "w": 0.16 }, { "item": "shooter", "w": 0.20 }]
 	if w <= 7:
-		return [{ "item": "grunt", "w": 0.18 }, { "item": "swarm", "w": 0.10 }, { "item": "runner", "w": 0.22 },
-			{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.16 }, { "item": "bomber", "w": 0.10 },
-			{ "item": "wizard", "w": 0.10 }]
+		return [{ "item": "grunt", "w": 0.16 }, { "item": "swarm", "w": 0.09 }, { "item": "runner", "w": 0.20 },
+			{ "item": "tank", "w": 0.13 }, { "item": "shooter", "w": 0.14 }, { "item": "bomber", "w": 0.09 },
+			{ "item": "wizard", "w": 0.09 },
+			{ "item": "fire_imp", "w": 0.05 }, { "item": "wood_sprite", "w": 0.05 }]
 	if w <= 9:
-		return [{ "item": "grunt", "w": 0.12 }, { "item": "swarm", "w": 0.07 }, { "item": "runner", "w": 0.20 },
-			{ "item": "tank", "w": 0.14 }, { "item": "shooter", "w": 0.15 }, { "item": "bomber", "w": 0.11 },
-			{ "item": "wizard", "w": 0.10 }, { "item": "shadow", "w": 0.07 }, { "item": "guard", "w": 0.04 }]
-	# 无尽后期（w >= 10）：难度随波次上升，精英比重逐步拉满
+		return [{ "item": "grunt", "w": 0.10 }, { "item": "swarm", "w": 0.06 }, { "item": "runner", "w": 0.16 },
+			{ "item": "tank", "w": 0.11 }, { "item": "shooter", "w": 0.12 }, { "item": "bomber", "w": 0.09 },
+			{ "item": "wizard", "w": 0.08 }, { "item": "shadow", "w": 0.06 }, { "item": "guard", "w": 0.03 },
+			{ "item": "fire_imp", "w": 0.04 }, { "item": "wood_sprite", "w": 0.04 },
+			{ "item": "vine_beast", "w": 0.04 }, { "item": "metal_puppet", "w": 0.04 },
+			{ "item": "water_nymph", "w": 0.04 }, { "item": "earth_golem", "w": 0.03 }]
+	# 无尽后期（w >= 10）：难度随波次上升，精英比重逐步拉满，五行敌人全覆盖
 	var t := minf(1.0, float(w - 9) / 21.0)
-	return [{ "item": "grunt", "w": 0.14 - 0.06 * t }, { "item": "swarm", "w": 0.06 },
-		{ "item": "runner", "w": 0.18 }, { "item": "tank", "w": 0.14 + 0.02 * t },
-		{ "item": "shooter", "w": 0.14 }, { "item": "bomber", "w": 0.10 + 0.04 * t },
-		{ "item": "wizard", "w": 0.10 + 0.05 * t }, { "item": "shadow", "w": 0.08 + 0.05 * t },
-		{ "item": "guard", "w": 0.06 + 0.08 * t }]
+	return [{ "item": "grunt", "w": 0.10 - 0.04 * t }, { "item": "swarm", "w": 0.05 },
+		{ "item": "runner", "w": 0.14 }, { "item": "tank", "w": 0.10 + 0.02 * t },
+		{ "item": "shooter", "w": 0.10 }, { "item": "bomber", "w": 0.08 + 0.03 * t },
+		{ "item": "wizard", "w": 0.08 + 0.04 * t }, { "item": "shadow", "w": 0.06 + 0.04 * t },
+		{ "item": "guard", "w": 0.05 + 0.06 * t },
+		{ "item": "fire_imp", "w": 0.03 }, { "item": "fire_shaman", "w": 0.03 + 0.02 * t },
+		{ "item": "wood_sprite", "w": 0.03 }, { "item": "vine_beast", "w": 0.04 + 0.02 * t },
+		{ "item": "metal_puppet", "w": 0.04 + 0.02 * t }, { "item": "blade_monk", "w": 0.03 + 0.02 * t },
+		{ "item": "water_nymph", "w": 0.03 }, { "item": "ice_witch", "w": 0.02 + 0.03 * t },
+		{ "item": "earth_golem", "w": 0.03 + 0.02 * t }, { "item": "stone_titan", "w": 0.02 + 0.03 * t }]
 
 # ---- 商店公式 ----
 

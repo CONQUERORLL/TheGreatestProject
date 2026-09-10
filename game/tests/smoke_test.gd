@@ -742,6 +742,7 @@ func _check_items() -> void:
 	Registry.weapons.erase("smoke_status_weapon")
 	_check_status_legend()
 	_check_reactions()
+	_check_phase2_content()
 	print("SMOKE: status effects OK")
 	# 暂停面板内容重建（打开/关闭 + 左右子节点存在）
 	_main.toggle_pause()
@@ -2001,6 +2002,188 @@ func _check_reactions() -> void:
 	_main._hit_stop_until_ms = 0
 	_main._end_hit_stop()
 	print("SMOKE: element reactions OK")
+
+## ============================================================
+## Phase 2 主题包内容验证（5 角色 + 8 武器 + 10 敌人 + 3 BOSS）
+## 7 个验证点：Registry 完整性 / BOSS_POOL / 每日挑战 / 波次组合 / 精英池 / 五行覆盖 / stats 范围
+## ============================================================
+func _check_phase2_content() -> void:
+	if _failed:
+		return
+	# ---- 验证点 1：Registry 完整性（12 角色 / 22 武器 / 23 敌人） ----
+	var new_chars := ["pyromancer", "druid", "swordmaster", "tidecaller", "geomancer"]
+	for cid in new_chars:
+		if not Registry.characters.has(cid):
+			_fail("Phase 2 角色未注册：%s" % cid)
+			return
+		var ch: Dictionary = Registry.characters[cid]
+		if not Registry.weapons.has(sw):
+			_fail("角色 %s 的初始武器 %s 不存在" % [cid, sw])
+			return
+		if typeof(ch.get("stats", {})) != TYPE_DICTIONARY:
+			_fail("角色 %s 的 stats 不是字典" % cid)
+			return
+	if Registry.characters.size() < 12:
+		_fail("角色总数不足 12（%d）" % Registry.characters.size())
+		return
+	var new_weapons := ["thunder_gong", "tar_whip", "ember_fan", "vine_lash",
+		"gold_bell", "frost_nova", "flame_jian", "chaos_hammer"]
+	for wid in new_weapons:
+		if not Registry.weapons.has(wid):
+			_fail("Phase 2 武器未注册：%s" % wid)
+			return
+		var w: Dictionary = Registry.weapons[wid]
+		if float(w.get("shop_weight", 0.0)) <= 0.0:
+			_fail("武器 %s 的 shop_weight 必须 > 0" % wid)
+			return
+		if int(w.get("price", 0)) <= 0:
+			_fail("武器 %s 的 price 必须 > 0" % wid)
+			return
+	if Registry.weapons.size() < 22:
+		_fail("武器总数不足 22（%d）" % Registry.weapons.size())
+		return
+	var new_enemies := ["fire_imp", "fire_shaman", "wood_sprite", "vine_beast",
+		"metal_puppet", "blade_monk", "water_nymph", "ice_witch",
+		"earth_golem", "stone_titan"]
+	for eid in new_enemies:
+		if not Registry.enemies.has(eid):
+			_fail("Phase 2 敌人未注册：%s" % eid)
+			return
+		var e: Dictionary = Registry.enemies[eid]
+		if bool(e.get("is_boss", false)) or String(e.get("ai", "")) == "boss":
+			_fail("敌人 %s 不应标记为 BOSS" % eid)
+			return
+		if float(e.get("status_resist", 0.0)) <= 0.0:
+			_fail("敌人 %s 的 status_resist 必须 > 0（五行阵营特征）" % eid)
+			return
+	if Registry.enemies.size() < 23:
+		_fail("敌人总数不足 23（%d）" % Registry.enemies.size())
+		return
+	# ---- 验证点 2：BOSS_POOL 完整性（3 → 6） ----
+	if Config.BOSS_POOL.size() != 6:
+		_fail("BOSS_POOL 大小不对（%d，期望 6）" % Config.BOSS_POOL.size())
+		return
+	var new_bosses := ["boss_phoenix", "boss_leviathan", "boss_titan"]
+	for bid in new_bosses:
+		if not Config.BOSS_POOL.has(bid):
+			_fail("BOSS_POOL 缺少新 BOSS：%s" % bid)
+			return
+		if not Registry.enemies.has(bid):
+			_fail("BOSS %s 未注册到 Registry" % bid)
+			return
+		var b: Dictionary = Registry.enemies[bid]
+		if not (bool(b.get("is_boss", false)) or String(b.get("ai", "")) == "boss"):
+			_fail("BOSS %s 未标记为 boss" % bid)
+			return
+		if not Config.BOSS_TITLES.has(bid):
+			_fail("BOSS %s 缺少称号" % bid)
+			return
+	# boss_leviathan 召唤物必须是已注册敌人
+	var leviathan: Dictionary = Registry.enemies["boss_leviathan"]
+	var summon_type := String(leviathan.get("summon_type", ""))
+	if summon_type == "" or not Registry.enemies.has(summon_type):
+		_fail("boss_leviathan 召唤类型非法：%s" % summon_type)
+		return
+	# ---- 验证点 3：每日挑战合法性（chars 12 / boss_id 在 BOSS_POOL） ----
+	for date_str in ["2026-09-09", "2026-12-31", "2027-01-01", "2027-06-15"]:
+		var setup: Dictionary = Config.daily_setup(date_str)
+		var daily_char := String(setup.get("character_id", ""))
+		if not Registry.characters.has(daily_char):
+			_fail("每日挑战 %s 角色不存在：%s" % [date_str, daily_char])
+			return
+		var daily_boss := String(setup.get("boss_id", ""))
+		if not Registry.enemies.has(daily_boss):
+			_fail("每日挑战 %s BOSS 不存在：%s" % [date_str, daily_boss])
+			return
+		var boss_entry: Dictionary = Registry.enemies[daily_boss]
+		if not (bool(boss_entry.get("is_boss", false)) \
+				or String(boss_entry.get("ai", "")) == "boss"):
+			_fail("每日挑战 %s BOSS %s 不是有效 BOSS" % [date_str, daily_boss])
+			return
+	# ---- 验证点 4：波次组合合法性（W1-15 非 BOSS 波） ----
+	for w in range(1, 16):
+		if Config.is_boss_wave(w):
+			continue
+		var comp: Array = Registry.wave_composition(w)
+		if comp.is_empty():
+			_fail("第 %d 波组合为空" % w)
+			return
+		for entry in comp:
+			if typeof(entry) != TYPE_DICTIONARY:
+				_fail("第 %d 波组合条目不是字典" % w)
+				return
+			var eid2 := String(entry.get("item", ""))
+			if not Registry.enemies.has(eid2):
+				_fail("第 %d 波组合含未注册敌人：%s" % [w, eid2])
+				return
+			if bool(Registry.enemies[eid2].get("is_boss", false)) \
+					or String(Registry.enemies[eid2].get("ai", "")) == "boss":
+				_fail("第 %d 波组合含 BOSS：%s" % [w, eid2])
+				return
+			if float(entry.get("w", 0.0)) <= 0.0:
+				_fail("第 %d 波组合权重 ≤ 0（%s）" % [w, eid2])
+				return
+	# W6+ 必须至少含 1 只 Phase 2 新敌人
+	var found_new := false
+	for entry2 in Registry.wave_composition(6):
+		if new_enemies.has(String(entry2.get("item", ""))):
+			found_new = true
+			break
+	if not found_new:
+		_fail("W6 波次组合未引入 Phase 2 新敌人")
+		return
+	# W10+ 必须至少含 5 只 Phase 2 新敌人（五行全覆盖）
+	var new_in_w10 := 0
+	for entry3 in Registry.wave_composition(10):
+		if new_enemies.has(String(entry3.get("item", ""))):
+			new_in_w10 += 1
+	if new_in_w10 < 5:
+		_fail("W10 波次组合 Phase 2 新敌人不足（%d < 5）" % new_in_w10)
+		return
+	# ---- 验证点 5：精英池合法性（含 ice_witch / stone_titan） ----
+	var elite_ids := []
+	for entry4 in Config.ELITE_POOL:
+		var eid3 := String(entry4.get("item", ""))
+		if not Registry.enemies.has(eid3):
+			_fail("精英池含未注册敌人：%s" % eid3)
+			return
+		if bool(Registry.enemies[eid3].get("is_boss", false)):
+			_fail("精英池含 BOSS：%s" % eid3)
+			return
+		if float(entry4.get("w", 0.0)) <= 0.0:
+			_fail("精英池权重 ≤ 0（%s）" % eid3)
+			return
+		elite_ids.append(eid3)
+	if not elite_ids.has("ice_witch") or not elite_ids.has("stone_titan"):
+		_fail("精英池未包含 Phase 2 新精英怪（ice_witch/stone_titan）")
+		return
+	# ---- 验证点 6：五行武器覆盖（每个五行 ≥ 2 把武器） ----
+	var elem_coverage := {"fire": 0, "wood": 0, "metal": 0, "water": 0, "earth": 0}
+	for wid2 in Registry.weapons:
+		var st := String(Registry.weapons[wid2].get("status", ""))
+		if st == "" or not Config.STATUS.has(st):
+			continue
+		var el := Config.get_element(st)
+		if elem_coverage.has(el):
+			elem_coverage[el] += 1
+	for el2 in ["fire", "wood", "metal", "water", "earth"]:
+		if int(elem_coverage[el2]) < 2:
+			_fail("五行 %s 武器覆盖不足（%d < 2）" % [el2, int(elem_coverage[el2])])
+			return
+	# ---- 验证点 7（额外）：5 新角色 stats 都在 STAT_LIMITS 范围内 ----
+	for cid2 in new_chars:
+		var stats: Dictionary = Registry.characters[cid2].get("stats", {})
+		for key in stats:
+			if not Registry.STAT_LIMITS.has(key):
+				_fail("角色 %s 的 stats 含未登记键：%s" % [cid2, key])
+				return
+			var lim: Vector2 = Registry.STAT_LIMITS[key]
+			var v := float(stats[key])
+			if v < lim.x or v > lim.y:
+				_fail("角色 %s 的 %s=%.2f 超出限制 [%.2f, %.2f]"
+					% [cid2, key, v, lim.x, lim.y])
+				return
+	print("SMOKE: Phase 2 content OK")
 
 ## 反应测试用标靶：高血量 + 指定状态抗性 + 已写入空间索引（AOE/扩散查得到）
 ## resist 默认 0，让爆发伤害可精确计算；BOSS 抗性用例须把配置值显式传回来
