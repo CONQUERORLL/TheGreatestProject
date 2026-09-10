@@ -55,6 +55,135 @@ static func status_cfg(id: String) -> Dictionary:
 static func status_ids() -> Array:
 	return STATUS.keys()
 
+## ============================================================
+## 五行归属映射 —— 每个状态归属一个五行（金木水火土）
+## 用于五行相生相克反应系统
+## ============================================================
+const STATUS_ELEMENT := {
+	"burn": "fire",      # 火
+	"poison": "wood",    # 木
+	"bleed": "metal",    # 金
+	"freeze": "water",   # 水
+	"slow": "water",     # 水
+	"stun": "earth",     # 土
+}
+
+## 五行集合（字母序）：REACTIONS 的 key = 两五行按本表顺序拼接
+const ELEMENTS := ["earth", "fire", "metal", "water", "wood"]
+
+## 五行配色（反应粒子 / 中央提示 / 图鉴与 HUD 反应表共用）
+## 除金之外均沿用对应状态色，便于玩家建立 状态→五行 映射
+const ELEMENT_COLOR := {
+	"wood": "#7ec850",   # 同中毒
+	"fire": "#ff7a3c",   # 同燃烧
+	"earth": "#ffd24a",  # 同眩晕
+	"metal": "#dfe6f0",  # 金：银白（与流血红区分，避免与火反应混淆）
+	"water": "#8fd8ff",  # 同冰冻
+}
+
+## 五行中文名（HUD / 图鉴展示）
+const ELEMENT_NAME := {
+	"wood": "木", "fire": "火", "earth": "土", "metal": "金", "water": "水",
+}
+
+static func get_element(status_id: String) -> String:
+	return String(STATUS_ELEMENT.get(status_id, ""))
+
+## 两五行 → 反应表 key；同元素/非法元素返回 ""（无反应）
+## 排序保证 (a,b) 与 (b,a) 得到同一 key，反应无方向性
+static func reaction_key(element_a: String, element_b: String) -> String:
+	if element_a == element_b or not ELEMENTS.has(element_a) \
+			or not ELEMENTS.has(element_b):
+		return ""
+	var pair := [element_a, element_b]
+	pair.sort()
+	return String(pair[0]) + "+" + String(pair[1])
+
+## ============================================================
+## 五行反应表 —— 相生（增强）+ 相克（爆发）
+## 相生 generate：不消耗层数，温和增强（加层/延时/提伤/扩散）
+## 相克 overcome：消耗层数，爆发伤害（AOE/处决/破甲/DoT 翻倍）
+## key = 两五行按 ELEMENTS 字母序拼接（如木生火 = "fire+wood"）
+## 运行时查询走 Registry.find_reaction()，使 mod 可注册/覆盖反应
+## ============================================================
+const REACTIONS := {
+	# ---- 相生反应（5 种）----
+	"fire+wood": {
+		"id": "wood_fire", "name": "木生火", "ico": "🌿🔥",
+		"type": "generate", "rarity": "common",
+		"desc": "中毒 + 燃烧 → 燃烧层数+1，持续时间延长 50%",
+		"effect": {"add_stacks": {"burn": 1}, "duration_mult": {"burn": 1.5}},
+		"sfx": "reaction_wood_fire", "shake": 1.6,
+	},
+	"earth+fire": {
+		"id": "fire_earth", "name": "火生土", "ico": "🔥⛰",
+		"type": "generate", "rarity": "common",
+		"desc": "燃烧 + 眩晕 → 眩晕延长 0.5s，燃烧伤害+30%",
+		"effect": {"duration_add": {"stun": 0.5}, "dmg_mult": {"burn": 1.3}},
+		"sfx": "reaction_fire_earth", "shake": 1.6,
+	},
+	"earth+metal": {
+		"id": "earth_metal", "name": "土生金", "ico": "⛰⚔",
+		"type": "generate", "rarity": "rare",
+		"desc": "眩晕 + 流血 → 流血层数+2，眩晕期间流血必暴击",
+		"effect": {"add_stacks": {"bleed": 2}, "crit_guarantee": {"bleed": true}},
+		"sfx": "reaction_earth_metal", "shake": 2.0,
+	},
+	"metal+water": {
+		"id": "metal_water", "name": "金生水", "ico": "⚔💧",
+		"type": "generate", "rarity": "rare",
+		"desc": "流血 + 冰冻/减速 → 冰冻延长 0.3s，流血伤害转为冰伤",
+		"effect": {"duration_add": {"freeze": 0.3}, "convert_dmg": {"bleed": "freeze"}},
+		"sfx": "reaction_metal_water", "shake": 2.0,
+	},
+	"water+wood": {
+		"id": "water_wood", "name": "水生木", "ico": "💧🌿",
+		"type": "generate", "rarity": "epic",
+		"desc": "冰冻/减速 + 中毒 → 中毒扩散到周围敌人（半径 100）",
+		"effect": {"spread": {"poison": 100.0}},
+		"sfx": "reaction_water_wood", "shake": 2.2,
+	},
+	# ---- 相克反应（5 种）----
+	"earth+wood": {
+		"id": "wood_earth", "name": "木克土", "ico": "🌿⛰",
+		"type": "overcome", "rarity": "rare",
+		"desc": "中毒 + 眩晕 → 消耗双方，AOE 伤害（半径 100，状态强度×2）",
+		"effect": {"consume": {"poison": 1, "stun": 1}, "aoe_dmg_scale": 2.0, "aoe_radius": 100.0},
+		"sfx": "reaction_wood_earth", "shake": 3.0,
+	},
+	"earth+water": {
+		"id": "earth_water", "name": "土克水", "ico": "⛰💧",
+		"type": "overcome", "rarity": "legendary",
+		"desc": "眩晕 + 冰冻/减速 → 消耗双方，目标碎裂（血量<20% 直接死亡）",
+		"effect": {"consume": {"stun": 1, "freeze": 1, "slow": 1}, "execute_threshold": 0.20},
+		"sfx": "reaction_earth_water", "shake": 5.0,
+	},
+	"fire+water": {
+		"id": "fire_water", "name": "水克火 · 蒸汽爆炸", "ico": "💧🔥",
+		"type": "overcome", "rarity": "rare",
+		"desc": "冰冻/减速 + 燃烧 → 消耗双方，蒸汽爆炸（半径 120 AOE 伤害×2.5）",
+		"effect": {"consume": {"freeze": 1, "slow": 1, "burn": 2}, "aoe_dmg_scale": 2.5, "aoe_radius": 120.0},
+		"sfx": "reaction_fire_water", "shake": 4.0,
+	},
+	"fire+metal": {
+		"id": "fire_metal", "name": "火克金", "ico": "🔥⚔",
+		"type": "overcome", "rarity": "epic",
+		"desc": "燃烧 + 流血 → 消耗双方，目标熔金（受伤+50%，持续 3s）",
+		"effect": {"consume": {"burn": 2, "bleed": 1}, "armor_break": 0.5, "armor_break_duration": 3.0},
+		"sfx": "reaction_fire_metal", "shake": 3.5,
+	},
+	"metal+wood": {
+		"id": "metal_wood", "name": "金克木 · 败血症", "ico": "⚔🌿",
+		"type": "overcome", "rarity": "mythic",
+		"desc": "流血 + 中毒 → 消耗双方，败血症（持续伤害翻倍，持续 4s）",
+		"effect": {"consume": {"bleed": 1, "poison": 1}, "dot_mult": 2.0, "dot_duration": 4.0},
+		"sfx": "reaction_metal_wood", "shake": 4.5,
+	},
+}
+
+## 内置反应查询（mod 内容需走 Registry.find_reaction）
+static func get_reaction(status_a: String, status_b: String) -> Dictionary:
+	return REACTIONS.get(reaction_key(get_element(status_a), get_element(status_b)), {})
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
 ## evolve_need：持有同名武器达到该数量，波末自动合成为 evolve_to（吸血鬼幸存者式）
 const WEAPONS := {

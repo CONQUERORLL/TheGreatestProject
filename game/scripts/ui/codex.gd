@@ -1,5 +1,5 @@
 extends Control
-## 图鉴：状态 / 武器 / 道具 / 升级 / 敌人 五类百科
+## 图鉴：状态 / 五行 / 武器 / 道具 / 升级 / 敌人 六类百科
 ## 数据全部来自 Config + Registry（创意工坊内容自动出现）
 ## 支持名称搜索 + 全部/已解锁/未解锁筛选；未解锁条目灰态并显示解锁条件
 ## 打开：open()；Esc / 手柄 B：_close() 并发 closed 信号（由主菜单接回焦点）
@@ -8,6 +8,7 @@ signal closed
 
 const TABS := [
 	{ "id": "status", "name": "状态", "ico": "🔥" },
+	{ "id": "reaction", "name": "五行", "ico": "☯" },
 	{ "id": "weapon", "name": "武器", "ico": "🔫" },
 	{ "id": "item", "name": "道具", "ico": "🧩" },
 	{ "id": "upgrade", "name": "升级", "ico": "✨" },
@@ -19,6 +20,7 @@ const AI_NAMES := { "chaser": "追击", "runner": "冲刺", "shooter": "远程",
 const SHAPE_NAMES := { "circle": "圆形", "square": "方形", "diamond": "菱形" }
 const LOCK_HINTS := {
 	"status": "在战斗中触发一次该状态即可解锁",
+	"reaction": "让同一敌人同时带上两种相异五行的状态即可解锁",
 	"weapon": "获得一次该武器即可解锁（开局武器 / 商店购买 / 进化）",
 	"item": "获得一次该道具即可解锁（商店购买 / 开局携带）",
 	"upgrade": "选择一次该升级即可解锁（升级三选一 / 商店）",
@@ -128,7 +130,7 @@ func _build() -> void:
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(title)
 	var tip := Label.new()
-	tip.text = "状态 / 武器 / 道具 / 升级 / 敌人 / 成就 · 搜索 + 解锁筛选 · 未解锁条目灰态 · Esc / 手柄 B 返回"
+	tip.text = "状态 / 五行 / 武器 / 道具 / 升级 / 敌人 / 成就 · 搜索 + 解锁筛选 · 未解锁条目灰态 · Esc / 手柄 B 返回"
 	tip.add_theme_font_size_override("font_size", 12)
 	tip.add_theme_color_override("font_color", Color("9aa3b2"))
 	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -282,6 +284,12 @@ func _entries_for(tab_id: String) -> Array:
 				out.append({ "id": String(sid), "ico": String(st.get("ico", "❓")),
 					"name": String(st.get("name", sid)),
 					"accent": Color(String(st.get("color", "#e8b84b"))) })
+		"reaction":
+			for r in Registry.reaction_list():
+				var rid := String(r.get("id", ""))
+				out.append({ "id": rid, "ico": String(r.get("ico", "☯")),
+					"name": String(r.get("name", rid)),
+					"accent": Config.rarity_color(String(r.get("rarity", "common"))) })
 		"weapon":
 			for id in Registry.weapons:
 				var w: Dictionary = Registry.weapons[id]
@@ -460,6 +468,7 @@ func _refresh(id: String) -> void:
 		return
 	match _tab:
 		"status": _detail_status(id)
+		"reaction": _detail_reaction(id)
 		"weapon": _detail_weapon(id)
 		"item": _detail_item(id)
 		"upgrade": _detail_upgrade(id)
@@ -498,7 +507,7 @@ func _detail_stats() -> void:
 			float(CodexData.unlocked_count(String(cat))),
 			float(CodexData.total_entries(String(cat))), cat_col))
 	_detail.add_child(_section("战斗"))
-	for key in ["kills", "boss_kills", "waves", "best_wave", "status_triggers"]:
+	for key in ["kills", "boss_kills", "waves", "best_wave", "status_triggers", "reactions"]:
 		_detail.add_child(_stat_row(String(CodexData.STAT_NAMES.get(key, key)),
 			str(CodexData.stat(key))))
 	_detail.add_child(_section("成长与收集"))
@@ -631,6 +640,140 @@ func _detail_status(sid: String) -> void:
 			Config.rarity_color(String(b.get("rarity", "common"))), String(b.get("desc", "")),
 			" · ".join(parts)))
 
+# ---------------- 五行反应详情 ----------------
+
+func _detail_reaction(id: String) -> void:
+	var r: Dictionary = Registry.reactions.get(id, {})
+	if r.is_empty():
+		return
+	var accent := Config.rarity_color(String(r.get("rarity", "common")))
+	var overcome := String(r.get("type", "")) == "overcome"
+	_detail.add_child(_header(String(r.get("ico", "☯")), String(r.get("name", id)), accent,
+		String(r.get("desc", ""))))
+	_detail.add_child(_section("基础信息"))
+	_detail.add_child(_stat_row("类型", "相克（爆发）" if overcome else "相生（增强）"))
+	_detail.add_child(_stat_row("稀有度", Config.rarity_name(String(r.get("rarity", "common")))))
+	_detail.add_child(_stat_row("层数消耗", "消耗参与状态层数" if overcome else "不消耗"))
+	_detail.add_child(_stat_row("震屏强度", "%.1f" % float(r.get("shake", 0.0))))
+	_detail.add_child(_section("五行组合"))
+	var elems := _reaction_elements(r)
+	if elems.size() != 2:
+		_detail.add_child(_empty("该反应未声明五行组合"))
+	for e in elems:
+		_detail.add_child(_stat_row(String(e),
+			String(Config.ELEMENT_NAME.get(String(e), String(e)))))
+	_detail.add_child(_section("触发状态"))
+	var sids := _reaction_statuses(elems)
+	if sids.is_empty():
+		_detail.add_child(_empty("无对应状态"))
+	for sid in sids:
+		var st: Dictionary = Config.STATUS.get(String(sid), {})
+		_detail.add_child(_row(String(st.get("ico", "❓")),
+			"%s · %s系" % [String(st.get("name", sid)),
+				String(Config.ELEMENT_NAME.get(Config.get_element(String(sid)), "?"))],
+			Color(String(st.get("color", "#e8b84b"))), String(st.get("desc", "")), ""))
+	_detail.add_child(_section("效果明细"))
+	var lines := _reaction_effect_lines(r.get("effect", {}))
+	if lines.is_empty():
+		_detail.add_child(_empty("无效果"))
+	for ln in lines:
+		var l := Label.new()
+		l.text = "· " + String(ln)
+		l.add_theme_font_size_override("font_size", 13)
+		l.add_theme_color_override("font_color", Color("d8dde6"))
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_detail.add_child(l)
+	var related := _reaction_related(r, elems)
+	if not related.is_empty():
+		_detail.add_child(_section("共用五行的其他反应（%d）" % related.size()))
+		for o in related:
+			_detail.add_child(_row(String(o.get("ico", "☯")), String(o.get("name", "")),
+				Config.rarity_color(String(o.get("rarity", "common"))),
+				String(o.get("desc", "")),
+				"相克" if String(o.get("type", "")) == "overcome" else "相生"))
+
+## 反应涉及的两个五行（从 key "elemA+elemB" 解析）
+func _reaction_elements(r: Dictionary) -> Array:
+	var key := String(r.get("key", ""))
+	return [] if key == "" else key.split("+")
+
+## 归属指定五行的全部状态 id（freeze / slow 同属水，两个都会列出）
+func _reaction_statuses(elems: Array) -> Array:
+	var out: Array = []
+	for sid in Config.STATUS_ELEMENT:
+		if elems.has(String(Config.STATUS_ELEMENT[sid])):
+			out.append(String(sid))
+	return out
+
+## 与当前反应共用任一五行的其他反应
+func _reaction_related(r: Dictionary, elems: Array) -> Array:
+	var out: Array = []
+	var self_id := String(r.get("id", ""))
+	for other in Registry.reaction_list():
+		var oid := String(other.get("id", ""))
+		if oid == "" or oid == self_id:
+			continue
+		for e in String(other.get("key", "")).split("+"):
+			if elems.has(String(e)):
+				out.append(other)
+				break
+	return out
+
+## effect 字典 → 中文效果行
+func _reaction_effect_lines(eff: Variant) -> Array:
+	var out: Array = []
+	if typeof(eff) != TYPE_DICTIONARY:
+		return out
+	var e: Dictionary = eff
+	for k in e:
+		var key := String(k)
+		var v: Variant = e[k]
+		match key:
+			"add_stacks": out.append("叠加层数：%s" % _status_amount_list(v))
+			"duration_add": out.append("延长时长（秒）：%s" % _status_amount_list(v))
+			"duration_mult": out.append("时长倍率：%s" % _status_amount_list(v))
+			"dmg_mult": out.append("伤害倍率：%s" % _status_amount_list(v))
+			"crit_guarantee": out.append("必定暴击：%s" % _status_name_list(v))
+			"spread": out.append("扩散半径：%s" % _status_amount_list(v))
+			"consume": out.append("消耗层数：%s" % _status_amount_list(v))
+			"convert_dmg":
+				if typeof(v) == TYPE_DICTIONARY:
+					for sid in v:
+						out.append("%s 伤害转为 %s"
+							% [_status_name(sid), _status_name(v[sid])])
+			"aoe_dmg_scale": out.append("范围伤害 = 状态强度合计 x%.1f" % float(v))
+			"aoe_radius": out.append("范围半径 %.0f" % float(v))
+			"execute_threshold": out.append("目标生命低于 %d%% 时直接碎裂"
+				% roundi(float(v) * 100.0))
+			"armor_break": out.append("目标受到伤害 +%d%%" % roundi(float(v) * 100.0))
+			"armor_break_duration": out.append("上述易伤持续 %.1f 秒" % float(v))
+			"dot_mult": out.append("持续伤害 x%.1f" % float(v))
+			"dot_duration": out.append("持续伤害强化 %.1f 秒" % float(v))
+			_: out.append("%s: %s" % [key, str(v)])
+	return out
+## 状态显示名（图标 + 中文名）
+func _status_name(sid: Variant) -> String:
+	var st: Dictionary = Config.STATUS.get(String(sid), {})
+	return "%s%s" % [String(st.get("ico", "")), String(st.get("name", sid))]
+## {状态: 数值} → “🔥燃烧 ×2、💫眩晕 ×1”
+func _status_amount_list(v: Variant) -> String:
+	if typeof(v) != TYPE_DICTIONARY:
+		return str(v)
+	var parts: Array = []
+	for sid in v:
+		parts.append("%s ×%s" % [_status_name(sid), _num_text(v[sid])])
+	return "、".join(parts)
+## {状态: 任意} → 只列状态名
+func _status_name_list(v: Variant) -> String:
+	if typeof(v) != TYPE_DICTIONARY:
+		return str(v)
+	var parts: Array = []
+	for sid in v:
+		parts.append(_status_name(sid))
+	return "、".join(parts)
+func _num_text(v: Variant) -> String:
+	var f := float(v)
+	return str(int(f)) if is_equal_approx(f, float(int(f))) else "%.1f" % f
 # ---------------- 武器详情 ----------------
 
 func _detail_weapon(id: String) -> void:

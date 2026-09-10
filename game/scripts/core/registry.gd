@@ -17,6 +17,8 @@ var items: Dictionary = {}        # id -> 道具（effects 键 = player.stats �
 var upgrades: Dictionary = {}     # id -> 升级（effects 同上）
 var enemies: Dictionary = {}      # id -> 敌人（boss 也在此；is_boss=true 或 ai="boss"）
 var difficulties: Dictionary = {} # id -> 难度（hp_mult / dmg_mult / spawn_mult）
+var reactions: Dictionary = {}    # id -> 五行反应（同 Config.REACTIONS 条目结构 + key）
+var _reaction_keys: Dictionary = {}   # "elemA+elemB"（字母序）-> 反应 id
 
 var boss_override := ""           # 校验后的最终 BOSS 敌人 id
 var spawn_table: Dictionary = {}  # 校验后的波次刷怪覆盖
@@ -49,6 +51,15 @@ const EFFECT_LIMITS := {
 	"on_hit_freeze": 1.0, "on_hit_slow": 1.0, "on_hit_stun": 1.0, "on_hit_bleed": 1.0,
 }
 
+## 五行反应：type 取值 + 各 type 允许的 effect 键
+## 未知键直接拒登，防 mod 写错字后静默无效
+const REACTION_TYPES := ["generate", "overcome"]
+const GENERATE_EFFECT_KEYS := ["add_stacks", "duration_mult", "duration_add",
+	"dmg_mult", "crit_guarantee", "convert_dmg", "spread"]
+const OVERCOME_EFFECT_KEYS := ["consume", "aoe_dmg_scale", "aoe_radius",
+	"execute_threshold", "execute_heal", "armor_break", "armor_break_duration",
+	"dot_mult", "dot_duration"]
+## 未知键直接拒登，防 mod 写错字后静默无效（与五行反应同款策略）
 func _ready() -> void:
 	reload_content()
 
@@ -100,6 +111,20 @@ func item_list() -> Array:
 func upgrade_list() -> Array:
 	return upgrades.values()
 
+func reaction_list() -> Array:
+	return reactions.values()
+
+## 按反应 id 取配置
+func get_reaction(id: String) -> Dictionary:
+	return reactions.get(id, {})
+
+## 按两个状态 id 查五行反应（同五行/无五行归属时无反应）
+## 战斗逻辑统一走这里，mod 可用同 key 反应覆盖内置反应
+func find_reaction(status_a: String, status_b: String) -> Dictionary:
+	var key := Config.reaction_key(Config.get_element(status_a), Config.get_element(status_b))
+	if key == "" or not _reaction_keys.has(key):
+		return {}
+	return reactions.get(String(_reaction_keys[key]), {})
 ## 状态图鉴数据源：某状态的施加/强化来源（遍历 Registry，mod 内容自动出现）
 ## 返回 { "weapons": [...], "items": [...], "boosts": [...] }
 ##   weapons：{ id, ico, name, desc, rarity, chance, stacks }
@@ -354,6 +379,108 @@ func register_difficulty(data: Dictionary) -> bool:
 	difficulties[String(data.id)] = data
 	return true
 
+## 五行反应：generate 相生（不消耗层数）/ overcome 相克（消耗层数并爆发）
+## key = 两个不同五行按 Config.ELEMENTS 字母序拼接（如木生火 "fire+wood"）
+func register_reaction(data: Dictionary) -> bool:
+	if not _valid(data, "五行反应", ["id", "name", "type", "effect", "key"]):
+		return false
+	_apply_defaults(data, {"ico": "☯", "desc": "", "rarity": "common",
+		"sfx": "", "shake": 0.0})
+	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity", "type", "sfx", "key"]):
+		return _reject("五行反应", data, "文本字段类型非法")
+	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty():
+		return _reject("五行反应", data, "ID/名称不能为空")
+	var type_id := String(data.type)
+	if type_id not in REACTION_TYPES:
+		return _reject("五行反应", data, "type 必须是 generate/overcome")
+	if data.rarity not in Config.RARITIES:
+		return _reject("五行反应", data, "rarity 非法")
+	var key := String(data.key)
+	var parts := key.split("+")
+	if parts.size() != 2 \
+			or Config.reaction_key(String(parts[0]), String(parts[1])) != key:
+		return _reject("五行反应", data,
+			"key 必须是两个不同五行按字母序拼接（如 fire+wood），当前：%s" % key)
+	if typeof(data.effect) != TYPE_DICTIONARY or (data.effect as Dictionary).is_empty():
+		return _reject("五行反应", data, "effect 必须是非空对象")
+	if not _number_in_range(data.get("shake"), 0.0, 20.0):
+		return _reject("五行反应", data, "shake 必须在 [0, 20]")
+	if not _valid_reaction_effect(data, type_id):
+		return false
+	reactions[String(data.id)] = data
+	_reaction_keys[key] = String(data.id)
+	return true
+
+## effect 逐键校验：键白名单 + 状态 id 已注册 + 数值在安全区间
+func _valid_reaction_effect(data: Dictionary, type_id: String) -> bool:
+	var issue := _reaction_effect_issue(data.effect, type_id)
+	if issue != "":
+		return _reject("五行反应", data, issue)
+	return true
+
+## 反应 effect 的完整合法性检查，返回错误原因（"" = 合法）
+func _reaction_effect_issue(effect: Dictionary, type_id: String) -> String:
+	var allowed := OVERCOME_EFFECT_KEYS if type_id == "overcome" else GENERATE_EFFECT_KEYS
+	for k in effect:
+		if String(k) not in allowed:
+			return "%s 反应不支持效果键 \"%s\"" % [type_id, k]
+	if type_id == "overcome":
+		if not _valid_status_amounts(effect.get("consume", {}), 1.0, 10.0):
+			return "consume 必须是 状态 id -> [1,10] 层数 的非空对象"
+		for key in ["aoe_dmg_scale", "execute_threshold", "armor_break", "dot_mult"]:
+			if effect.has(key) and not _number_in_range(effect.get(key), 0.0, 20.0):
+				return "%s 必须在 [0, 20]" % key
+		if effect.has("execute_heal") \
+				and not _number_in_range(effect.get("execute_heal"), 0.0, 1000.0):
+			return "execute_heal 必须在 [0, 1000]"
+		if effect.has("aoe_radius") \
+				and not _number_in_range(effect.get("aoe_radius"), 0.0, 600.0):
+			return "aoe_radius 必须在 [0, 600]"
+		for key2 in ["armor_break_duration", "dot_duration"]:
+			if effect.has(key2) and not _number_in_range(effect.get(key2), 0.0, 30.0):
+				return "%s 必须在 [0, 30]" % key2
+		return ""
+	if effect.has("add_stacks") \
+			and not _valid_status_amounts(effect.get("add_stacks"), 1.0, 10.0):
+		return "add_stacks 必须是 状态 id -> [1,10] 层数 的非空对象"
+	if effect.has("duration_add") \
+			and not _valid_status_amounts(effect.get("duration_add"), 0.0, 30.0):
+		return "duration_add 必须是 状态 id -> [0,30] 秒 的非空对象"
+	for key3 in ["duration_mult", "dmg_mult"]:
+		if effect.has(key3) and not _valid_status_amounts(effect.get(key3), 0.0, 10.0):
+			return "%s 必须是 状态 id -> [0,10] 倍率 的非空对象" % key3
+	if effect.has("spread") and not _valid_status_amounts(effect.get("spread"), 0.0, 400.0):
+		return "spread 必须是 状态 id -> [0,400] 半径 的非空对象"
+	if effect.has("crit_guarantee"):
+		if typeof(effect.crit_guarantee) != TYPE_DICTIONARY \
+				or (effect.crit_guarantee as Dictionary).is_empty():
+			return "crit_guarantee 必须是非空对象"
+		for sid in effect.crit_guarantee:
+			if not Config.STATUS.has(String(sid)):
+				return "crit_guarantee 状态 id 未注册：%s" % sid
+	if effect.has("convert_dmg"):
+		if typeof(effect.convert_dmg) != TYPE_DICTIONARY \
+				or (effect.convert_dmg as Dictionary).is_empty():
+			return "convert_dmg 必须是非空对象"
+		for sid2 in effect.convert_dmg:
+			if not Config.STATUS.has(String(sid2)) \
+					or not Config.STATUS.has(String(effect.convert_dmg[sid2])):
+				return "convert_dmg 两端状态 id 均需已注册"
+	return ""
+## “状态 id -> 数值”映射校验：非空、状态已注册、数值在 [low, high]
+func _valid_status_amounts(value: Variant, low: float, high: float) -> bool:
+	if typeof(value) != TYPE_DICTIONARY or (value as Dictionary).is_empty():
+		return false
+	for sid in value:
+		if not Config.STATUS.has(String(sid)):
+			return false
+		if not _number_in_range(value[sid], low, high):
+			return false
+	return true
+
+## params 逐键校验：键白名单 + 引用的五行/反应/状态真实存在
+
+## patch 校验：目标反应必须已注册，且补丁并入原 effect 后仍通过反应自身的合法性检查
 ## 缺省字段补全（mod/编辑器漏填时兜底）
 func _apply_defaults(data: Dictionary, defaults: Dictionary) -> void:
 	for k in defaults:
@@ -512,6 +639,12 @@ func _register_builtin() -> void:
 		"nightmare": { "id": "nightmare", "name": "噩梦", "desc": "精英成群，为成型的构筑准备",
 			"hp_mult": 2.2, "dmg_mult": 1.6, "spawn_mult": 1.5, "elite_chance": 0.20 },
 	}
+	reactions = {}
+	_reaction_keys = {}
+	for rkey in Config.REACTIONS:
+		var r: Dictionary = Config.REACTIONS[rkey].duplicate(true)
+		r["key"] = String(rkey)
+		register_reaction(r)
 
 # ------------------------------------------------------------
 # mod 加载：扫描目录下的 manifest.json
@@ -550,6 +683,7 @@ func _apply_manifest(path: String, mod_name: String) -> int:
 		"characters": register_character, "weapons": register_weapon,
 		"items": register_item, "upgrades": register_upgrade,
 		"enemies": register_enemy, "difficulties": register_difficulty,
+		"reactions": register_reaction,
 	}
 	for key in handled:
 		var entries: Variant = content.get(key, [])
@@ -635,6 +769,7 @@ func save_content(kind: String, entry: Dictionary) -> bool:
 		"upgrades": target = upgrades; register_call = register_upgrade
 		"enemies": target = enemies; register_call = register_enemy
 		"difficulties": target = difficulties; register_call = register_difficulty
+		"reactions": target = reactions; register_call = register_reaction
 		_:
 			push_warning("Registry: 未知内容类别 " + kind)
 			return false

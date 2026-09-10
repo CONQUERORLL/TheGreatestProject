@@ -34,6 +34,8 @@ var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
 var spawn_wave := 1        # 生成时波次（召唤物继承）
 var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
 var status_resist := 0.0        # 状态时长减免（BOSS 0.55）
+var reaction_debuffs: Array = []   # 五行反应 debuff：{dmg_taken_mult, dot_mult, remaining}
+var _reaction_active: Dictionary = {}   # 本敌正在执行的反应 id（禁止自我递归）
 var _status_sig := 0            # 状态签名（层数/集合变化才重绘）
 var _status_flash_t := 0.0      # 状态触发彩色扩散环剩余时间
 var _status_flash_color := Color.WHITE
@@ -42,6 +44,11 @@ var _status_flash_color := Color.WHITE
 ## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
 const SEPARATION_PAD_NORMAL := 60.0
 const SEPARATION_PAD_LARGE := 90.0
+
+## 五行反应默认参数（Config.REACTIONS 未显式给出时的兜底值）
+const REACTION_AOE_RADIUS := 100.0
+const REACTION_DEBUFF_DURATION := 3.0
+const REACTION_CONVERT_DURATION := 0.5
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
@@ -121,6 +128,8 @@ func apply_status(id: String, stacks: int = 1, duration_override: float = 0.0,
 	queue_redraw()
 	if is_new:
 		_status_trigger_feedback(id, cfg, add_stacks)
+	# 五行反应检查：新状态施加后检查是否触发相生/相克
+	check_reactions()
 
 ## 状态首次触发反馈：状态色粒子 + 飘字 + 扩散环 + EventBus 事件（音效由 Sfx 订阅节流播放）
 func _status_trigger_feedback(id: String, cfg: Dictionary, stacks: int) -> void:
@@ -161,7 +170,7 @@ func _damage_taken_mult() -> float:
 	var mult := 1.0
 	for id in statuses:
 		mult *= float(Config.status_cfg(id).get("dmg_taken_mult", 1.0))
-	return mult
+	return mult * _reaction_dmg_taken_mult()
 
 func _status_signature() -> int:
 	var sig := 0
@@ -171,6 +180,7 @@ func _status_signature() -> int:
 
 ## 每帧推进状态时长与 DoT 跳伤；到期清除
 func _tick_statuses(delta: float) -> void:
+	_tick_reaction_debuffs(delta)
 	if statuses.is_empty():
 		return
 	var expired: Array = []
@@ -200,6 +210,7 @@ func _apply_dot(id: String, cfg: Dictionary, st: Dictionary) -> void:
 		tick_dmg = max_hp * pct * float(stacks)
 	else:
 		tick_dmg = float(st.power) * float(cfg.get("dot_scale", 0.0)) * float(stacks)
+	tick_dmg *= _reaction_dot_mult()
 	if tick_dmg <= 0.0:
 		return
 	FloatingText.spawn(get_parent(), global_position + Vector2(
@@ -221,6 +232,187 @@ func _spread_poison() -> void:
 		if global_position.distance_to(other.global_position) <= 110.0 + other.radius:
 			other.apply_status("poison", stacks, dur, power, 1.0)
 
+# ------------------------------------------------------------
+# 五行反应系统：相生（增强）+ 相克（爆发）
+# 入口：apply_status() → check_reactions()；反应表见 Config.REACTIONS
+# 相生 generate 不消耗层数；相克 overcome 消耗层数并爆发
+# ------------------------------------------------------------
+
+## 连锁深度上限：spread / AOE 会在其他敌人身上再次触发反应，限深防雪崩
+static var _reaction_depth := 0
+const MAX_REACTION_DEPTH := 3
+
+## 检查五行反应：遍历身上所有状态，查找相生/相克组合
+func check_reactions() -> void:
+	if statuses.size() < 2 or hp <= 0.0 or flee > 0.0:
+		return
+	var status_list := statuses.keys()
+	for i in range(status_list.size()):
+		for j in range(i + 1, status_list.size()):
+			var reaction := Registry.find_reaction(String(status_list[i]), String(status_list[j]))
+			# 跳过正在执行的反应：效果里再次上状态不得把自己套娃
+			# （金生水 convert_dmg 会再上冰冻，bleed+freeze 否则递归到深度上限）
+			if reaction.is_empty() \
+					or _reaction_active.has(String(reaction.get("id", ""))):
+				continue
+			trigger_reaction(reaction)
+			return  # 每次只触发一个反应（避免同帧连锁爆炸）
+
+## 触发五行反应：执行效果 + 解锁图鉴 + 发出特效信号
+func trigger_reaction(reaction: Dictionary) -> void:
+	if reaction.is_empty() or hp <= 0.0 or flee > 0.0 \
+			or _reaction_depth >= MAX_REACTION_DEPTH:
+		return
+	var reaction_id := String(reaction.get("id", ""))
+	_reaction_active[reaction_id] = true
+	_reaction_depth += 1
+	if String(reaction.get("type", "")) == "overcome":
+		_execute_overcome_effect(effect)
+	else:
+		_execute_generate_effect(effect)
+	_reaction_depth -= 1
+	_reaction_active.erase(reaction_id)
+	queue_redraw()
+	CodexData.unlock("reaction", reaction_id)
+	EventBus.element_reaction.emit(reaction_id, global_position, [self])
+
+## 取状态条目引用（字典按引用传递，可直接改 stacks/remaining/power）
+func _status_entry(id: String) -> Dictionary:
+	return statuses.get(id, {})
+
+## 相生效果：加层 / 延时 / 提伤 / 必暴 / 转属 / 扩散（不消耗层数）
+func _execute_generate_effect(effect: Dictionary) -> void:
+	var add: Dictionary = effect.get("add_stacks", {})
+	for sid in add:
+		var st := _status_entry(String(sid))
+		if st.is_empty():
+			continue
+		var cap := int(Config.status_cfg(String(sid)).get("stack_max", 1))
+		st.stacks = mini(cap, int(st.stacks) + int(add[sid]))
+	var dmul: Dictionary = effect.get("duration_mult", {})
+	for sid2 in dmul:
+		var st2 := _status_entry(String(sid2))
+		if not st2.is_empty():
+			st2.remaining = float(st2.remaining) * float(dmul[sid2])
+	var dadd: Dictionary = effect.get("duration_add", {})
+	for sid3 in dadd:
+		var st3 := _status_entry(String(sid3))
+		if not st3.is_empty():
+			st3.remaining = float(st3.remaining) + float(dadd[sid3])
+	# DoT 提伤（火生土：燃烧伤害 +30%）
+	var pmul: Dictionary = effect.get("dmg_mult", {})
+	for sid4 in pmul:
+		var st4 := _status_entry(String(sid4))
+		if not st4.is_empty():
+			st4.power = float(st4.power) * float(pmul[sid4])
+	# 必暴（土生金：眩晕期间流血 DoT 按暴击倍率结算）
+	var crit: Dictionary = effect.get("crit_guarantee", {})
+	for sid5 in crit:
+		var st5 := _status_entry(String(sid5))
+		if not st5.is_empty() and bool(crit[sid5]):
+			st5.power = float(st5.power) * _reaction_crit_mult()
+	# 转属（金生水：流血转冰伤 → 附加短时冰冻易伤）
+	var conv: Dictionary = effect.get("convert_dmg", {})
+	for sid6 in conv:
+		if statuses.has(String(sid6)):
+			apply_status(String(conv[sid6]), 1, REACTION_CONVERT_DURATION, 0.0, 1.0)
+	# 扩散（水生木：中毒扩散到周围敌人）
+	var spread: Dictionary = effect.get("spread", {})
+	for sid7 in spread:
+		var st7 := _status_entry(String(sid7))
+		if st7.is_empty():
+			continue
+		_apply_status_in_radius(String(sid7), int(st7.stacks), float(st7.remaining),
+			float(st7.power), float(spread[sid7]))
+
+## 相克效果：消耗层数 + 爆发（AOE / 处决 / 破甲 / DoT 翻倍）
+func _execute_overcome_effect(effect: Dictionary) -> void:
+	# 爆发基数必须在消耗前结算：消耗会清空层数，之后 power×stacks 归零
+	var burst := 0.0
+	for sid in statuses:
+		var st: Dictionary = statuses[String(sid)]
+		burst += float(st.power) * float(int(st.stacks))
+	var consume: Dictionary = effect.get("consume", {})
+	for sid2 in consume:
+		var st2 := _status_entry(String(sid2))
+		if st2.is_empty():
+			continue
+		st2.stacks = int(st2.stacks) - int(consume[sid2])
+		if int(st2.stacks) <= 0:
+			statuses.erase(String(sid2))
+	# AOE 爆发（含自身；status_resist 减免，BOSS 抗反应）
+	if effect.has("aoe_dmg_scale"):
+		_damage_in_radius(burst * float(effect.aoe_dmg_scale) * (1.0 - status_resist),
+			float(effect.get("aoe_radius", REACTION_AOE_RADIUS)))
+	# 处决（土克水：血量低于阈值直接碎裂）
+	if effect.has("execute_threshold") and max_hp > 0.0 \
+			and hp / max_hp < float(effect.execute_threshold):
+		take_damage(hp + 1.0, false, false)
+		if effect.has("execute_heal") and player and is_instance_valid(player):
+			player.heal(float(effect.execute_heal))
+		return
+	# 破甲（火克金：护甲无效化 → 受伤提升，持续 armor_break_duration）
+	if effect.has("armor_break"):
+		_add_reaction_debuff(1.0 + float(effect.armor_break), 1.0,
+			float(effect.get("armor_break_duration", REACTION_DEBUFF_DURATION)))
+	# DoT 翻倍（金克木：持续伤害提升，持续 dot_duration）
+	if effect.has("dot_mult"):
+		_add_reaction_debuff(1.0, float(effect.dot_mult),
+			float(effect.get("dot_duration", REACTION_DEBUFF_DURATION)))
+
+## 对半径内其他敌人施加状态（水生木扩散）
+func _apply_status_in_radius(id: String, stacks: int, dur: float, power: float,
+		r: float) -> void:
+	for other in Combat.enemies_near(global_position, r + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or other.is_queued_for_deletion():
+			continue
+		if global_position.distance_to(other.global_position) <= r + other.radius:
+			other.apply_status(id, stacks, dur, power, 1.0)
+
+## 对半径内敌人造成伤害，最后结算自身（自身可能死亡，避免提前失效位置）
+func _damage_in_radius(dmg: float, r: float) -> void:
+	if dmg <= 0.0:
+		return
+	for other in Combat.enemies_near(global_position, r + Combat.MAX_ENTITY_RADIUS):
+		if other == self or other.flee > 0.0 or other.is_queued_for_deletion():
+			continue
+		if global_position.distance_to(other.global_position) <= r + other.radius:
+			other.take_damage(dmg * (1.0 - other.status_resist), false, false)
+	take_damage(dmg, false, false)
+
+## 暴击倍率（土生金“必暴”用；玩家已升级则取玩家值）
+func _reaction_crit_mult() -> float:
+	if player and is_instance_valid(player):
+		return float(player.stats.get("crit_mult", Config.PLAYER.crit_mult))
+	return float(Config.PLAYER.crit_mult)
+
+func _add_reaction_debuff(dmg_mult: float, dot_mult: float, duration: float) -> void:
+	if duration <= 0.0:
+		return
+	reaction_debuffs.append({
+		"dmg_taken_mult": maxf(1.0, dmg_mult),
+		"dot_mult": maxf(1.0, dot_mult),
+		"remaining": duration,
+	})
+
+func _tick_reaction_debuffs(delta: float) -> void:
+	for i in range(reaction_debuffs.size() - 1, -1, -1):
+		var d: Dictionary = reaction_debuffs[i]
+		d.remaining = float(d.remaining) - delta
+		if float(d.remaining) <= 0.0:
+			reaction_debuffs.remove_at(i)
+
+func _reaction_dmg_taken_mult() -> float:
+	var mult := 1.0
+	for d in reaction_debuffs:
+		mult *= float(d.get("dmg_taken_mult", 1.0))
+	return mult
+
+func _reaction_dot_mult() -> float:
+	var mult := 1.0
+	for d in reaction_debuffs:
+		mult *= float(d.get("dot_mult", 1.0))
+	return mult
 func _ready() -> void:
 	add_to_group("enemies")
 

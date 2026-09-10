@@ -2,7 +2,8 @@ extends Control
 ## 游戏 HUD（移植自原型 updateHUD）
 ## 左上：血条 + 等级/经验条；顶中：波次/计时（BOSS 波显示血量）；
 ## 右上：材料/击杀；左下：属性行；底中：武器槽（按类型聚合 xN + 空槽补位）；
-## 全屏受击红晕（监听 player_damaged 拉满后淡出）。全部节点不拦截鼠标。
+## 右侧：异常状态图例 + 五行反应折叠页（点标题展开，见 _build_reaction_section）；
+## 全屏受击红晕（监听 player_damaged 拉满后淡出）。除折叠页标题外不拦截鼠标。
 
 var player  # characters/player.gd 引用，由 main 注入
 var wave_manager: Node   # systems/wave_manager.gd 引用，由 main 注入
@@ -28,6 +29,8 @@ var _score_text: Label   # 无尽模式积分（代码追加到右上角）
 var _status_panel: PanelContainer   # 右侧异常状态图例（仅显示当前构筑可施加的状态）
 var _status_box: VBoxContainer
 var _status_key := ""   # 来源签名：武器/道具/加成变化才重建
+var _reaction_open := false   # 五行反应表折叠状态（默认收起，点标题展开）
+var _bonus_label: Label = null   # 强化加成行（图例末尾又追加了反应节，不再能用“最后一个子节点”定位）
 
 func _ready() -> void:
 	_style_bar(_hp_bar, Color("ef6b5e"))
@@ -201,13 +204,21 @@ func _refresh_status_legend() -> void:
 	var key := ""
 	for sid in sources:
 		key += "%s:%.2f:%d|" % [sid, float(sources[sid].chance), int(sources[sid].count)]
-	key += "d%.2f:t%.2f:s%.2f" % [dmg_mult, dur_mult, spread]
+	# 折叠状态并入签名：点击标题后签名变化，走同一条重建路径
+	key += "d%.2f:t%.2f:s%.2f:r%d" % [dmg_mult, dur_mult, spread, 1 if _reaction_open else 0]
 	if key == _status_key:
 		return
 	_status_key = key
+	_rebuild_status_legend(sources, dmg_mult, dur_mult, spread)
+
+## 图例主体重建：异常状态列表 + 五行反应折叠页
+## 仅在来源签名变化或折叠状态切换时调用，不逐帧建节点
+func _rebuild_status_legend(sources: Dictionary, dmg_mult: float, dur_mult: float,
+		spread: float) -> void:
 	for c in _status_box.get_children():
 		_status_box.remove_child(c)
 		c.queue_free()
+	_bonus_label = null
 	if sources.is_empty() and dmg_mult <= 0.0 and dur_mult <= 0.0:
 		_status_panel.visible = false
 		return
@@ -261,3 +272,99 @@ func _refresh_status_legend() -> void:
 		bonus.add_theme_color_override("font_color", Color("9aa3b2"))
 		bonus.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_status_box.add_child(bonus)
+		_bonus_label = bonus
+	_build_reaction_section(sources)
+
+# ------------------------------------------------------------
+# 五行反应折叠页：状态图例底部的一节，标题常驻、列表按需展开
+# ------------------------------------------------------------
+
+## 当前构筑可触发的反应：可施加状态需覆盖反应 key 两端的五行
+func _available_reactions(sources: Dictionary) -> Array:
+	var elements := {}
+	for sid in sources:
+		var el := Config.get_element(String(sid))
+		if el != "":
+			elements[el] = true
+	var out: Array = []
+	for r in Registry.reaction_list():
+		var parts := String(r.get("key", "")).split("+")
+		if parts.size() == 2 and elements.has(String(parts[0])) \
+				and elements.has(String(parts[1])):
+			out.append(r)
+	return out
+
+## 标题行常驻（0/10 也显示，让玩家早知道有这套机制），展开后列可触发反应
+func _build_reaction_section(sources: Dictionary) -> void:
+	var total := Registry.reactions.size()
+	if total <= 0:
+		return
+	var available := _available_reactions(sources)
+	_status_box.add_child(_make_reaction_head(available.size(), total))
+	if not _reaction_open:
+		return
+	for r in available:
+		_status_box.add_child(_make_reaction_row(r))
+	var tip := Label.new()
+	tip.text = "同一敌人身上凑齐两种相异五行的状态即可触发" if available.is_empty() \
+		else "详细效果见图鉴「五行」页"
+	tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tip.custom_minimum_size = Vector2(150.0, 0.0)
+	tip.add_theme_font_size_override("font_size", 10)
+	tip.add_theme_color_override("font_color", Color("7a8291"))
+	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_box.add_child(tip)
+
+## 折叠标题：整行可点（鼠标 / 触屏），与 main.gd 的 toast 点击同一套事件处理
+## 只有这一行吃鼠标，避免影响点触移动
+func _make_reaction_head(have: int, total: int) -> Control:
+	var head := Label.new()
+	head.text = "☯ 五行反应 %d/%d  %s" % [have, total, "▾" if _reaction_open else "▸"]
+	head.add_theme_font_size_override("font_size", 12)
+	head.add_theme_color_override("font_color",
+		Color("6fd6c8") if have > 0 else Color("9aa3b2"))
+	head.mouse_filter = Control.MOUSE_FILTER_STOP
+	head.gui_input.connect(_on_reaction_head_input)
+	return head
+
+func _on_reaction_head_input(event: InputEvent) -> void:
+	# 写成 if/elif 而不是合并成一个布尔表达式：“is” 的类型收窄只在条件里生效，
+	# 赋给变量时 event.button_index 会退化成 Variant 导致 := 推不出类型
+	var tapped := false
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		tapped = true
+	elif event is InputEventScreenTouch and event.pressed:
+		tapped = true
+	if not tapped:
+		return
+	_reaction_open = not _reaction_open
+	_refresh_status_legend()
+
+## 反应行：图标 + 名称（稀有度配色）+ 相生/相克标记
+func _make_reaction_row(r: Dictionary) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var ico := Label.new()
+	ico.text = String(r.get("ico", "☯"))
+	ico.add_theme_font_size_override("font_size", 13)
+	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(ico)
+	var nm := Label.new()
+	nm.text = String(r.get("name", ""))
+	nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	nm.add_theme_font_size_override("font_size", 11)
+	nm.add_theme_color_override("font_color",
+		Config.rarity_color(String(r.get("rarity", "common"))))
+	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(nm)
+	var overcome := String(r.get("type", "")) == "overcome"
+	var kind := Label.new()
+	kind.text = "相克" if overcome else "相生"
+	kind.add_theme_font_size_override("font_size", 11)
+	kind.add_theme_color_override("font_color",
+		Color("ff9d7a") if overcome else Color("9ad48a"))
+	kind.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(kind)
+	return row

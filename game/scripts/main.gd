@@ -15,6 +15,17 @@ var _status_juice_cd := 0
 var _status_juice_count := 0   # 测试观测：状态打击感触发次数
 var _codex_scan_t := 0.0
 
+## 五行反应打击感：粒子 + 震屏 + 顿帧 + 屏幕中央提示（音效由 Sfx 订阅同一信号）
+const REACTION_HIT_STOP_MS := 45
+const REACTION_JUICE_CD_MS := 90     # 全局节流：连锁反应不叠成卡帧
+const REACTION_POPUP_HOLD := 0.64    # 中央提示驻留（含淡入淡出共 1.2s）
+const REACTION_POPUP_CD_MS := 400    # 同名反应提示节流
+var _reaction_juice_cd := 0
+var _reaction_count := 0             # 测试观测：反应打击感触发次数
+var _reaction_popup_cd: Dictionary = {}   # reaction_id -> 下次可弹提示时间戳
+var _reaction_label: Label = null
+var _reaction_tween: Tween = null
+
 ## 图鉴/成就解锁 toast：右上角轻量提示，队列化（最多 4 条，1.15s/条）
 var _toast_panel: PanelContainer
 var _toast_label: Label
@@ -62,6 +73,7 @@ func _ready() -> void:
 	EventBus.wave_ended.connect(_on_wave_ended)
 	EventBus.wave_started.connect(_on_wave_started)
 	EventBus.status_applied.connect(_on_status_applied)
+	EventBus.element_reaction.connect(_on_element_reaction)
 	EventBus.codex_unlocked.connect(_on_codex_unlocked)
 	EventBus.achievement_unlocked.connect(_on_achievement_unlocked)
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
@@ -108,6 +120,7 @@ func _ready() -> void:
 	_build_pause_menu()
 	_build_end_menus()
 	_build_toast()
+	_build_reaction_popup()
 	queue_redraw()
 
 func _process(delta: float) -> void:
@@ -188,6 +201,79 @@ func _on_status_applied(status_id: String, _stacks: int, _pos: Vector2) -> void:
 	_status_juice_count += 1
 	_on_screen_shake(2.2)
 	_trigger_hit_stop(HIT_STOP_MS, HIT_STOP_SCALE)
+
+## 五行反应特效：粒子常驻播放，震屏/顿帧/中央提示走全局节流
+func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) -> void:
+	var reaction: Dictionary = Registry.get_reaction(reaction_id)
+	var accent := _reaction_color(reaction)
+	var overcome := String(reaction.get("type", "")) == "overcome"
+	# 相克爆发更猛（复用 Burst，无额外场景开销）
+	Burst.spawn(self, pos, accent, 22 if overcome else 12, 300.0 if overcome else 190.0)
+	var now := Time.get_ticks_msec()
+	if now < _reaction_juice_cd:
+		return
+	_reaction_juice_cd = now + REACTION_JUICE_CD_MS
+	_reaction_count += 1
+	var fallback_shake := 4.0 if overcome else 1.8
+	_on_screen_shake(float(reaction.get("shake", fallback_shake)))
+	_trigger_hit_stop(REACTION_HIT_STOP_MS, HIT_STOP_SCALE)
+	_show_reaction_popup(reaction, accent, overcome, now)
+
+## 反应主色：两五行配色混合（key = "elemA+elemB"）；无 key 时退回稀有度色
+func _reaction_color(reaction: Dictionary) -> Color:
+	var parts := String(reaction.get("key", "")).split("+")
+	if parts.size() != 2:
+		return Config.rarity_color(String(reaction.get("rarity", "common")))
+	var a := Color(String(Config.ELEMENT_COLOR.get(String(parts[0]), "#ffffff")))
+	var b := Color(String(Config.ELEMENT_COLOR.get(String(parts[1]), "#ffffff")))
+	return a.lerp(b, 0.5)
+
+## 中央反应提示（如“💧🔥 水克火 · 蒸汽爆炸！”）：弹入 → 驻留 → 淡出
+func _show_reaction_popup(reaction: Dictionary, accent: Color, overcome: bool,
+		now: int) -> void:
+	if _reaction_label == null:
+		return
+	var rid := String(reaction.get("id", ""))
+	if now < int(_reaction_popup_cd.get(rid, 0)):
+		return
+	_reaction_popup_cd[rid] = now + REACTION_POPUP_CD_MS
+	_reaction_label.text = "%s %s%s" % [String(reaction.get("ico", "☯")),
+		String(reaction.get("name", rid)), "！" if overcome else ""]
+	_reaction_label.add_theme_color_override("font_color", accent)
+	_reaction_label.visible = true
+	_reaction_label.modulate.a = 0.0
+	_reaction_label.scale = Vector2(0.88, 0.88)
+	if _reaction_tween != null and _reaction_tween.is_valid():
+		_reaction_tween.kill()
+	_reaction_tween = create_tween()
+	_reaction_tween.set_parallel(true)
+	_reaction_tween.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_reaction_tween.tween_property(_reaction_label, "modulate:a", 1.0, 0.12)
+	_reaction_tween.tween_property(_reaction_label, "scale", Vector2.ONE, 0.16)
+	_reaction_tween.chain().tween_interval(REACTION_POPUP_HOLD)
+	_reaction_tween.chain().tween_property(_reaction_label, "modulate:a", 0.0, 0.4)
+	_reaction_tween.chain().tween_callback(func() -> void:
+		_reaction_label.visible = false)
+
+## 中央提示标签：屏幕正中，不与顶部横幅（48~118px）重叠
+func _build_reaction_popup() -> void:
+	_reaction_label = Label.new()
+	_reaction_label.set_anchors_preset(Control.PRESET_CENTER)
+	_reaction_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_reaction_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_reaction_label.offset_left = -340.0
+	_reaction_label.offset_right = 340.0
+	_reaction_label.offset_top = -28.0
+	_reaction_label.offset_bottom = 28.0
+	_reaction_label.pivot_offset = Vector2(340.0, 28.0)
+	_reaction_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_reaction_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_reaction_label.add_theme_font_size_override("font_size", 30)
+	_reaction_label.add_theme_color_override("font_outline_color", Color(0.02, 0.03, 0.05, 0.92))
+	_reaction_label.add_theme_constant_override("outline_size", 9)
+	_reaction_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_reaction_label.visible = false
+	$UI.add_child(_reaction_label)
 
 func _trigger_hit_stop(duration_ms: int, scale: float) -> void:
 	if duration_ms <= 0:

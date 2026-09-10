@@ -6,15 +6,20 @@ extends Node
 ## 测试可用 set_storage_path_for_tests 隔离路径，避免污染本机档
 
 const SAVE_PATH := "user://codex.json"
-const CATEGORIES := ["status", "weapon", "item", "upgrade", "enemy"]
+const CATEGORIES := ["status", "reaction", "weapon", "item",
+	"upgrade", "enemy"]
 const CAT_NAMES := {
-	"status": "状态", "weapon": "武器", "item": "道具",
+	"status": "状态", "reaction": "五行", "weapon": "武器", "item": "道具",
 	"upgrade": "升级", "enemy": "敌人",
 }
 
 ## 图鉴首次解锁奖励（土豆精华）：收集越多，局外天赋成型越快
+## 五行反应需主动凑状态组合才能触发，门槛高于普通条目，取平衡区间上限
+## 难度介于道具（5）与反应（7）之间，取 6（与敌人同级）
+## （冒烟测试限定每类奖励在 [4, 7]，超出会被判为失衡）
 const UNLOCK_REWARDS := {
-	"status": 4, "weapon": 7, "item": 5, "upgrade": 4, "enemy": 6,
+	"status": 4, "reaction": 7, "weapon": 7, "item": 5,
+	"upgrade": 4, "enemy": 6,
 }
 
 ## 成就定义：stat 计数器达到 target 即达成（desc 同时用于图鉴详情）
@@ -50,7 +55,7 @@ const STAT_NAMES := {
 	"kills": "累计击杀", "boss_kills": "BOSS 击破", "waves": "累计清波",
 	"best_wave": "最远波次", "status_triggers": "状态触发", "runs": "累计局数",
 	"evolutions": "武器进化", "purchases": "商店购买", "best_score": "最高积分",
-	"victories": "胜利局数",
+	"victories": "胜利局数", "reactions": "五行反应",
 }
 
 var _seen: Dictionary = {}          # category -> { id: true }
@@ -69,6 +74,7 @@ func _ready() -> void:
 	EventBus.boss_killed.connect(_on_boss_killed)
 	EventBus.run_started.connect(_on_run_started)
 	EventBus.status_applied.connect(_on_status_applied)
+	EventBus.element_reaction.connect(_on_element_reaction)
 	EventBus.item_purchased.connect(_on_item_purchased)
 	EventBus.run_ended.connect(_on_run_ended)
 	# 旧档可能只记了统计、没记成就；延后到本帧末补判，此时 MetaProgress autoload 已就绪可发奖励
@@ -146,6 +152,7 @@ func unlocked_count(cat: String) -> int:
 func total_entries(cat: String) -> int:
 	match cat:
 		"status": return Config.STATUS.size()
+		"reaction": return Registry.reactions.size()
 		"weapon": return Registry.weapons.size()
 		"item": return Registry.items.size()
 		"upgrade": return Registry.upgrades.size()
@@ -156,6 +163,7 @@ func total_entries(cat: String) -> int:
 func display_name(cat: String, id: String) -> String:
 	match cat:
 		"status": return String(Config.STATUS.get(id, {}).get("name", id))
+		"reaction": return String(Registry.reactions.get(id, {}).get("name", id))
 		"weapon": return String(Registry.weapons.get(id, {}).get("name", id))
 		"item": return String(Registry.items.get(id, {}).get("name", id))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("name", id))
@@ -166,6 +174,7 @@ func display_name(cat: String, id: String) -> String:
 func display_icon(cat: String, id: String) -> String:
 	match cat:
 		"status": return String(Config.STATUS.get(id, {}).get("ico", "❓"))
+		"reaction": return String(Registry.reactions.get(id, {}).get("ico", "☯"))
 		"weapon": return String(Registry.weapons.get(id, {}).get("ico", "🔧"))
 		"item": return String(Registry.items.get(id, {}).get("ico", "🧩"))
 		"upgrade": return String(Registry.upgrades.get(id, {}).get("ico", "✨"))
@@ -274,6 +283,9 @@ func _on_run_started() -> void:
 
 func _on_status_applied(_id: String, _stacks: int, _pos: Vector2) -> void:
 	add_stat("status_triggers")
+
+func _on_element_reaction(_reaction_id: String, _pos: Vector2, _targets: Array) -> void:
+	add_stat("reactions")
 
 func _on_item_purchased(_id: String) -> void:
 	add_stat("purchases")

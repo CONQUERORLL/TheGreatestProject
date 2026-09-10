@@ -600,7 +600,13 @@ func _check_items() -> void:
 	if not is_equal_approx(hp_before - e_stat.hp, burn_expected):
 		_fail("燃烧跳伤数值错误（%.2f，期望 %.2f）" % [hp_before - e_stat.hp, burn_expected])
 		return
+	# 到期清除：一次推进 4 秒（> 燃烧 3s）后燃烧应消失
+	e_stat._tick_statuses(4.0)
+	if e_stat.has_status("burn"):
+		_fail("燃烧到期未清除")
+		return
 	# 冰冻：移速归零 + 受到伤害 +25%
+	# 单状态验证：燃烧+冰冻会触发相克「水克火」把双方一起消耗（见 _check_reactions）
 	e_stat.apply_status("freeze", 1, 0.0, 0.0, 1.0)
 	if e_stat._status_speed_mult() > 0.001:
 		_fail("冰冻未定身（speed_mult=%.2f）" % e_stat._status_speed_mult())
@@ -608,11 +614,16 @@ func _check_items() -> void:
 	if not is_equal_approx(e_stat._damage_taken_mult(), 1.25):
 		_fail("冰冻易伤倍率错误（%.2f）" % e_stat._damage_taken_mult())
 		return
-	# 到期清除：一次推进 4 秒后燃烧/冰冻都应消失
+	# 冰冻 + 减速同属水，不触发五行反应，应共存并同时到期
+	e_stat.apply_status("slow", 1, 0.0, 0.0, 1.0)
+	if not e_stat.has_status("freeze") or not e_stat.has_status("slow"):
+		_fail("同五行状态应共存（freeze=%s slow=%s）"
+			% [str(e_stat.has_status("freeze")), str(e_stat.has_status("slow"))])
+		return
 	e_stat._tick_statuses(4.0)
-	if e_stat.has_status("burn") or e_stat.has_status("freeze"):
-		_fail("状态到期未清除（burn=%s freeze=%s）"
-			% [str(e_stat.has_status("burn")), str(e_stat.has_status("freeze"))])
+	if e_stat.has_status("freeze") or e_stat.has_status("slow"):
+		_fail("状态到期未清除（freeze=%s slow=%s）"
+			% [str(e_stat.has_status("freeze")), str(e_stat.has_status("slow"))])
 		return
 	if not is_equal_approx(e_stat._status_speed_mult(), 1.0):
 		_fail("状态清除后移速未恢复")
@@ -634,6 +645,7 @@ func _check_items() -> void:
 		_fail("apply_hit_roll 未施加武器状态")
 		return
 	e_stat.status_resist = 0.5
+	e_stat.statuses.clear()   # 清燃烧：否则会先触发水克火把两者一起消耗
 	e_stat.apply_status("freeze", 1, 4.0, 0.0, 1.0)
 	if float(e_stat.statuses.freeze.remaining) > 2.05:
 		_fail("status_resist 未减免状态时长（%.2f）" % float(e_stat.statuses.freeze.remaining))
@@ -729,6 +741,7 @@ func _check_items() -> void:
 		return
 	Registry.weapons.erase("smoke_status_weapon")
 	_check_status_legend()
+	_check_reactions()
 	print("SMOKE: status effects OK")
 	# 暂停面板内容重建（打开/关闭 + 左右子节点存在）
 	_main.toggle_pause()
@@ -1580,16 +1593,17 @@ func _check_status_legend() -> void:
 	if not is_equal_approx(float(src2["burn"]["chance"]), merged):
 		_fail("状态来源概率合并不对（%.3f ≠ %.3f）" % [float(src2["burn"]["chance"]), merged])
 		return
-	# 强化加成行：伤害/时长 > 0 时图例末尾追加说明
+	# 强化加成行：伤害/时长 > 0 时图例追加说明（末尾已追加五行反应节，按引用取）
 	p2.stats.status_dmg_mult = 0.25
 	p2.stats.status_dur_mult = 0.10
 	hud._status_key = ""
 	hud._refresh_status_legend()
-	var last: Node = hud._status_box.get_child(hud._status_box.get_child_count() - 1)
-	if not (last is Label) or String(last.text).find("伤害") < 0 or String(last.text).find("时长") < 0:
+	var bonus: Label = hud._bonus_label
+	if bonus == null or String(bonus.text).find("伤害") < 0 \
+			or String(bonus.text).find("时长") < 0:
 		_fail("状态强化加成行未显示")
 		return
-	if String(last.text).find("传染") >= 0:
+	if String(bonus.text).find("传染") >= 0:
 		_fail("无中毒来源时不应显示传染加成")
 		return
 	# 瘟疫之心（中毒传染）：存在中毒来源时才追加显示
@@ -1597,8 +1611,7 @@ func _check_status_legend() -> void:
 	p2.stats.status_spread = 1.0
 	hud._status_key = ""
 	hud._refresh_status_legend()
-	var last2: Node = hud._status_box.get_child(hud._status_box.get_child_count() - 1)
-	if not (last2 is Label) or String(last2.text).find("传染") < 0:
+	if hud._bonus_label == null or String(hud._bonus_label.text).find("传染") < 0:
 		_fail("中毒传染加成未显示")
 		return
 	# 还原构筑，避免影响后续存档/结算断言
@@ -1609,6 +1622,416 @@ func _check_status_legend() -> void:
 	hud._refresh_status_legend()
 	print("SMOKE: status legend OK")
 
+## 五行反应系统：数据表自洽 / 每种反应的触发连通性 / Registry 注册校验 /
+## 相生不消耗层数 / 相克消耗+AOE 爆发 / 限时 debuff / 处决 / BOSS 抗性 /
+## 图鉴解锁 / 音效与打击感 / HUD 折叠页
+func _check_reactions() -> void:
+	if _failed:
+		return
+	var p2: Node2D = _main.get_node("Player")
+	# ---- 数据表自洽：10 种（5 相生 + 5 相克），key 必须按五行字母序书写 ----
+	if Config.REACTIONS.size() != 10:
+		_fail("五行反应数量不对（%d，期望 10）" % Config.REACTIONS.size())
+		return
+	if Config.STATUS_ELEMENT.size() != Config.STATUS.size():
+		_fail("五行归属未覆盖全部状态（%d/%d）"
+			% [Config.STATUS_ELEMENT.size(), Config.STATUS.size()])
+		return
+	var gen_cnt := 0
+	for rkey in Config.REACTIONS:
+		var r: Dictionary = Config.REACTIONS[rkey]
+		var parts := String(rkey).split("+")
+		if parts.size() != 2 \
+				or Config.reaction_key(String(parts[0]), String(parts[1])) != String(rkey):
+			_fail("反应 key 未按五行字母序书写，运行时永远查不到（%s）" % String(rkey))
+			return
+		for field in ["id", "name", "ico", "type", "desc", "effect", "rarity", "sfx"]:
+			if not r.has(field):
+				_fail("反应 %s 缺少字段 %s" % [String(rkey), String(field)])
+				return
+		if float(r.get("shake", 0.0)) <= 0.0:
+			_fail("反应 %s 未配置震屏强度" % String(rkey))
+			return
+		if String(r.type) == "generate":
+			gen_cnt += 1
+		elif String(r.type) != "overcome":
+			_fail("反应 type 非法（%s=%s）" % [String(rkey), String(r.type)])
+			return
+	if gen_cnt != 5:
+		_fail("相生/相克配比不对（相生 %d，期望 5）" % gen_cnt)
+		return
+	var elem_seen := {}
+	for sid in Config.STATUS_ELEMENT:
+		var el := Config.get_element(String(sid))
+		if not Config.ELEMENTS.has(el) or not Config.ELEMENT_COLOR.has(el) \
+				or not Config.ELEMENT_NAME.has(el):
+			_fail("状态 %s 归属的五行 %s 缺少配色/中文名" % [String(sid), el])
+			return
+		elem_seen[el] = true
+	if elem_seen.size() != Config.ELEMENTS.size():
+		_fail("五行未被状态全覆盖（%s）" % str(elem_seen.keys()))
+		return
+	# 同五行不反应（冰冻/减速都属水）；key 推导必须对称
+	if not Config.get_reaction("freeze", "slow").is_empty() \
+			or Config.reaction_key("water", "water") != "" \
+			or Config.reaction_key("fire", "wood") != Config.reaction_key("wood", "fire"):
+		_fail("reaction_key 对称性/同五行判定错误")
+		return
+	# ---- 每种反应都能被至少一对状态触发（key 写错会在这里暴露）----
+	var reachable := {}
+	for sid_a in Config.STATUS:
+		for sid_b in Config.STATUS:
+			if String(sid_a) == String(sid_b):
+				continue
+			var found: Dictionary = Registry.find_reaction(String(sid_a), String(sid_b))
+			if not found.is_empty():
+				reachable[String(found.get("id", ""))] = true
+	if reachable.size() != Config.REACTIONS.size():
+		var missing: Array = []
+		for rkey2 in Config.REACTIONS:
+			if not reachable.has(String(Config.REACTIONS[rkey2].get("id", ""))):
+				missing.append(String(rkey2))
+		_fail("有反应无法被任何状态对触发（缺 %s）" % str(missing))
+		return
+	# ---- Registry：内置反应全量注册，双向查询命中 ----
+	if Registry.reactions.size() != Config.REACTIONS.size() \
+			or Registry.reaction_list().size() != Registry.reactions.size() \
+			or Registry.get_reaction("fire_water").is_empty():
+		_fail("Registry 反应注册/查询 API 不完整")
+		return
+	if String(Registry.find_reaction("burn", "poison").get("id", "")) != "wood_fire" \
+			or String(Registry.find_reaction("poison", "burn").get("id", "")) != "wood_fire" \
+			or not Registry.find_reaction("freeze", "slow").is_empty():
+		_fail("Registry.find_reaction 双向查询/同五行判定错误")
+		return
+	# ---- Registry 校验：非法条目全部拒登 ----
+	var bad_reactions: Array = [
+		{ "id": "smoke_r1", "name": "坏类型", "type": "boom", "key": "fire+wood",
+			"effect": { "add_stacks": { "burn": 1 } } },
+		{ "id": "smoke_r2", "name": "key 未按字母序", "type": "generate", "key": "wood+fire",
+			"effect": { "add_stacks": { "burn": 1 } } },
+		{ "id": "smoke_r3", "name": "坏稀有度", "type": "generate", "key": "fire+wood",
+			"rarity": "godly", "effect": { "add_stacks": { "burn": 1 } } },
+		{ "id": "smoke_r4", "name": "相生带消耗键", "type": "generate", "key": "fire+wood",
+			"effect": { "consume": { "burn": 1 } } },
+		{ "id": "smoke_r5", "name": "空效果", "type": "overcome", "key": "fire+water",
+			"effect": {} },
+		{ "id": "smoke_r6", "name": "相克缺消耗", "type": "overcome", "key": "fire+water",
+			"effect": { "aoe_dmg_scale": 2.0 } },
+		{ "id": "smoke_r7", "name": "未知状态 id", "type": "generate", "key": "fire+wood",
+			"effect": { "add_stacks": { "nope": 1 } } },
+		{ "id": "smoke_r8", "name": "半径越界", "type": "overcome", "key": "fire+water",
+			"effect": { "consume": { "burn": 1 }, "aoe_radius": 9999.0 } },
+	]
+	for bad in bad_reactions:
+		if Registry.register_reaction((bad as Dictionary).duplicate(true)):
+			_fail("Registry 接受了非法五行反应（%s）" % String(bad.get("name", "")))
+			return
+	if Registry.reactions.size() != Config.REACTIONS.size():
+		_fail("非法反应污染了注册表（%d）" % Registry.reactions.size())
+		return
+	# 合法条目可注册，并能用同 key 覆盖内置反应（mod 换皮的前提）
+	var ok_reaction := { "id": "smoke_reaction", "name": "测试反应", "ico": "☯",
+		"type": "generate", "rarity": "common", "key": "fire+wood", "desc": "冒烟测试用",
+		"effect": { "add_stacks": { "burn": 2 } }, "sfx": "reaction_wood_fire", "shake": 1.0 }
+	if not Registry.register_reaction(ok_reaction):
+		_fail("Registry 拒绝了合法五行反应")
+		return
+	if String(Registry.find_reaction("burn", "poison").get("id", "")) != "smoke_reaction":
+		_fail("mod 反应未覆盖同 key 内置反应")
+		return
+	var restore: Dictionary = Config.REACTIONS["fire+wood"].duplicate(true)
+	restore["key"] = "fire+wood"
+	Registry.reactions.erase("smoke_reaction")
+	if not Registry.register_reaction(restore) \
+			or String(Registry.find_reaction("poison", "burn").get("id", "")) != "wood_fire" \
+			or Registry.reactions.size() != Config.REACTIONS.size():
+		_fail("内置五行反应还原失败")
+		return
+	# ---- 反应触发与效果（全程同步执行，不跨帧，避开 AI/DoT 干扰）----
+	var reaction_hits: Array = []
+	var reaction_cb := func(rid: String, _pos: Vector2, targets: Array) -> void:
+		reaction_hits.append([rid, targets.size()])
+	EventBus.element_reaction.connect(reaction_cb)
+	var far_corner := Vector2(float(Config.WORLD.w) - 150.0, float(Config.WORLD.h) - 150.0)
+	var e_r: Node2D = _spawn_reaction_target("grunt", far_corner, p2)
+	var e_n: Node2D = _spawn_reaction_target("grunt", far_corner + Vector2(60.0, 0.0), p2)
+	var codex_before: int = CodexData.stat("reactions")
+	var juice_before: int = _main._reaction_count
+	_main._reaction_juice_cd = 0
+	_main._reaction_popup_cd.clear()
+	# 相生「木生火」：中毒(木) + 燃烧(火) → 燃烧 +1 层、时长 ×1.5，双方层数不消耗
+	e_r.apply_status("poison", 2, 0.0, 30.0, 1.0)
+	e_r.apply_status("burn", 2, 0.0, 50.0, 1.0)
+	if reaction_hits.size() != 1 or String(reaction_hits[0][0]) != "wood_fire" \
+			or int(reaction_hits[0][1]) != 1:
+		_fail("木生火未触发或信号载荷错误（%s）" % str(reaction_hits))
+		return
+	if not e_r.has_status("poison") or int(e_r.statuses.poison.stacks) != 2:
+		_fail("相生反应不应消耗层数（poison=%s）" % str(e_r.statuses.get("poison", {})))
+		return
+	if int(e_r.statuses.burn.stacks) != 3 \
+			or not is_equal_approx(float(e_r.statuses.burn.remaining), 4.5):
+		_fail("木生火加层/延时错误（stacks=%d remaining=%.2f，期望 3 / 4.50）"
+			% [int(e_r.statuses.burn.stacks), float(e_r.statuses.burn.remaining)])
+		return
+	# 图鉴解锁 + 统计 + 数据源
+	if not CodexData.is_unlocked("reaction", "wood_fire") \
+			or CodexData.stat("reactions") != codex_before + 1:
+		_fail("反应未解锁图鉴/未计入统计（unlocked=%s stat=%d）"
+			% [str(CodexData.is_unlocked("reaction", "wood_fire")), CodexData.stat("reactions")])
+		return
+	if CodexData.total_entries("reaction") != Registry.reactions.size() \
+			or CodexData.display_name("reaction", "wood_fire") != "木生火" \
+			or CodexData.display_icon("reaction", "wood_fire") != "🌿🔥":
+		_fail("图鉴 reaction 分类数据源不对")
+		return
+	# 打击感：震屏/顿帧计数 + 屏幕中央提示
+	if _main._reaction_count != juice_before + 1 or not _main._reaction_label.visible \
+			or String(_main._reaction_label.text).find("木生火") < 0:
+		_fail("反应打击感/中央提示未触发（count=%d text=%s）"
+			% [_main._reaction_count, String(_main._reaction_label.text)])
+		return
+	# 相生「金生水」：流血(金) + 冰冻(水) → 冰冻 +0.3s；流血转冰伤会再上冰冻，
+	# 必须被“执行中反应”拦住，否则同一反应会递归到深度上限
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	e_r.apply_status("bleed", 2, 0.0, 40.0, 1.0)
+	e_r.apply_status("freeze", 1, 0.0, 0.0, 1.0)
+	if reaction_hits.size() != 1 or String(reaction_hits[0][0]) != "metal_water":
+		_fail("金生水自我递归或未触发（%s）" % str(reaction_hits))
+		return
+	if int(e_r.statuses.bleed.stacks) != 2 \
+			or not is_equal_approx(float(e_r.statuses.freeze.remaining), 1.4):
+		_fail("金生水延时/不消耗错误（bleed=%d freeze=%.2f，期望 2 / 1.40）"
+			% [int(e_r.statuses.bleed.stacks), float(e_r.statuses.freeze.remaining)])
+		return
+	# 相生「水生木」：冰冻(水) + 中毒(木) → 中毒扩散给半径 100 内邻居
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	e_n.statuses.clear()
+	e_r.apply_status("poison", 2, 0.0, 30.0, 1.0)
+	e_r.apply_status("freeze", 1, 0.0, 0.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "water_wood"):
+		_fail("水生木未触发（%s）" % str(reaction_hits))
+		return
+	if not e_n.has_status("poison"):
+		_fail("水生木未把中毒扩散给半径内邻居")
+		return
+	if int(e_r.statuses.poison.stacks) != 2:
+		_fail("相生扩散不应消耗自身层数")
+		return
+	# 相克「水克火」：燃烧(火) + 冰冻(水) → 消耗双方 + 蒸气爆炸（半径 120，强度×2.5）
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	e_n.statuses.clear()
+	var hp_r: float = e_r.hp
+	var hp_n: float = e_n.hp
+	e_r.apply_status("burn", 2, 0.0, 50.0, 1.0)
+	e_r.apply_status("freeze", 1, 0.0, 0.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "fire_water"):
+		_fail("水克火未触发（%s）" % str(reaction_hits))
+		return
+	if not e_r.statuses.is_empty():
+		_fail("相克反应未消耗状态层数（%s）" % str(e_r.statuses.keys()))
+		return
+	# 爆发 = Σ(power × stacks) × 2.5 = (50×2 + 0×1) × 2.5 = 250，自身与邻居各吃一份
+	if not is_equal_approx(hp_r - e_r.hp, 250.0):
+		_fail("水克火自身爆发伤害错误（%.2f，期望 250.00）" % (hp_r - e_r.hp))
+		return
+	if not is_equal_approx(hp_n - e_n.hp, 250.0):
+		_fail("水克火未对半径内邻居造成 AOE（%.2f，期望 250.00）" % (hp_n - e_n.hp))
+		return
+	# 相克「火克金」：燃烧(火) + 流血(金) → 消耗双方 + 熔金（受伤 +50%，持续 3s）
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	e_r.apply_status("burn", 2, 0.0, 50.0, 1.0)
+	e_r.apply_status("bleed", 1, 0.0, 40.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "fire_metal"):
+		_fail("火克金未触发（%s）" % str(reaction_hits))
+		return
+	if e_r.reaction_debuffs.size() != 1 or not is_equal_approx(e_r._damage_taken_mult(), 1.5):
+		_fail("火克金未施加受伤提升 debuff（×%.2f，期望 ×1.50）" % e_r._damage_taken_mult())
+		return
+	e_r._tick_statuses(3.1)
+	if not e_r.reaction_debuffs.is_empty() \
+			or not is_equal_approx(e_r._damage_taken_mult(), 1.0):
+		_fail("反应 debuff 未按时到期")
+		return
+	# 相克「金克木」：流血(金) + 中毒(木) → 各消耗 1 层 + 持续伤害翻倍 4s
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	e_r.apply_status("bleed", 2, 0.0, 40.0, 1.0)
+	e_r.apply_status("poison", 1, 0.0, 0.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "metal_wood"):
+		_fail("金克木未触发（%s）" % str(reaction_hits))
+		return
+	if not is_equal_approx(e_r._reaction_dot_mult(), 2.0):
+		_fail("金克木未提升持续伤害（×%.2f，期望 ×2.00）" % e_r._reaction_dot_mult())
+		return
+	if e_r.has_status("poison") or int(e_r.statuses.bleed.stacks) != 1:
+		_fail("金克木消耗层数错误（bleed=%d，期望 1；poison 应清空）"
+			% int(e_r.statuses.get("bleed", {}).get("stacks", -1)))
+		return
+	# 翻倍后的流血跳伤：40 × 0.12 × 1 层 × 2 = 9.6
+	var hp_dot: float = e_r.hp
+	e_r._tick_statuses(0.6)
+	if not is_equal_approx(hp_dot - e_r.hp, 9.6):
+		_fail("反应翻倍后的流血跳伤错误（%.2f，期望 9.60）" % (hp_dot - e_r.hp))
+		return
+	# 相克「土克水」：眩晕(土) + 冰冻/减速(水)；满血只消耗层数，不处决也不掉血
+	reaction_hits.clear()
+	e_r.statuses.clear()
+	var hp_full: float = e_r.hp
+	e_r.apply_status("stun", 1, 0.0, 0.0, 1.0)
+	e_r.apply_status("slow", 1, 0.0, 0.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "earth_water"):
+		_fail("土克水未触发（%s）" % str(reaction_hits))
+		return
+	if e_r.statuses.has("stun") or e_r.statuses.has("slow") \
+			or not is_equal_approx(e_r.hp, hp_full):
+		_fail("满血土克水应只消耗层数、不处决也不掉血（hp=%.0f/%.0f）" % [e_r.hp, hp_full])
+		return
+	# 血量低于 20% 时土克水直接碎裂
+	var e_x: Node2D = _spawn_reaction_target("grunt", far_corner + Vector2(-320.0, 0.0), p2)
+	e_x.hp = e_x.max_hp * 0.1
+	reaction_hits.clear()
+	e_x.apply_status("stun", 1, 0.0, 0.0, 1.0)
+	e_x.apply_status("freeze", 1, 0.0, 0.0, 1.0)
+	if not _has_reaction_hit(reaction_hits, "earth_water"):
+		_fail("低血土克水未触发（%s）" % str(reaction_hits))
+		return
+	if e_x.hp > 0.0 or not e_x.is_queued_for_deletion():
+		_fail("土克水未处决低血量目标（hp=%.2f）" % e_x.hp)
+		return
+	# BOSS 抗性：status_resist 不止减免状态时长，也削减反应爆发伤害
+	var boss_id := Registry.boss_id()
+	var boss_resist := clampf(float(Registry.enemies[boss_id].get("status_resist", 0.0)), 0.0, 0.95)
+	if boss_resist <= 0.0:
+		_fail("BOSS %s 未配置 status_resist，反应抗性无从生效" % boss_id)
+		return
+	var e_b: Node2D = _spawn_reaction_target(boss_id,
+		Vector2(150.0, float(Config.WORLD.h) - 150.0), p2, boss_resist)
+	reaction_hits.clear()
+	var boss_hp: float = e_b.hp
+	e_b.apply_status("burn", 2, 0.0, 50.0, 1.0)
+	e_b.apply_status("freeze", 1, 0.0, 0.0, 1.0)
+	var boss_expected := 100.0 * 2.5 * (1.0 - boss_resist)
+	if not _has_reaction_hit(reaction_hits, "fire_water"):
+		_fail("BOSS 未触发水克火（%s）" % str(reaction_hits))
+		return
+	if not is_equal_approx(boss_hp - e_b.hp, boss_expected):
+		_fail("BOSS status_resist 未削减反应伤害（%.2f，期望 %.2f）"
+			% [boss_hp - e_b.hp, boss_expected])
+		return
+	# 连锁预算与“执行中”标记必须复位，否则后续反应全部被卡死
+	if Enemy._reaction_depth != 0 or not e_r._reaction_active.is_empty():
+		_fail("反应深度/执行中标记未复位（depth=%d active=%s）"
+			% [Enemy._reaction_depth, str(e_r._reaction_active.keys())])
+		return
+	e_b.queue_free()
+	e_r.queue_free()
+	e_n.queue_free()
+	e_x.queue_free()
+	# ---- HUD 五行反应折叠页 ----
+	var hud: Control = _main.get_node("UI/HUD")
+	var w_backup: Array = p2.weapons.duplicate(true)
+	var items_backup: Dictionary = p2.items_owned.duplicate()
+	var stats_backup: Dictionary = p2.stats.duplicate()
+	# 火焰喷射器(火) + 霜冻法杖(水)：当前构筑只应算出「水克火」一种
+	p2.weapons = [{ "type": "flamethrower", "cd": 0.1 }, { "type": "frost_staff", "cd": 0.8 }]
+	p2.items_owned = {}
+	for sid2 in Config.STATUS:
+		p2.stats["on_hit_" + String(sid2)] = 0.0
+	p2.stats.status_chance = 0.0
+	hud._reaction_open = false
+	hud._status_key = ""
+	hud._refresh_status_legend()
+	var avail: Array = hud._available_reactions(p2.status_sources())
+	if avail.size() != 1 or String(avail[0].get("id", "")) != "fire_water":
+		_fail("HUD 可触发反应数量算错（%s）" % str(avail))
+		return
+	var head := _find_reaction_head(hud)
+	if head == null or String(head.text).find("五行反应 1/%d" % Registry.reactions.size()) < 0 \
+			or String(head.text).find("▸") < 0:
+		_fail("HUD 反应折叠标题未显示可触发数量（%s）"
+			% ("<缺失>" if head == null else String(head.text)))
+		return
+	# hud 声明为 Control，_status_box 属动态访问返回 Variant，必须显式标注类型
+	var folded_children: int = hud._status_box.get_child_count()
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	hud._on_reaction_head_input(click)
+	if not hud._reaction_open or hud._status_box.get_child_count() <= folded_children:
+		_fail("点击标题未展开五行反应表（open=%s children=%d→%d）"
+			% [str(hud._reaction_open), folded_children, hud._status_box.get_child_count()])
+		return
+	var head2 := _find_reaction_head(hud)
+	if head2 == null or String(head2.text).find("▾") < 0:
+		_fail("展开态折叠标题未切换箭头")
+		return
+	hud._on_reaction_head_input(click)
+	if hud._reaction_open or hud._status_box.get_child_count() != folded_children:
+		_fail("再次点击未收起五行反应表")
+		return
+	# 还原构筑与折叠态，避免影响后续存档/结算断言
+	p2.weapons = w_backup
+	p2.items_owned = items_backup
+	p2.stats = stats_backup
+	hud._reaction_open = false
+	hud._status_key = ""
+	hud._refresh_status_legend()
+	# ---- 反应音效：10 种全部程序生成注册，同名 160ms 节流 ----
+	for rkey3 in Config.REACTIONS:
+		var sfx_id := String(Config.REACTIONS[rkey3].get("sfx", ""))
+		if sfx_id == "" or not Sfx._streams.has(sfx_id):
+			_fail("反应音效未注册（%s）" % sfx_id)
+			return
+	Sfx._reaction_cd.clear()
+	EventBus.element_reaction.emit("wood_fire", Vector2.ZERO, [])
+	var rcd0 := int(Sfx._reaction_cd.get("wood_fire", 0))
+	EventBus.element_reaction.emit("wood_fire", Vector2.ZERO, [])
+	if rcd0 <= 0 or int(Sfx._reaction_cd.get("wood_fire", 0)) != rcd0:
+		_fail("反应音效节流失效")
+		return
+	EventBus.element_reaction.disconnect(reaction_cb)
+	# 顿帧会把 Engine.time_scale 压到 0.18，而本函数全程同步不跨帧，
+	# 没有 _process 去收尾；不复位会让后续所有用例都在慢放里跑
+	_main._hit_stop_until_ms = 0
+	_main._end_hit_stop()
+	print("SMOKE: element reactions OK")
+
+## 反应测试用标靶：高血量 + 指定状态抗性 + 已写入空间索引（AOE/扩散查得到）
+## resist 默认 0，让爆发伤害可精确计算；BOSS 抗性用例须把配置值显式传回来
+func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
+		resist: float = 0.0) -> Node2D:
+	var e: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	e.setup(type_id, 1)
+	e.max_hp = 100000.0
+	e.hp = 100000.0
+	e.position = pos
+	_main.add_child(e)
+	e.player = p2
+	e.status_resist = resist
+	e.statuses.clear()
+	e.reaction_debuffs.clear()
+	Combat.update_enemy_position(e)
+	return e
+
+## 反应信号命中里是否包含指定反应（扩散/AOE 会连带邻居反应，不能卡总数）
+func _has_reaction_hit(hits: Array, reaction_id: String) -> bool:
+	for h in hits:
+		if h is Array and not (h as Array).is_empty() and String(h[0]) == reaction_id:
+			return true
+	return false
+
+## 在图例里找五行反应折叠标题（每次重建都是新节点，只能按文本找）
+func _find_reaction_head(hud: Control) -> Label:
+	for c in hud._status_box.get_children():
+		if c is Label and String((c as Label).text).find("五行反应") >= 0:
+			return c as Label
+	return null
 ## 无尽炼狱模式回归：标准通关→继续无尽、BOSS 波判定/积分公式/排行榜、
 ## BOSS 击破 → 商店衔接 → wave11 存档/恢复、240 敌群性能压测、死亡入榜
 func _check_endless() -> void:
