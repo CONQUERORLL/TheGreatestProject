@@ -315,6 +315,11 @@ func _valid_character_trait(data: Dictionary) -> bool:
 		return _reject("角色特性", data, "ID/名称不能为空")
 	if String(t.kind) not in TRAIT_KINDS:
 		return _reject("角色特性", data, "未知 kind：%s" % String(t.kind))
+	# 印记：可选。显式声明空串合法（= 刻意「无印记」，如土豆勇者的均衡之道），
+	# 但写错 id 必须拒登 —— 否则角色的元素风格会静默消失，玩家只看到「特色没生效」
+	if t.has("sigil"):
+		if typeof(t["sigil"]) != TYPE_STRING or not Config.sigil_valid(String(t["sigil"])):
+			return _reject("角色特性", data, "未知印记 id：%s" % str(t["sigil"]))
 	if String(t.kind) == "stats":
 		# effects 是「增量」语义，必须走 EFFECT_LIMITS：
 		# STAT_LIMITS 描述的是角色 stats 的绝对值区间（crit_mult 下限 1.0），
@@ -817,6 +822,9 @@ func _register_builtin() -> void:
 				"id": "even_keel", "name": "均衡之道", "ico": "✨",
 				"desc": "伤害 / 攻速 / 移速 +5%，材料获取 +10%：没有短板，但也不走极端",
 				"kind": "stats",
+				# 显式声明「无印记」：均衡之道刻意不带任何元素 / 风格倾向。
+				# 不写的话会被 effects 里的 speed_mult 推导成「疾风」，与角色定位矛盾
+				"sigil": "",
 				"effects": { "dmg_mult": 0.05, "as_mult": 0.05, "speed_mult": 0.05,
 					"harvesting": 0.10 },
 			},

@@ -16,10 +16,11 @@ var max_life := 0.22
 var fx := "slash"
 var col := Color(1.0, 0.914, 0.69)
 var tint := Color(0, 0, 0, 0)   # 角色特性强调色（透明 = 该武器未吃到特性加成）
+var sigil := ""                 # 角色印记 id（元素 / 风格痕迹，常驻；空 = 无印记）
 
 func setup(pos: Vector2, direction: float, slash_range: float, swing_arc: float,
 		fx_id: String = "", tint_col: Color = Color(0, 0, 0, 0),
-		slash_col: Color = Color(1.0, 0.914, 0.69)) -> void:
+		slash_col: Color = Color(1.0, 0.914, 0.69), sigil_id: String = "") -> void:
 	position = pos
 	dir = direction
 	range_r = slash_range
@@ -27,6 +28,7 @@ func setup(pos: Vector2, direction: float, slash_range: float, swing_arc: float,
 	fx = fx_id if fx_id != "" else "slash"
 	tint = tint_col
 	col = slash_col
+	sigil = sigil_id
 	z_index = 15
 
 func _ready() -> void:
@@ -48,10 +50,54 @@ func _draw() -> void:
 			_draw_smash(t)
 		_:
 			_draw_slash(t)
+	# 角色印记：刀光上的元素 / 风格痕迹，常驻（沿弧线铺开、随扫过进度淡出）
+	if sigil != "":
+		_draw_sigil(t)
 	# 特性强调弧：只有该武器的近战范围确实被角色特性放大时才画
 	if tint.a > 0.0:
 		draw_arc(Vector2.ZERO, range_r * 0.96, dir - arc / 2.0, dir + arc / 2.0,
 			maxi(8, int(arc * 18.0)), Color(tint.r, tint.g, tint.b, 0.45 * (1.0 - t)), 2.0, true)
+
+## ---------------- 角色印记 ----------------
+## 沿刀光弧线铺开，随扫过进度淡出 —— 让「谁在挥这把刀」看得出来。
+## 只作用在刀光本体上，不改变判定范围（判定仍在 player._melee_slash 一次结算）
+func _draw_sigil(t: float) -> void:
+	var c := Config.sigil_color(sigil)
+	if c.a <= 0.0:
+		return
+	var fade := maxf(0.0, 1.0 - t * 1.1)
+	if fade <= 0.0:
+		return
+	var a0 := dir - arc / 2.0
+	var span := arc * clampf(t / 0.6, 0.0, 1.0)
+	if span <= 0.001:
+		return
+	match Config.sigil_glyph(sigil):
+		"edge":
+			# 剑 / 疾：外缘再加一道更亮的印记色刃弧，与刀身形成双线
+			draw_arc(Vector2.ZERO, range_r * 1.02, a0, a0 + span,
+				maxi(8, int(span * 20.0)), Color(c.r, c.g, c.b, 0.62 * fade), 2.2, true)
+		"spark":
+			# 火 / 爆 / 血：刃口外缘迸出火星
+			var n := maxi(3, int(span * 7.0))
+			for i in n:
+				var d := Vector2.from_angle(a0 + span * (float(i) + 0.5) / float(n))
+				var jit := Vector2(sin(float(i) * 3.1), cos(float(i) * 2.3)) * 5.0
+				draw_circle(d * (range_r * 0.92 + float(i % 3) * 5.0) + jit,
+					1.9, Color(c.r, c.g, c.b, 0.70 * fade))
+		"ring":
+			# 守 / 运：弧两端各挂一个光点
+			draw_circle(Vector2.from_angle(a0) * range_r * 0.9,
+				3.0, Color(c.r, c.g, c.b, 0.60 * fade))
+			draw_circle(Vector2.from_angle(a0 + span) * range_r * 0.9,
+				3.0, Color(c.r, c.g, c.b, 0.60 * fade))
+		_:
+			# mote（水 / 木 / 土 / 生）：沿弧线内侧漂浮微粒
+			var n2 := maxi(3, int(span * 6.0))
+			for i2 in n2:
+				var d2 := Vector2.from_angle(a0 + span * (float(i2) + 0.5) / float(n2))
+				draw_circle(d2 * (range_r * 0.86 - float(i2 % 3) * 7.0), 1.5,
+					Color(c.r, c.g, c.b, 0.55 * fade))
 
 ## 扇形填充（含圆心）
 func _arc_poly(a0: float, span: float, r: float, c: Color) -> void:

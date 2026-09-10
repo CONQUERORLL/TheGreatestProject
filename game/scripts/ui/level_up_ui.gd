@@ -51,6 +51,7 @@ func open() -> void:
 			if weighted[k].item == chosen:
 				weighted.remove_at(k)
 				break
+	_ensure_affinity_choice(aff)
 	_title.text = "升级！Lv %d" % GameState.level
 	_build_cards()
 	visible = true
@@ -59,6 +60,32 @@ func open() -> void:
 	var tw := create_tween()
 	tw.tween_property(self, "modulate:a", 1.0, 0.1)
 	_grab_first_card()   # 旧按钮已 free，直接抓焦第一张
+
+## 亲和保底：三张全都不契合构筑时，把最后一张换成契合项。
+## 单靠加权只能让契合项「更常出现」，玩家仍可能连着几级看不到任何与构筑相关的东西 ——
+## 保底把「关联性」从概率变成承诺，这是构筑感能否成立的关键一步。
+## 只换最后一张：保留前两张的随机性，避免每次升级都是同一类卡，那会让 build 变窄而非变丰富。
+func _ensure_affinity_choice(aff: Array) -> void:
+	if aff.is_empty() or _choices.is_empty():
+		return
+	for c in _choices:
+		if Config.affinity_mult(Config.entry_tags(c), aff) > 1.0:
+			return   # 已有契合项，不必干预
+	var taken := {}
+	for c2 in _choices:
+		taken[String(c2.get("id", ""))] = true
+	var pool: Array = []
+	for u in Registry.upgrade_list():
+		if taken.has(String(u.get("id", ""))):
+			continue
+		var m := Config.affinity_mult(Config.entry_tags(u), aff)
+		if m <= 1.0:
+			continue
+		pool.append({ "item": u,
+			"w": Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) * m })
+	if pool.is_empty():
+		return
+	_choices[_choices.size() - 1] = GameRng.weighted_pick(pool)
 
 func _grab_first_card() -> void:
 	if not visible:

@@ -18,6 +18,7 @@ var col := Color("ffe08a")
 var roll_data: Dictionary = {}
 var fx := "bolt"                 # 外观族（Registry.WEAPON_FX）
 var tint := Color(0, 0, 0, 0)    # 角色特性强调色（透明 = 该武器未吃到特性加成）
+var sigil := ""                  # 角色印记 id（元素 / 风格痕迹，常驻；空 = 无印记）
 
 func _ready() -> void:
 	add_to_group("player_bullets")
@@ -34,6 +35,7 @@ func setup(pos: Vector2, ang: float, wcfg: Dictionary, roll: Dictionary,
 	life = float(wcfg.get("bullet_life", 1.1))
 	base_life = life
 	tint = trait_tint
+	sigil = String(roll.get("sigil", ""))
 	fx = String(wcfg.get("fx", ""))
 	if fx == "":
 		# 缺省兜底：多弹丸当霰弹、其余当普通弹（mod 武器不写 fx 也能看）
@@ -141,10 +143,58 @@ func _draw() -> void:
 			_draw_pellet()
 		_:
 			_draw_bolt()
+	# 角色印记：元素 / 风格痕迹，常驻 —— 与「是否吃到加成」无关（见 Config.SIGILS）
+	if sigil != "":
+		_draw_sigil(d)
 	# 特性强调环：只有这把武器真的吃到角色特性加成时才会画（见 player._trait_tint_for）
 	if tint.a > 0.0:
 		draw_arc(Vector2.ZERO, radius + 4.5, 0.0, TAU, 24,
 			Color(tint.r, tint.g, tint.b, 0.55), 1.8, true)
+
+## ---------------- 角色印记 ----------------
+## 印记回答「这是谁在用」，常驻叠加在武器外观之上（不像 tint 需吃到加成才亮）。
+## 刻意不依赖时间相位：静态外观的弹丸只画一次，加印记不引入逐帧重绘开销。
+func _draw_sigil(d: Vector2) -> void:
+	var c := Config.sigil_color(sigil)
+	if c.a <= 0.0:
+		return
+	match Config.sigil_glyph(sigil):
+		"spark":
+			_draw_sigil_spark(d, c)
+		"mote":
+			_draw_sigil_mote(d, c)
+		"edge":
+			_draw_sigil_edge(d, c)
+		"ring":
+			_draw_sigil_ring(c)
+
+## 飞散火星：沿速度反方向洒开，离弹丸越远越小越暗（火 / 爆 / 血）
+func _draw_sigil_spark(d: Vector2, c: Color) -> void:
+	var perp := Vector2(-d.y, d.x)
+	for k in 3:
+		var u := float(k) / 2.0
+		var jit := perp * (sin(float(k) * 2.1) * 2.4) + d * (cos(float(k) * 1.7) * 1.6)
+		var p := -d * (5.0 + u * 10.0) + jit
+		draw_circle(p, 1.7 - u * 0.45, Color(c.r, c.g, c.b, 0.78 - u * 0.24))
+
+## 漂浮微粒：绕弹丸两侧散开（水 / 木 / 土 / 生）
+func _draw_sigil_mote(d: Vector2, c: Color) -> void:
+	var perp := Vector2(-d.y, d.x)
+	for k in 4:
+		var u := float(k) / 3.0
+		var side := 1.0 if k % 2 == 0 else -1.0
+		var p := perp * side * (radius + 2.5 + u * 3.0) - d * (u * 4.0)
+		draw_circle(p, 1.35, Color(c.r, c.g, c.b, 0.52))
+
+## 附加锋线：弹丸前后各拉一道短刃光，与速度拖尾同向（剑 / 疾）
+func _draw_sigil_edge(d: Vector2, c: Color) -> void:
+	draw_line(-d * 11.0, -d * 3.0, Color(c.r, c.g, c.b, 0.62), 1.7, true)
+	draw_line(d * 3.5, d * 7.5, Color(c.r, c.g, c.b, 0.45), 1.3, true)
+
+## 脉动光环：贴着弹丸的一圈细环（守 / 运）。半径固定，才不必逐帧重绘
+func _draw_sigil_ring(c: Color) -> void:
+	draw_arc(Vector2.ZERO, radius + 2.5, 0.0, TAU, 20,
+		Color(c.r, c.g, c.b, 0.40), 1.3, true)
 
 ## 速度拖尾：长度正比于实际弹速。
 ## 540 与 864 的弹速差会直接变成约一倍长的光带 —— 弹速类角色特性的可视化就靠这里

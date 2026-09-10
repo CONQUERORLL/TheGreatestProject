@@ -767,6 +767,8 @@ func _check_items() -> void:
 	await _check_character_traits()
 	await _check_weapon_fx()
 	_check_affinity()
+	_check_sigils()
+	_check_affinity_floor()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -3626,6 +3628,176 @@ func _check_affinity() -> void:
 		_fail("亲和加权后升级池为空")
 		return
 	print("SMOKE: affinity OK")
+
+## 角色印记（SIGIL）：表完整性 / 推导规则 / 显式声明优先 / 是否真的传到弹丸与刀光
+func _check_sigils() -> void:
+	# ---- 1. 表完整性 ----
+	if Config.SIGILS.is_empty():
+		_fail("SIGILS 表为空")
+		return
+	for sid in Config.SIGILS:
+		var s: Dictionary = Config.SIGILS[sid]
+		for key in ["name", "color", "glyph"]:
+			if not s.has(key):
+				_fail("印记 %s 缺少字段 %s" % [String(sid), key])
+				return
+		if not (String(s.glyph) in Config.SIGIL_GLYPHS):
+			_fail("印记 %s 的 glyph 非法：%s" % [String(sid), String(s.glyph)])
+			return
+		if not Color.html_is_valid(String(s.color)):
+			_fail("印记 %s 的颜色非法：%s" % [String(sid), String(s.color)])
+			return
+	# ---- 2. 每个角色都能推导出合法印记（空串合法 = 刻意无印记）----
+	var used := {}
+	var blank := 0
+	for cid in Registry.characters:
+		var sg := Config.sigil_for(String(cid))
+		if not Config.sigil_valid(sg):
+			_fail("角色 %s 推导出非法印记：%s" % [String(cid), sg])
+			return
+		if sg == "":
+			blank += 1
+		else:
+			used[sg] = true
+	if used.size() < 8:
+		_fail("印记覆盖面过低：只有 %d 种被角色使用" % used.size())
+		return
+	if blank >= Registry.characters.size():
+		_fail("所有角色都没有印记")
+		return
+	# ---- 3. 显式声明优先：土豆勇者 effects 里有 speed_mult，
+	# 不显式写空串就会被推成「疾风」，与「均衡之道」的定位矛盾 ----
+	if Config.sigil_for("potato") != "":
+		_fail("显式声明的空印记未生效（土豆勇者实得 %s）" % Config.sigil_for("potato"))
+		return
+	if Config.sigil_for("nobody_here") != "":
+		_fail("未知角色应推导出空印记")
+		return
+	# ---- 4. 推导规则抽查：光环按元素、剑客按 effects、荆棘按定位 ----
+	var expects := { "pyromancer": "fire", "swordmaster": "blade", "guardian": "guard",
+		"warlord": "blade", "tidecaller": "water" }
+	for cid2 in expects:
+		var got := Config.sigil_for(String(cid2))
+		if got != String(expects[cid2]):
+			_fail("角色 %s 的印记应为 %s（实得 %s）" % [String(cid2), String(expects[cid2]), got])
+			return
+	# ---- 5. 数据链路：印记必须真的到达弹丸与刀光实例 ----
+	var b = preload("res://scenes/weapons/bullet.tscn").instantiate()
+	b.setup(Vector2.ZERO, 0.0, { "fx": "bolt", "bspeed": 500.0 },
+		{ "dmg": 1.0, "crit": false, "sigil": "fire" }, Color(0, 0, 0, 0))
+	if String(b.sigil) != "fire":
+		_fail("弹丸未接收印记（实得 %s）" % String(b.sigil))
+		b.free()
+		return
+	b.free()
+	var sl := Slash.new()
+	sl.setup(Vector2.ZERO, 0.0, 100.0, 1.5, "slash", Color(0, 0, 0, 0),
+		Color(1, 1, 1), "water")
+	if String(sl.sigil) != "water":
+		_fail("刀光未接收印记（实得 %s）" % String(sl.sigil))
+		sl.free()
+		return
+	sl.free()
+	# ---- 6. 玩家侧：player.sigil 与 _roll_damage 的打包 ----
+	var pl: Node = _main.get_node("Player")
+	var want := Config.sigil_for(GameState.character_id)
+	if String(pl.sigil) != want:
+		_fail("player.sigil 与当前角色不符（%s vs %s）" % [String(pl.sigil), want])
+		return
+	var roll: Dictionary = pl._roll_damage(10.0, {})
+	if String(roll.get("sigil", "")) != want:
+		_fail("_roll_damage 未打包印记")
+		return
+	print("SMOKE: sigils OK (%d kinds in use / %d blank)" % [used.size(), blank])
+
+## 亲和保底：单靠加权只是「更常出现」，保底把关联性变成承诺。
+## 这里直接对保底函数做确定性验证 —— 不依赖随机抽到什么，断言永远可复现
+func _check_affinity_floor() -> void:
+	# ---- 1. 升级三选一：三张全不契合时必须换出至少一张契合项 ----
+	var lu: Node = _main.get_node("UI/LevelUp")
+	var cold: Array = []
+	for u in Registry.upgrade_list():
+		if not ("melee" in Config.entry_tags(u)):
+			cold.append(u)
+		if cold.size() >= 3:
+			break
+	if cold.size() < 3:
+		_fail("找不到 3 个非近战升级用于保底测试")
+		return
+	lu._choices = [cold[0], cold[1], cold[2]]
+	lu._ensure_affinity_choice(["melee"])
+	var filled := false
+	for c in lu._choices:
+		if "melee" in Config.entry_tags(c):
+			filled = true
+	if not filled:
+		_fail("升级保底未生效：三张全不契合时没有换出契合项")
+		return
+	# ---- 2. 已有契合项时不得干预（否则每级都塞同一类卡，build 会变窄而非变丰富）----
+	var hot: Dictionary = {}
+	for u2 in Registry.upgrade_list():
+		if "melee" in Config.entry_tags(u2):
+			hot = u2
+			break
+	if hot.is_empty():
+		_fail("升级池里没有近战向条目")
+		return
+	lu._choices = [hot, cold[0], cold[1]]
+	lu._ensure_affinity_choice(["melee"])
+	if String(lu._choices[1].id) != String(cold[0].id) \
+			or String(lu._choices[2].id) != String(cold[1].id):
+		_fail("已有契合项时保底仍然替换了卡片")
+		return
+	# ---- 3. 无亲和标签时不得干预 ----
+	lu._choices = [cold[0], cold[1], cold[2]]
+	lu._ensure_affinity_choice([])
+	if String(lu._choices[2].id) != String(cold[2].id):
+		_fail("无亲和标签时保底不应改动卡片")
+		return
+	lu._choices = []
+	# ---- 4. 商店保底：整店无契合时必须塞一格 ----
+	var shop: Node = _main.get_node("UI/Shop")
+	var saved_aff: Array = shop._affinity_cache
+	var saved_goods: Array = shop.goods
+	shop._affinity_cache = ["melee"]   # 直接喂亲和标签，把变量控住
+	var cold_items: Array = []
+	for it in Registry.item_list():
+		if not ("melee" in Config.entry_tags(it)):
+			cold_items.append(it)
+		if cold_items.size() >= 4:
+			break
+	if cold_items.size() < 4:
+		_fail("找不到 4 个非近战道具用于保底测试")
+		shop._affinity_cache = saved_aff
+		return
+	shop.goods = _cold_goods(cold_items, 0)
+	shop._ensure_affinity_goods()
+	var last: Dictionary = shop.goods[shop.goods.size() - 1]
+	if not bool(last.get("forced_synergy", false)) or int(last.get("synergy", 0)) <= 0:
+		_fail("商店保底未生效：整店无契合时最后一格未被替换")
+		shop.goods = saved_goods
+		shop._affinity_cache = saved_aff
+		return
+	# ---- 5. 已有契合商品时不得干预 ----
+	shop.goods = _cold_goods(cold_items, 1)
+	shop._ensure_affinity_goods()
+	if bool(shop.goods[shop.goods.size() - 1].get("forced_synergy", false)):
+		_fail("已有契合商品时保底仍然替换")
+		shop.goods = saved_goods
+		shop._affinity_cache = saved_aff
+		return
+	shop.goods = saved_goods
+	shop._affinity_cache = saved_aff
+	print("SMOKE: affinity floor OK (level-up + shop)")
+
+## 构造 4 格假商品（synergy 固定为 v），供保底测试用
+func _cold_goods(entries: Array, v: int) -> Array:
+	var out: Array = []
+	for e in entries:
+		out.append({ "kind": "item", "id": e.id, "ico": e.ico, "name": e.name,
+			"desc": e.desc, "rarity": e.rarity, "base_price": int(e.price),
+			"synergy": v, "sold": false, "locked": false })
+	return out
 
 func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
 		resist: float = 0.0) -> Node2D:
