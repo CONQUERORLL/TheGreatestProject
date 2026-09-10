@@ -307,9 +307,11 @@ func _build_step() -> void:
 		0:
 			_options.columns = 3
 			for c: Dictionary in Registry.characters.values():
+				var locked := not Unlocks.is_unlocked("character", String(c.id))
 				_options.add_child(_make_card(_g_char, c.id,
 					c.get("ico", "?"), c.name, _character_card_desc(c),
-					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id))
+					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id,
+					locked, Unlocks.unlock_hint("character", String(c.id))))
 		1:
 			_options.columns = 4
 			# 开局武器完全由玩家决定：角色不再绑定"初始武器"，
@@ -317,9 +319,11 @@ func _build_step() -> void:
 			for w: Dictionary in Registry.weapons.values():
 				if float(w.get("shop_weight", 1.0)) <= 0.0:
 					continue   # 进化形态不进开局池（只能靠波末同名武器合成获得）
+				var locked := not Unlocks.is_unlocked("weapon", String(w.id))
 				_options.add_child(_make_card(_g_weapon, w.id,
 					w.ico, w.name, "%s\n伤害 %.0f · CD %.2fs" % [w.desc, float(w.dmg), float(w.cd)],
-					w.id == _sel_weapon, Config.rarity_color(w.get("rarity", "common"))))
+					w.id == _sel_weapon, Config.rarity_color(w.get("rarity", "common")), "",
+					locked, Unlocks.unlock_hint("weapon", String(w.id))))
 		2:
 			_options.columns = 4
 			_options.add_child(_make_card(_g_item, "", "✖", "不带道具", "空手开局",
@@ -344,14 +348,17 @@ func _build_step() -> void:
 			_options.add_child(_make_card(_g_mode, "endless", "🔥", "无尽炼狱",
 				"波次无上限 · 每 10 波一轮 BOSS\n击杀累计积分 · 冲击排行榜",
 				_sel_endless, Color("e0564f")))
-	# 焦点：已选中的卡片，否则第一张
+	# 焦点：已选中的卡片，否则第一张可用卡（跳过锁定/禁用卡）
 	var focus_target: Button = null
 	for b in _options.get_children():
-		if b.button_pressed:
+		if b.button_pressed and not b.disabled:
 			focus_target = b
 			break
-	if focus_target == null and _options.get_child_count() > 0:
-		focus_target = _options.get_child(0)
+	if focus_target == null:
+		for b in _options.get_children():
+			if not b.disabled:
+				focus_target = b
+				break
 	if focus_target:
 		focus_target.grab_focus()
 
@@ -369,12 +376,14 @@ func _character_card_desc(c: Dictionary) -> String:
 ## 选项卡片：暗底 + 稀有度/角色/难度色描边，大图标 + 色名 + 描述；选中即确认
 ## 前三步自动进入下一步，最后一步聚焦"开始游戏"防误触
 ## char_id 非空时卡面用程序化角色头像替代 emoji 图标
-func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color, char_id: String = "") -> Button:
+## locked=true 时：灰态 + 🔒 + 解锁提示，且不可选（解锁系统）
+func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String, desc: String, pressed: bool, accent: Color, char_id: String = "", locked: bool = false, lock_hint: String = "") -> Button:
 	var b := Button.new()
 	b.toggle_mode = true
 	b.button_group = group
-	b.button_pressed = pressed
+	b.button_pressed = pressed and not locked
 	b.set_meta("id", id)
+	b.disabled = locked
 	# 卡面高度容纳「特性描述 + 玩法定位」两段文本（角色步），
 	# 其余步骤内容较短，靠 VBox 居中，视觉上仍然平衡
 	b.custom_minimum_size = Vector2(218.0, 244.0)
@@ -387,10 +396,14 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	var hover: StyleBoxFlat = normal.duplicate()
 	hover.bg_color = Color(accent.r, accent.g, accent.b, 0.20)
 	hover.border_color = Color("e8b84b")
+	var dis: StyleBoxFlat = normal.duplicate()
+	dis.bg_color = Color(accent.r, accent.g, accent.b, 0.04)
+	dis.border_color = Color("3a414d")
 	b.add_theme_stylebox_override("normal", normal)
 	b.add_theme_stylebox_override("hover", hover)
 	b.add_theme_stylebox_override("focus", hover.duplicate())
 	b.add_theme_stylebox_override("pressed", hover.duplicate())
+	b.add_theme_stylebox_override("disabled", dis)
 	# 卡面内容（不拦截鼠标，保证按钮可点）
 	var box := VBoxContainer.new()
 	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -405,7 +418,7 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 		box.add_child(av)
 	else:
 		var ico_l := Label.new()
-		ico_l.text = ico
+		ico_l.text = "🔒" if locked else ico
 		ico_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		ico_l.add_theme_font_size_override("font_size", 36)
 		ico_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -414,16 +427,18 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	name_l.text = title_text
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_l.add_theme_font_size_override("font_size", 17)
-	name_l.add_theme_color_override("font_color", accent.lightened(0.15))
+	name_l.add_theme_color_override("font_color",
+		Color("5a6270") if locked else accent.lightened(0.15))
 	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(name_l)
 	var desc_l := Label.new()
-	desc_l.text = desc
+	desc_l.text = ("未解锁\n%s" % lock_hint) if locked else desc
 	desc_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	desc_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	desc_l.custom_minimum_size = Vector2(192.0, 0.0)
 	desc_l.add_theme_font_size_override("font_size", 11)
-	desc_l.add_theme_color_override("font_color", Color("9aa3b2"))
+	desc_l.add_theme_color_override("font_color",
+		Color("5a6270") if locked else Color("9aa3b2"))
 	desc_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(desc_l)
 	b.pressed.connect(func() -> void:
@@ -641,7 +656,7 @@ func _build_talent_panel() -> void:
 	_talent_essence.add_theme_color_override("font_color", Color("ffd24a"))
 	box.add_child(_talent_essence)
 	var tip := Label.new()
-	tip.text = "土豆精华：局末按积分/波次结算，永不清零 · 天赋对所有新局生效"
+	tip.text = "土豆精华：局末按积分/波次结算，永不清零 · 通用天赋全员生效，门派天赋仅对应角色生效"
 	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tip.add_theme_font_size_override("font_size", 12)
 	tip.add_theme_color_override("font_color", Color("9aa3b2"))
@@ -703,6 +718,33 @@ func _refresh_talents() -> void:
 			row.disabled = MetaProgress.essence < cost
 		row.pressed.connect(_on_talent_buy.bind(id))
 		_talent_rows.add_child(row)
+	# ---- 门派专属分隔 ----
+	var divider := Label.new()
+	divider.text = "— 门派专属（仅对应角色生效）—"
+	divider.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	divider.add_theme_font_size_override("font_size", 14)
+	divider.add_theme_color_override("font_color", Color("c39bf5"))
+	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_talent_rows.add_child(divider)
+	for sid in MetaProgress.SECT_TALENTS:
+		var t: Dictionary = MetaProgress.SECT_TALENTS[sid]
+		var lv := MetaProgress.sect_level(sid)
+		var max_lv := int(t.max_lv)
+		var cost := MetaProgress.sect_cost(sid)
+		var ch: Dictionary = Registry.get_character(String(t.get("character", "")))
+		var ch_name := String(ch.get("name", ""))
+		var row := Button.new()
+		row.custom_minimum_size = Vector2(580.0, 64.0)
+		var full := lv >= max_lv
+		if full:
+			row.text = "%s %s　Lv %d/%d　已满级\n仅「%s」生效" % [t.ico, t.name, lv, max_lv, ch_name]
+			row.disabled = true
+		else:
+			row.text = "%s %s　Lv %d/%d　升级：%d 精华\n%s（仅「%s」生效）" % [
+				t.ico, t.name, lv, max_lv, cost, t.desc, ch_name]
+			row.disabled = MetaProgress.essence < cost
+		row.pressed.connect(_on_sect_buy.bind(sid))
+		_talent_rows.add_child(row)
 
 func _on_talent_buy(id: String) -> void:
 	if MetaProgress.buy_talent(id):
@@ -710,6 +752,16 @@ func _on_talent_buy(id: String) -> void:
 		Sfx.play("buy")
 		_refresh_talents()
 		# 重新抓焦首个可购买项，保持手柄导航连续
+		for c in _talent_rows.get_children():
+			if c is Button and not c.disabled:
+				c.grab_focus()
+				return
+
+func _on_sect_buy(id: String) -> void:
+	if MetaProgress.buy_sect(id):
+		Haptics.rumble(0.25, 0.0, 0.08)
+		Sfx.play("buy")
+		_refresh_talents()
 		for c in _talent_rows.get_children():
 			if c is Button and not c.disabled:
 				c.grab_focus()

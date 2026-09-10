@@ -366,6 +366,52 @@ static func daily_setup(date_str: String) -> Dictionary:
 		"boss_id": String(pool[(h >> 11) % pool.size()]),
 	}
 
+# ============================================================
+# 解锁系统（内容逐层解锁）：角色 / 武器的开局选择门槛。
+# 条件由 CodexData 的「累计统计」实时推导 —— 解锁即永久，无需单独持久化解锁态。
+# 未列入下表的内容默认已解锁（含开局基础内容与创意工坊 mod）。
+# stat 键必须落在 UNLOCK_STAT_KEYS 白名单内（对应 CodexData 的累计计数器）。
+# ============================================================
+const CHARACTER_UNLOCKS := {
+	# ---- 五行门派（按门派主题：元素 / 状态 / 剑道 / 推进） ----
+	"pyromancer": { "stat": "reactions", "target": 10, "hint": "累计触发 10 次五行反应" },
+	"druid": { "stat": "status_triggers", "target": 25, "hint": "累计触发 25 次异常状态" },
+	"swordmaster": { "stat": "kills", "target": 200, "hint": "累计击杀 200 个敌人" },
+	"tidecaller": { "stat": "status_triggers", "target": 50, "hint": "累计触发 50 次异常状态" },
+	"geomancer": { "stat": "best_wave", "target": 6, "hint": "单局推进到第 6 波" },
+	# ---- 进阶角色（按推进里程碑） ----
+	"gunner": { "stat": "kills", "target": 80, "hint": "累计击杀 80 个敌人" },
+	"artillery": { "stat": "boss_kills", "target": 1, "hint": "击破 1 个 BOSS" },
+	"monk": { "stat": "best_wave", "target": 8, "hint": "单局推进到第 8 波" },
+	"ascetic": { "stat": "runs", "target": 3, "hint": "累计开始 3 局游戏" },
+	"alchemist": { "stat": "status_triggers", "target": 40, "hint": "累计触发 40 次异常状态" },
+	"warlord": { "stat": "victories", "target": 1, "hint": "通关 1 次" },
+}
+
+const WEAPON_UNLOCKS := {
+	"thunder_gong": { "stat": "kills", "target": 40, "hint": "累计击杀 40 个敌人" },
+	"tar_whip": { "stat": "status_triggers", "target": 10, "hint": "累计触发 10 次异常状态" },
+	"ember_fan": { "stat": "status_triggers", "target": 20, "hint": "累计触发 20 次异常状态" },
+	"vine_lash": { "stat": "status_triggers", "target": 30, "hint": "累计触发 30 次异常状态" },
+	"gold_bell": { "stat": "kills", "target": 120, "hint": "累计击杀 120 个敌人" },
+	"frost_nova": { "stat": "best_wave", "target": 4, "hint": "单局推进到第 4 波" },
+	"flame_jian": { "stat": "best_wave", "target": 5, "hint": "单局推进到第 5 波" },
+	"chaos_hammer": { "stat": "kills", "target": 250, "hint": "累计击杀 250 个敌人" },
+	"railgun": { "stat": "boss_kills", "target": 1, "hint": "击破 1 个 BOSS" },
+	"blight_bow": { "stat": "status_triggers", "target": 45, "hint": "累计触发 45 次异常状态" },
+	"frost_hammer": { "stat": "best_wave", "target": 7, "hint": "单局推进到第 7 波" },
+	"gold_scepter": { "stat": "victories", "target": 1, "hint": "通关 1 次" },
+}
+
+## 解锁条件的统计键白名单：必须对应到 CodexData 的累计计数器（冒烟测试据此校验）
+const UNLOCK_STAT_KEYS := ["kills", "best_wave", "boss_kills", "victories",
+	"status_triggers", "reactions", "runs"]
+
+## 取某内容的解锁条目（空字典 = 未锁定，默认已解锁）
+static func unlock_entry(kind: String, id: String) -> Dictionary:
+	var table: Dictionary = CHARACTER_UNLOCKS if kind == "character" else WEAPON_UNLOCKS
+	return table.get(id, {})
+
 ## 升级池（可重复叠加；effects 键 = player.stats 键，创意工坊数据驱动；
 ## 特例：heal_flat = 最大生命+立即回复同值，heal_pct = 立即回复最大生命百分比）
 const UPGRADES := [
