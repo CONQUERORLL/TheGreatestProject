@@ -163,36 +163,15 @@ func _draw_pellet() -> void:
 	draw_circle(Vector2.ZERO, radius * 0.8, col)
 	draw_circle(Vector2.ZERO, radius * 0.35, Color(1.0, 1.0, 1.0, 0.7))
 
-## 火焰喷雾：沿运动方向铺一条长雾带，而不是一颗颗独立的「小火箭」。
+## 火焰弹丸只画一颗飞散的火星。
 ##
-## 关键在于长度：火焰喷射器 0.10s 一发、弹速 300 → 相邻弹丸只隔 30px，
-## 而单条雾带长 56~82px，于是前后首尾自然叠在一起，整体读起来是**一条持续的火柱**。
-## 三层（外焰暗红 / 中焰橙 / 内焰亮黄白）各撒 7 团，越靠尾端越大越淡（扩散消散），
-## 再补几粒向上跳的火星 —— 火是往上走的，这一点让「喷雾」不再像「飞行物」。
-func _draw_flame(d: Vector2) -> void:
+## 火焰的主体（枪口锥形喷射）由 player 身上的 FlameJet 负责 —— 它固定在枪口、不跟弹丸走。
+## 弹丸这层若再画火团，画面里就会叠出一串「会飞的火球」，正是上一版读起来不像喷射的原因。
+## 留一颗小火星只是为了标记弹丸位置与命中点。
+func _draw_flame(_d: Vector2) -> void:
 	var t := clampf(life / maxf(0.01, base_life), 0.0, 1.0)
-	var perp := Vector2(-d.y, d.x)
-	var span := 56.0 + 26.0 * t
-	var layers := [
-		{ "r": 13.5, "col": Color(0.86, 0.24, 0.06, 0.20) },
-		{ "r": 9.0, "col": Color(1.00, 0.55, 0.12, 0.38) },
-		{ "r": 5.2, "col": Color(1.00, 0.88, 0.48, 0.58) },
-	]
-	for li in layers.size():
-		var l: Dictionary = layers[li]
-		for i in 7:
-			var u := float(i) / 6.0                    # 0 = 尾端，1 = 前端
-			var wob := sin(float(i * 5 + li * 11) * 2.3) * 2.4
-			var p := -d * (span * (1.0 - u)) + perp * wob * (0.35 + 0.65 * (1.0 - u))
-			var rr: float = float(l.r) * (0.45 + 0.55 * u) * (0.55 + 0.45 * t)
-			var a: float = float(l.col.a) * (0.25 + 0.75 * u) * (0.45 + 0.55 * t)
-			draw_circle(p, rr, Color(l.col.r, l.col.g, l.col.b, a))
-	# 升腾的火星（逐帧重绘，配合 life 相位轻微跳动）
-	for k in 3:
-		var u2 := float(k) / 2.0
-		var jit := sin(float(k * 9) * 1.7 + life * 34.0) * 3.4
-		draw_circle(-d * (span * 0.42 * (1.0 - u2)) + perp * jit + Vector2(0.0, -3.0 - u2 * 5.0),
-			1.5, Color(1.0, 0.9, 0.62, 0.7 * t))
+	draw_circle(Vector2.ZERO, 2.6 + 1.4 * t, Color(1.0, 0.84, 0.46, 0.80 * t))
+	draw_circle(Vector2.ZERO, 1.2, Color(1.0, 0.98, 0.86, 0.90 * t))
 
 ## 火箭弹：尖头弹体 + 尾翼 + 摆动尾焰（火箭筒打的是「弹」不是「球」）
 func _draw_rocket(d: Vector2) -> void:

@@ -30,10 +30,18 @@ func _on_phase_changed(new_phase: int) -> void:
 func open() -> void:
 	GameState.set_phase(GameState.Phase.LEVEL_UP)
 	_choices = []
+	# 构筑亲和：与当前角色 / 武器相关的升级更容易出现（近战角色更容易刷到开刃等）
+	var wps: Array = []
+	var arts: Dictionary = {}
+	if player != null and is_instance_valid(player):
+		wps = player.weapons
+		arts = player.artifacts_owned
+	var aff := Config.affinity_tags(GameState.character_id, wps, arts)
 	var weighted: Array = []
 	for u in Registry.upgrade_list():
-		weighted.append({ "item": u,
-			"w": Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) })
+		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) \
+			* Config.affinity_mult(Config.entry_tags(u), aff)
+		weighted.append({ "item": u, "w": w })
 	for _i in 3:
 		if weighted.is_empty():
 			break

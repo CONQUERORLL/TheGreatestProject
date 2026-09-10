@@ -9,6 +9,7 @@ var player  # characters/player.gd 引用，由 main 注入
 var wave_manager: Node   # systems/wave_manager.gd 引用，由 main 注入
 var main: Node           # scripts/main.gd 引用（商店关闭后询问是否先弹江湖奇遇）
 var goods: Array = []    # 商品 [{kind, wtype/id, ico, name, desc, rarity, base_price, sold, locked}]
+var _affinity_cache: Array = []   # 本次商店的构筑亲和标签（开店时算一次，见 _affinity）
 
 var _reroll_cost := 0
 var _wave := 0
@@ -349,6 +350,7 @@ func set_lock(i: int, on: bool) -> void:
 ## 升级/道具按稀有度加权抽取（品阶越高越稀有，权重随波次小幅提升）
 func _roll_goods() -> void:
 	goods = []
+	_affinity_cache.clear()   # 开店时重算一次构筑亲和（本店期间武器/法宝不会变）
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in 4:
 		goods.append(_roll_one(weapon_full))
@@ -357,7 +359,7 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 	# 法宝先掷：独立于下面武器/升级/道具的 42/29/29 分配，不改动原有比例
 	# artifact_pool 已排除持有中的（每种限 1 件），池空时自然落到常规商品，不浪费这一格
 	if GameRng.chance(Config.ARTIFACT_SHOP_CHANCE):
-		var apool := Registry.artifact_pool(player.artifacts_owned, _wave)
+		var apool := Registry.artifact_pool(player.artifacts_owned, _wave, false, _affinity())
 		if not apool.is_empty():
 			var aid := String(GameRng.weighted_pick(apool))
 			var a: Dictionary = Registry.get_artifact(aid)
@@ -365,31 +367,57 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 				"name": a.get("name", aid), "desc": a.get("desc", ""),
 				"rarity": a.get("rarity", "common"),
 				"base_price": int(a.get("price", 110)),
-				"sold": false, "locked": false }
+				"synergy": _synergy(a), "sold": false, "locked": false }
 	var r := GameRng.range_f(0.0, 1.0)
 	if not weapon_full and r < Config.WEAPON_SHOP_CHANCE:
 		var wt: String = GameRng.weighted_pick(Registry.shop_weapon_pool())
 		var c: Dictionary = Registry.weapons[wt]
 		return { "kind": "weapon", "wtype": wt, "ico": c.ico, "name": c.name,
 			"desc": c.desc, "rarity": c.rarity,
-			"base_price": Registry.weapon_price(wt), "sold": false, "locked": false }
+			"base_price": Registry.weapon_price(wt), "synergy": 0,
+			"sold": false, "locked": false }
 	if r < Config.WEAPON_SHOP_CHANCE + Config.SHOP_UPGRADE_CHANCE:
 		var u: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.upgrade_list()))
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
-			"base_price": int(u.get("price", 22)), "sold": false, "locked": false }
+			"base_price": int(u.get("price", 22)), "synergy": _synergy(u),
+			"sold": false, "locked": false }
 	var it: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.item_list()))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
-		"base_price": int(it.price), "sold": false, "locked": false }
+		"base_price": int(it.price), "synergy": _synergy(it),
+		"sold": false, "locked": false }
 
-## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) }]
+## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
+## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）
 func _rarity_pool(entries: Array) -> Array:
+	var aff := _affinity()
 	var pool: Array = []
 	for e in entries:
-		pool.append({ "item": e,
-			"w": Config.rarity_weight(String(e.get("rarity", "common")), _wave) })
+		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
+			* Config.affinity_mult(Config.entry_tags(e), aff)
+		pool.append({ "item": e, "w": w })
 	return pool
+
+## 当前构筑的亲和标签（开店时算一次并缓存）
+func _affinity() -> Array:
+	if _affinity_cache.is_empty():
+		_affinity_cache = Config.affinity_tags(GameState.character_id,
+			player.weapons, player.artifacts_owned)
+	return _affinity_cache
+
+## 条目与当前构筑的契合度（命中的亲和标签数量，0 = 无关）。
+## 抽取已经按它加权（见 _rarity_pool），货架上也标出来 ——
+## 光让好东西更容易出现还不够，玩家得**看见**它为什么好
+func _synergy(e: Dictionary) -> int:
+	var aff := _affinity()
+	if aff.is_empty():
+		return 0
+	var hit := 0
+	for t in Config.entry_tags(e):
+		if t in aff:
+			hit += 1
+	return hit
 
 func _price_of(g: Dictionary) -> int:
 	return Config.shop_price(g.base_price, _wave)
@@ -490,7 +518,7 @@ func _make_good_card(i: int) -> Control:
 	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(ico)
 	var name_l := Label.new()
-	name_l.text = g.name
+	name_l.text = String(g.name) + (" ✦" if int(g.get("synergy", 0)) > 0 else "")
 	name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_l.add_theme_font_size_override("font_size", 14)
 	name_l.add_theme_color_override("font_color", Config.rarity_color(g.rarity))
@@ -514,7 +542,11 @@ func _make_good_card(i: int) -> Control:
 			else:
 				g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
-	desc.text = g.desc
+	# 契合标记：让「这件东西跟你的角色 / 武器是一路的」一眼可见
+	if int(g.get("synergy", 0)) > 0:
+		desc.text = "✦ 契合当前构筑\n" + String(g.desc)
+	else:
+		desc.text = String(g.desc)
 	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	desc.custom_minimum_size = Vector2(132.0, 0.0)

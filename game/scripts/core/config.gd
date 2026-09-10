@@ -447,6 +447,14 @@ const ITEMS := [
 	{ "id": "i-frostcore", "ico": "🧊", "name": "霜核", "desc": "爆炸范围 +42%：冰冻、毒爆、火箭的覆盖面大幅提升", "price": 66, "rarity": "epic", "effects": { "aoe_radius_bonus": 0.42 } },
 	{ "id": "i-accelerator", "ico": "⚙", "name": "高速膛线", "desc": "子弹速度 +38%，弹道更直更难被走位躲开", "price": 48, "rarity": "rare", "effects": { "bullet_speed_bonus": 0.38 } },
 	{ "id": "i-venomsac", "ico": "☣", "name": "毒囊", "desc": "爆炸范围 +22%，异常持续时间 +20%", "price": 44, "rarity": "rare", "effects": { "aoe_radius_bonus": 0.22, "status_dur_mult": 0.20 } },
+	# ---- 元素附魔向（Phase 3.6）：让**任意武器**都能挂上某种状态。
+	# 与状态流 / 五行反应构筑天然关联，且因为用了 on_hit_* 键，
+	# 会被 Config.entry_tags 自动打上对应元素标签 → 抽取时自动亲和（见 affinity_mult）
+	{ "id": "i-emberdust", "ico": "🔥", "name": "火绒", "desc": "命中时 18% 概率点燃，状态伤害 +20%", "price": 50, "rarity": "rare", "effects": { "on_hit_burn": 0.18, "status_dmg_mult": 0.20 } },
+	{ "id": "i-venomgland", "ico": "🐍", "name": "毒腺", "desc": "命中时 18% 概率使目标中毒，异常持续 +20%", "price": 50, "rarity": "rare", "effects": { "on_hit_poison": 0.18, "status_dur_mult": 0.20 } },
+	{ "id": "i-bloodvial", "ico": "🩸", "name": "血瓶", "desc": "命中时 20% 概率造成流血，击杀回复 +1.5", "price": 52, "rarity": "rare", "effects": { "on_hit_bleed": 0.20, "lifesteal": 1.5 } },
+	{ "id": "i-frostshard", "ico": "❄", "name": "霜片", "desc": "命中时 12% 概率冻结目标，异常持续 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12, "status_dur_mult": 0.15 } },
+	{ "id": "i-thunderrod", "ico": "⚡", "name": "雷杵", "desc": "命中时 10% 概率眩晕目标，子弹速度 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_stun": 0.10, "bullet_speed_bonus": 0.15 } },
 ]
 
 ## ============================================================
@@ -557,6 +565,22 @@ const ARTIFACTS := [
 		"trigger": "on_reaction", "params": { "element": "earth" },
 		"effect": { "stat": "armor", "per_stack": 1.5, "stack_max": 12,
 			"stack_reset": "run" }, "price": 300, "shop_weight": 1.0 },
+	# ---- rare 档（Phase 3.6）：补齐 common(110) → epic(210) 的梯度。
+	# 三件都走 on_status_apply，刻意挑现有法宝未覆盖的状态（燃烧 / 流血 / 减速）避免同质，
+	# 并且因为 element 与 params.status 都会被 entry_tags 打标，
+	# 玩状态流 / 对应元素流的构筑会明显更容易刷到它们
+	{ "id": "art_pyre_brand", "ico": "🔥", "name": "燎原印", "element": "fire", "rarity": "rare",
+		"desc": "施加燃烧时 30% 概率额外 +1 层",
+		"trigger": "on_status_apply", "params": { "status": "burn" },
+		"effect": { "chance": 0.30, "add_stacks": 1 }, "price": 160, "shop_weight": 1.0 },
+	{ "id": "art_blood_fang", "ico": "🦷", "name": "饮血齿", "element": "metal", "rarity": "rare",
+		"desc": "施加流血时 28% 概率额外 +1 层",
+		"trigger": "on_status_apply", "params": { "status": "bleed" },
+		"effect": { "chance": 0.28, "add_stacks": 1 }, "price": 160, "shop_weight": 1.0 },
+	{ "id": "art_mist_veil", "ico": "🌫", "name": "雾隐纱", "element": "water", "rarity": "rare",
+		"desc": "施加减速时 25% 概率额外 +1 层",
+		"trigger": "on_status_apply", "params": { "status": "slow" },
+		"effect": { "chance": 0.25, "add_stacks": 1 }, "price": 160, "shop_weight": 1.0 },
 ]
 
 ## ============================================================
@@ -779,6 +803,149 @@ static func rarity_weight(rarity: String, progress: int) -> float:
 		"legendary": w *= 1.0 + 0.28 * t
 		"epic": w *= 1.0 + 0.06 * t
 	return w
+
+# ============================================================
+# 构筑亲和（Affinity）：让商店 / 升级三选一 / 法宝掉落的抽取
+# 向「当前角色 + 当前武器」靠拢，而不是纯随机。
+#
+# 做法：把角色特性、武器形态、已持有法宝归纳成一组标签，
+# 再给每个候选条目按 effects 键自动打标（entry_tags），交集越多权重越高。
+# 全部由数据推导 —— 不手工维护对照表，因此 mod 内容与后续新增内容
+# 都会自动获得亲和能力。
+# ============================================================
+const AFFINITY_BONUS := 0.85      # 每命中一个亲和标签的权重增幅
+const AFFINITY_MAX_TAGS := 3      # 最多按 3 个匹配计（防止叠满后抽取池被锁死）
+
+## 从角色 + 武器 + 已持有法宝推导「当前构筑的亲和标签」
+## 需读 Registry，故为实例方法（Config 是 autoload）
+func affinity_tags(character_id: String, weapons: Array, artifacts_owned: Dictionary) -> Array:
+	var tags := {}
+	# ① 武器：状态元素 / 攻击形态 / 溅射 / 弹速 / 多发
+	for w in weapons:
+		var wid := ""
+		if typeof(w) == TYPE_DICTIONARY:
+			wid = String(w.get("type", ""))
+		else:
+			wid = String(w)
+		var wcfg: Dictionary = Registry.weapons.get(wid, {})
+		if wcfg.is_empty():
+			continue
+		var sid := String(wcfg.get("status", ""))
+		if sid != "":
+			tags[sid] = true
+		if String(wcfg.get("attack_type", "")) == "melee":
+			tags["melee"] = true
+		else:
+			tags["ranged"] = true
+		if float(wcfg.get("splash", 0.0)) > 0.0:
+			tags["aoe"] = true
+		if float(wcfg.get("bspeed", 0.0)) >= 600.0:
+			tags["speed"] = true
+		if int(wcfg.get("pellets", 1)) > 1:
+			tags["multi"] = true
+	# ② 角色特性：光环元素 / 荆棘 / 战意 / 属性加成
+	var tr: Dictionary = Registry.get_character(character_id).get("trait", {})
+	var kind := String(tr.get("kind", ""))
+	if kind == "aura":
+		var asid := String(tr.get("status", ""))
+		if asid != "":
+			tags[asid] = true
+	elif kind == "thorns":
+		tags["tank"] = true
+	elif kind == "momentum":
+		tags["atkspeed"] = true
+	for k in tr.get("effects", {}):
+		for t in effect_tags(String(k)):
+			tags[t] = true
+	# ③ 已持有法宝：继续深耕同一元素（玩家已经选了这条路，就该继续给同系）
+	for aid in artifacts_owned:
+		var et := element_tag(String(Registry.get_artifact(String(aid)).get("element", "")))
+		if et != "":
+			tags[et] = true
+	return tags.keys()
+
+## 单个 effects 键 → 标签（道具 / 升级 / 法宝共用同一套推导规则）
+static func effect_tags(key: String) -> Array:
+	var out: Array = []
+	if key.begins_with("on_hit_"):
+		out.append(key.substr(7))     # on_hit_burn → burn
+		out.append("status")
+		return out
+	match key:
+		"status_dmg_mult", "status_dur_mult", "status_chance", "status_spread":
+			out.append("status")
+		"melee_range_bonus":
+			out.append("melee")
+			out.append("range")
+		"bullet_speed_bonus":
+			out.append("speed")
+		"bullet_range_bonus":
+			out.append("range")
+		"aoe_radius_bonus":
+			out.append("aoe")
+		"max_hp", "armor", "regen", "heal_flat", "heal_pct", "lifesteal":
+			out.append("tank")
+		"harvesting", "pickup_range":
+			out.append("economy")
+		"crit_ch", "crit_mult":
+			out.append("crit")
+		"as_mult":
+			out.append("atkspeed")
+		"dodge", "speed_mult", "base_speed":
+			out.append("mobility")
+		"low_hp_dmg_bonus":
+			out.append("lowhp")
+	return out
+
+## 元素 ↔ 状态标签归一：法宝用 element、武器用 status，统一到状态 id 才能比较
+static func element_tag(element: String) -> String:
+	return { "fire": "burn", "wood": "poison", "metal": "bleed",
+		"water": "freeze", "earth": "stun" }.get(element, "")
+
+## 条目（道具 / 升级 / 法宝）自动打标
+static func entry_tags(cfg: Dictionary) -> Array:
+	var tags := {}
+	if cfg.has("element"):
+		var et := element_tag(String(cfg.element))
+		if et != "":
+			tags[et] = true
+	var params: Variant = cfg.get("params", null)
+	if typeof(params) == TYPE_DICTIONARY:
+		var pd: Dictionary = params
+		var ps := String(pd.get("status", ""))
+		if ps != "":
+			tags[ps] = true
+			tags["status"] = true
+		var pe := element_tag(String(pd.get("element", "")))
+		if pe != "":
+			tags[pe] = true
+	for key in ["effects", "effect"]:
+		var eff: Variant = cfg.get(key, null)
+		if typeof(eff) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = eff
+		var asid := String(d.get("apply_status", ""))
+		if asid != "":
+			tags[asid] = true
+			tags["status"] = true
+		for k in d:
+			for t in effect_tags(String(k)):
+				tags[t] = true
+	return tags.keys()
+
+## 亲和倍率：条目标签与构筑亲和的交集数量 → 权重倍数（无交集返回 1.0）
+static func affinity_mult(item_tags: Array, affinity: Array) -> float:
+	if item_tags.is_empty() or affinity.is_empty():
+		return 1.0
+	var hit := 0
+	for t in item_tags:
+		if t in affinity:
+			hit += 1
+			if hit >= AFFINITY_MAX_TAGS:
+				break
+	if hit <= 0:
+		return 1.0
+	return 1.0 + AFFINITY_BONUS * float(hit)
 
 static func rarity_color(r: String) -> Color:
 	return RARITY_COLORS.get(r, Color("9aa3b2"))

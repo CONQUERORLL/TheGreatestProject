@@ -766,6 +766,7 @@ func _check_items() -> void:
 	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
 	await _check_character_traits()
 	await _check_weapon_fx()
+	_check_affinity()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -2300,13 +2301,18 @@ func _check_phase3_artifacts() -> void:
 	GameState.set_phase(GameState.Phase.PLAYING)   # 触发闸门 _active() 要求局内
 	var far_corner := Vector2(float(Config.WORLD.w) - 150.0, float(Config.WORLD.h) - 150.0)
 
-	# ---- 验证点 1：数据完整性（15 件 / 五行各 3 / 品阶各 5）----
-	if Config.ARTIFACTS.size() != 15 or Registry.artifacts.size() != 15:
-		_fail("法宝数量不对（Config %d / Registry %d，期望 15）"
-			% [Config.ARTIFACTS.size(), Registry.artifacts.size()])
+	# ---- 验证点 1：数据完整性（数量与 Config 声明一致 + 五行 / 品阶覆盖）----
+	# 数量不硬编码：以 Config 声明为准，避免每次扩充内容都要回来改测试
+	if Config.ARTIFACTS.size() < 15:
+		_fail("法宝数量低于下限 15（%d）" % Config.ARTIFACTS.size())
 		return
-	if Registry.artifact_list().size() != 15:
-		_fail("artifact_list 未返回全部法宝（%d）" % Registry.artifact_list().size())
+	if Registry.artifacts.size() != Config.ARTIFACTS.size():
+		_fail("Registry 法宝数（%d）与 Config 声明（%d）不一致"
+			% [Registry.artifacts.size(), Config.ARTIFACTS.size()])
+		return
+	if Registry.artifact_list().size() != Config.ARTIFACTS.size():
+		_fail("artifact_list 未返回全部法宝（%d / %d）"
+			% [Registry.artifact_list().size(), Config.ARTIFACTS.size()])
 		return
 	var elem_cnt := {}
 	var rarity_cnt := {}
@@ -2329,12 +2335,13 @@ func _check_phase3_artifacts() -> void:
 		rarity_cnt[String(a.rarity)] = int(rarity_cnt.get(String(a.rarity), 0)) + 1
 		trigger_cnt[String(a.trigger)] = int(trigger_cnt.get(String(a.trigger), 0)) + 1
 	for el in Config.ELEMENTS:
-		if int(elem_cnt.get(String(el), 0)) != 3:
-			_fail("五行 %s 的法宝不是 3 件（%d）" % [String(el), int(elem_cnt.get(String(el), 0))])
+		if int(elem_cnt.get(String(el), 0)) < 3:
+			_fail("五行 %s 的法宝不足 3 件（%d）" % [String(el), int(elem_cnt.get(String(el), 0))])
 			return
-	for rar in ["common", "epic", "legendary"]:
-		if int(rarity_cnt.get(rar, 0)) != 5:
-			_fail("品阶 %s 的法宝不是 5 件（%d）" % [rar, int(rarity_cnt.get(rar, 0))])
+	# 四档品阶都要有货（rare 档曾是空缺，补齐后不再允许某档为 0）
+	for rar in ["common", "rare", "epic", "legendary"]:
+		if int(rarity_cnt.get(rar, 0)) < 3:
+			_fail("品阶 %s 的法宝不足 3 件（%d）" % [rar, int(rarity_cnt.get(rar, 0))])
 			return
 	if trigger_cnt.size() < 4:
 		_fail("触发器种类过少（%s），法宝系统会退化成单一玩法" % str(trigger_cnt.keys()))
@@ -2417,8 +2424,9 @@ func _check_phase3_artifacts() -> void:
 		if Registry.register_artifact((bad[1] as Dictionary).duplicate(true)):
 			_fail("Registry 接受了非法法宝（%s）" % String(bad[0]))
 			return
-	if Registry.artifacts.size() != 15:
-		_fail("非法法宝污染了注册表（%d，期望 15）" % Registry.artifacts.size())
+	if Registry.artifacts.size() != Config.ARTIFACTS.size():
+		_fail("非法法宝污染了注册表（%d，应为 %d）"
+			% [Registry.artifacts.size(), Config.ARTIFACTS.size()])
 		return
 
 	# ---- 验证点 4：合法注册 + 清理还原 ----
@@ -2428,21 +2436,23 @@ func _check_phase3_artifacts() -> void:
 	if not Registry.register_artifact(ok_art.duplicate(true)):
 		_fail("Registry 拒绝了合法法宝")
 		return
-	if Registry.artifacts.size() != 16 or Registry.get_artifact("art_smoke_ok").is_empty():
+	if Registry.artifacts.size() != Config.ARTIFACTS.size() + 1 \
+			or Registry.get_artifact("art_smoke_ok").is_empty():
 		_fail("合法法宝未进入注册表（%d）" % Registry.artifacts.size())
 		return
 	Registry.artifacts.erase("art_smoke_ok")
-	if Registry.artifacts.size() != 15 \
+	if Registry.artifacts.size() != Config.ARTIFACTS.size() \
 			or not Registry.get_artifact("art_smoke_ok").is_empty():
 		_fail("清理临时法宝后注册表未还原（%d）" % Registry.artifacts.size())
 		return
 
 	# ---- 验证点 5：获取规则（抽取池 / BOSS 权重 / 三渠道常量 / 精英掉落实跑）----
-	if Registry.artifact_pool({}, 1, false).size() != 15:
-		_fail("初始抽取池不是 15 件（%d）" % Registry.artifact_pool({}, 1, false).size())
+	if Registry.artifact_pool({}, 1, false).size() != Config.ARTIFACTS.size():
+		_fail("初始抽取池不是全部法宝（%d / %d）"
+			% [Registry.artifact_pool({}, 1, false).size(), Config.ARTIFACTS.size()])
 		return
 	var pool_less: Array = Registry.artifact_pool({ "art_cinder_seal": 1 }, 1, false)
-	if pool_less.size() != 14 or _pool_has(pool_less, "art_cinder_seal"):
+	if pool_less.size() != Config.ARTIFACTS.size() - 1 or _pool_has(pool_less, "art_cinder_seal"):
 		_fail("抽取池未排除已持有法宝（%d 件）" % pool_less.size())
 		return
 	var owned_all := {}
@@ -3541,6 +3551,81 @@ func _check_weapon_fx() -> void:
 	sl.queue_free()
 	await get_tree().process_frame
 	print("SMOKE: weapon fx wiring OK")
+
+## 构筑亲和（Config.affinity_tags / entry_tags / affinity_mult）：
+## 「商店 / 升级 / 法宝抽取向当前角色与武器靠拢」的核心。
+## 标签必须能从数据自动推导正确，加权必须真的改变池权重，且不能把池子算空
+func _check_affinity() -> void:
+	# ---- 1. entry_tags：按 effects / element / params 自动打标 ----
+	var samples: Array = [
+		[{ "effects": { "on_hit_burn": 0.2 } }, "burn"],
+		[{ "effects": { "melee_range_bonus": 0.2 } }, "melee"],
+		[{ "effects": { "bullet_speed_bonus": 0.2 } }, "speed"],
+		[{ "effects": { "aoe_radius_bonus": 0.2 } }, "aoe"],
+		[{ "effects": { "crit_mult": 0.3 } }, "crit"],
+		[{ "effects": { "armor": 2.0 } }, "tank"],
+		[{ "effects": { "harvesting": 0.2 } }, "economy"],
+		[{ "element": "fire", "params": {} }, "burn"],
+		[{ "element": "wood", "params": { "status": "poison" } }, "poison"],
+	]
+	for s in samples:
+		var cfg0: Dictionary = s[0]
+		var tags: Array = Config.entry_tags(cfg0)
+		if not (String(s[1]) in tags):
+			_fail("entry_tags 未能推导出 %s（得到 %s）" % [String(s[1]), str(tags)])
+			return
+	# ---- 2. 亲和推导：武器形态 / 武器状态 / 角色光环 / 已持有法宝 ----
+	if not ("melee" in Config.affinity_tags("potato", [{ "type": "blade" }], {})):
+		_fail("近战武器未推导出 melee 亲和")
+		return
+	if not ("poison" in Config.affinity_tags("potato", [{ "type": "venom_dagger" }], {})):
+		_fail("带毒武器未推导出 poison 亲和")
+		return
+	if not ("burn" in Config.affinity_tags("pyromancer", [], {})):
+		_fail("焚天祭司的光环未推导出 burn 亲和")
+		return
+	if not ("stun" in Config.affinity_tags("potato", [], { "art_stone_skin": 1 })):
+		_fail("已持有土系法宝未推导出 earth→stun 亲和")
+		return
+	print("SMOKE: affinity derivation OK")
+	# ---- 3. 加权：命中标签的条目必须高于无关条目，且按上限封顶 ----
+	var aff: Array = ["melee", "range"]
+	var w_hit: float = Config.affinity_mult(
+		Config.entry_tags({ "effects": { "melee_range_bonus": 0.2 } }), aff)
+	var w_miss: float = Config.affinity_mult(
+		Config.entry_tags({ "effects": { "harvesting": 0.2 } }), aff)
+	if w_hit <= w_miss or not is_equal_approx(w_miss, 1.0):
+		_fail("亲和倍率异常（命中 %.2f / 无关 %.2f）" % [w_hit, w_miss])
+		return
+	var all_tags: Array = ["melee", "range", "aoe", "speed", "crit", "tank"]
+	var cap := 1.0 + Config.AFFINITY_BONUS * float(Config.AFFINITY_MAX_TAGS)
+	if Config.affinity_mult(all_tags, all_tags) > cap + 0.001:
+		_fail("亲和倍率未按 AFFINITY_MAX_TAGS 封顶")
+		return
+	print("SMOKE: affinity weighting OK (hit=%.2f miss=%.2f)" % [w_hit, w_miss])
+	# ---- 4. 端到端：同一件法宝在「亲和 stun」下的池权重必须更高 ----
+	var w_plain := _pool_weight(Registry.artifact_pool({}, 1, false, []), "art_stone_skin")
+	var w_aff := _pool_weight(Registry.artifact_pool({}, 1, false, ["stun"]), "art_stone_skin")
+	if w_aff <= w_plain:
+		_fail("亲和未提高对应法宝的池权重（%.2f → %.2f）" % [w_plain, w_aff])
+		return
+	if Registry.artifact_pool({}, 1, false, ["burn", "melee"]).is_empty():
+		_fail("亲和加权后法宝池为空")
+		return
+	print("SMOKE: affinity artifact pool OK")
+	# ---- 5. 升级池在亲和加权后仍然可用（加权不能把任何条目算成 0）----
+	var counted := 0
+	for u in Registry.upgrade_list():
+		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), 1) \
+			* Config.affinity_mult(Config.entry_tags(u), ["melee", "burn"])
+		if w <= 0.0:
+			_fail("升级 %s 亲和加权后权重非正" % String(u.id))
+			return
+		counted += 1
+	if counted == 0:
+		_fail("亲和加权后升级池为空")
+		return
+	print("SMOKE: affinity OK")
 
 func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
 		resist: float = 0.0) -> Node2D:

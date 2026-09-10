@@ -146,10 +146,13 @@ static func _hp_ratio(p) -> float:
 
 ## 抽一件玩家尚未持有的法宝 id；池空（全部已持有）时返回 ""
 ## boss=true 时 legendary 权重 ×Config.ARTIFACT_BOSS_LEGENDARY_MULT
+## 掉落同样按构筑亲和加权：与当前角色 / 武器同系的法宝更容易掉出来
 func pick_artifact(boss: bool = false) -> String:
 	if player == null or not is_instance_valid(player):
 		return ""
-	var pool := Registry.artifact_pool(player.artifacts_owned, wave, boss)
+	var aff := Config.affinity_tags(GameState.character_id,
+		player.weapons, player.artifacts_owned)
+	var pool := Registry.artifact_pool(player.artifacts_owned, wave, boss, aff)
 	if pool.is_empty():
 		return ""
 	return String(GameRng.weighted_pick(pool))

@@ -648,9 +648,11 @@ func _grant_random_weapon() -> void:
 	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
 		"获得 %s %s" % [String(cfg.get("ico", "")), String(cfg.get("name", wid))], Color("ffd24a"))
 
-## 随机获得一件未持有法宝；15 件集齐后转等比材料补偿
+## 随机获得一件未持有法宝；集齐后转等比材料补偿
 func _grant_random_relic() -> void:
-	var pool := Registry.artifact_pool(player.artifacts_owned, wave_manager.wave)
+	var aff := Config.affinity_tags(GameState.character_id,
+		player.weapons, player.artifacts_owned)
+	var pool := Registry.artifact_pool(player.artifacts_owned, wave_manager.wave, false, aff)
 	if pool.is_empty():
 		GameState.add_materials(Config.ARTIFACT_DUP_MATERIALS)
 		return

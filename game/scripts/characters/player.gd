@@ -3,6 +3,7 @@ extends CharacterBody2D
 ## 输入：Input Map move_*（WASD / 方向键 / 手柄左摇杆）
 
 const BulletScene := preload("res://scenes/weapons/bullet.tscn")
+const FlameJetScript := preload("res://scripts/fx/flame_jet.gd")
 
 var hp: float = 100.0
 var stats: Dictionary = {}
@@ -19,6 +20,7 @@ var char_trait: Dictionary = {}      # 当前角色特性（开局从 Registry �
 var _aura_t := 0.0              # 光环/战意触发计时
 var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
 var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
+var _flame_jet: Node2D = null   # 枪口喷射锥（火焰喷射器的表现层，见 fx/flame_jet.gd）
 
 @onready var camera: Camera2D = $Camera
 
@@ -202,6 +204,10 @@ func try_fire(w: Dictionary) -> void:
 	var ang := (target.global_position - global_position).angle() if target else facing
 	facing = ang
 	queue_redraw()
+	# 火焰喷射器：火焰的主体是枪口喷射锥（FlameJet，不跟弹丸走），
+	# 每次开火刷新它的朝向与喷射长度
+	if String(c.get("fx", "")) == "flame":
+		_ignite_flame_jet(c, ang)
 	var attack_type := String(c.get("attack_type", "projectile"))
 	if attack_type == "melee":
 		_melee_slash(c, ang)
@@ -220,6 +226,21 @@ func try_fire(w: Dictionary) -> void:
 	if shake_amount > 0.0:
 		EventBus.screen_shake.emit(shake_amount)
 	Sfx.play(String(c.get("sfx", "shoot_pistol")))
+
+## 点燃枪口喷射锥。长度按「实际射程」推算（含角色特性与道具的射程加成）——
+## 于是「铳匠长管 / 加长枪管」这类道具会让火焰肉眼可见地喷得更远
+func _ignite_flame_jet(c: Dictionary, ang: float) -> void:
+	var wc := _weapon_runtime_cfg(c)
+	var reach := float(wc.get("bspeed", 300.0)) * float(wc.get("bullet_life", 0.3)) + 26.0
+	_ensure_flame_jet().ignite(ang, reach, 26.0)
+
+## 惰性创建喷射锥并挂在自身（成为子节点后位置自动跟随玩家，无需每帧同步）
+func _ensure_flame_jet() -> Node2D:
+	if _flame_jet == null or not is_instance_valid(_flame_jet):
+		_flame_jet = FlameJetScript.new()
+		_flame_jet.z_index = -1   # 相对玩家（z_as_relative 默认开）→ 火焰压在人物下层
+		add_child(_flame_jet)
+	return _flame_jet
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
 	var b := BulletScene.instantiate()

@@ -184,7 +184,11 @@ func get_artifact(id: String) -> Dictionary:
 ## progress = 波次（复用 Config.rarity_weight，越往后高品阶越多）
 ## boss=true 时 legendary 权重 ×Config.ARTIFACT_BOSS_LEGENDARY_MULT（BOSS 必掉更出彩）
 ## 返回 [{ "item": id, "w": weight }]，供 GameRng.weighted_pick 使用；全部已持有则返回空数组
-func artifact_pool(owned: Dictionary, wave: int, boss: bool = false) -> Array:
+## 法宝抽取池。
+## affinity 为构筑亲和标签（Config.affinity_tags）：与当前角色 / 武器同系的法宝权重更高，
+## 让玩家能顺着自己已经在走的路继续深耕，而不是被随机塞一件无关法宝
+func artifact_pool(owned: Dictionary, wave: int, boss: bool = false,
+		affinity: Array = []) -> Array:
 	var pool: Array = []
 	for id in artifacts:
 		if owned.has(id):
@@ -192,6 +196,7 @@ func artifact_pool(owned: Dictionary, wave: int, boss: bool = false) -> Array:
 		var a: Dictionary = artifacts[id]
 		var rarity := String(a.get("rarity", "common"))
 		var w := Config.rarity_weight(rarity, wave) * float(a.get("shop_weight", 1.0))
+		w *= Config.affinity_mult(Config.entry_tags(a), affinity)
 		if boss and rarity == "legendary":
 			w *= Config.ARTIFACT_BOSS_LEGENDARY_MULT
 		if w > 0.0:
