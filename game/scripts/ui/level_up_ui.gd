@@ -189,6 +189,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
-			KEY_1: _choose(0)
-			KEY_2: _choose(1)
-			KEY_3: _choose(2)
+			# 必须 set_input_as_handled：否则同一个按键会继续冒泡到 main 的调试后门
+			# （1/2/3 在调试构建里是"换武器"键）。升级选中后 phase 已切回 PLAYING，
+			# 若不标记已处理，main._unhandled_input 会按"调试换武器"把玩家武器整体换掉
+			KEY_1: _choose(0); get_viewport().set_input_as_handled()
+			KEY_2: _choose(1); get_viewport().set_input_as_handled()
+			KEY_3: _choose(2); get_viewport().set_input_as_handled()
