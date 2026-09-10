@@ -224,8 +224,32 @@ func try_fire(w: Dictionary) -> void:
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
 	var b := BulletScene.instantiate()
 	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang,
-		_weapon_runtime_cfg(c), _roll_damage(c.dmg, c))
+		_weapon_runtime_cfg(c), _roll_damage(c.dmg, c), _trait_tint_for(c))
 	get_parent().add_child(b)
+
+## 武器配色：状态色优先（火焰长剑橙 / 毒牙匕首绿 / 霜冻法杖冰蓝），
+## 没有状态的纯物理武器用象牙白刀光
+func _weapon_color(wcfg: Dictionary) -> Color:
+	var sid := String(wcfg.get("status", ""))
+	if sid != "" and Config.STATUS.has(sid):
+		return Color(String(Config.STATUS[sid].get("color", "#e9e4b0")))
+	return Color(1.0, 0.914, 0.69)
+
+## 该武器是否真的吃到「角色专属特性」的加成：吃到则返回特性主题色，否则透明。
+## 弹丸 / 刀光上的强调光环就靠它 —— 让增幅「看得见」，且只对真正受益的武器生效：
+##   近战：仅在 melee_range_bonus > 0 时亮（太白剑客拿太刀会亮、拿手枪不亮）
+##   投射：需要弹速 / 射程加成，或「该武器有溅射 且 角色有爆炸半径加成」
+## 一律发光等于没有信息量，精准匹配才能让玩家读懂自己的构筑
+func _trait_tint_for(wcfg: Dictionary) -> Color:
+	if char_trait.is_empty():
+		return Color(0, 0, 0, 0)
+	if String(wcfg.get("attack_type", "projectile")) == "melee":
+		return trait_color() if float(stats.melee_range_bonus) > 0.0 else Color(0, 0, 0, 0)
+	if float(stats.bullet_speed_bonus) > 0.0 or float(stats.bullet_range_bonus) > 0.0:
+		return trait_color()
+	if float(stats.aoe_radius_bonus) > 0.0 and float(wcfg.get("splash", 0.0)) > 0.0:
+		return trait_color()
+	return Color(0, 0, 0, 0)
 
 ## 武器运行参数：叠加角色的弹道类特性（弹速 / 射程 / 爆炸半径）。
 ## 无加成时直接复用原字典 —— 高攻速武器每秒开火十余次，没必要每次都 duplicate
@@ -248,7 +272,9 @@ func _melee_slash(c: Dictionary, ang: float) -> void:
 	# 斩击范围受角色的近战范围特性加成（视觉与判定用同一个 reach）
 	var reach := float(c["range"]) * (1.0 + float(stats.melee_range_bonus))
 	var s := Slash.new()
-	s.setup(global_position, ang, reach, c.swing_arc)
+	# 外观族 / 特性强调色 / 状态配色一起给到刀光：太刀是月牙、长鞭会甩、重锤推冲击波
+	s.setup(global_position, ang, reach, c.swing_arc,
+		String(c.get("fx", "")), _trait_tint_for(c), _weapon_color(c))
 	get_parent().add_child(s)
 	# 一次性命中扇形范围内敌人（原型为 0.13s 持续检测，效果等价）
 	for e in Combat.enemies_near(global_position, reach + Combat.MAX_ENTITY_RADIUS):
@@ -284,6 +310,7 @@ func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 	return {
 		"dmg": dmg, "crit": crit,
 		"status": String(wcfg.get("status", "")),
+		"fx": String(wcfg.get("fx", "")),   # 外观族：弹丸命中后的爆炸也按武器区分形态
 		"status_chance": clampf(float(wcfg.get("status_chance", 1.0)) + float(stats.status_chance), 0.0, 1.0),
 		"status_stacks": int(wcfg.get("status_stacks", 1)),
 		"status_dur": float(wcfg.get("status_duration", 0.0)),

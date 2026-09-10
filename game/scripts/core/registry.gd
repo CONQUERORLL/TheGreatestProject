@@ -65,6 +65,29 @@ const EFFECT_LIMITS := {
 ##   momentum 战意：每波按击杀累积增伤
 const TRAIT_KINDS := ["stats", "aura", "thorns", "momentum"]
 
+## 武器外观族：决定弹丸 / 挥砍 / 爆炸的绘制形态
+## （见 weapons/bullet.gd、slash.gd、explosion.gd 的 fx 分支）
+## 刻意与 Config.WEAPONS 数值表分开放 —— 数值表只管平衡，美术表现集中一处便于统一调整。
+## 武器配色走 status（火焰长剑橙、毒牙匕首绿、霜冻法杖冰蓝），所以同一外观族也能一眼区分元素。
+## 缺失 / 未知 fx 由 bullet/slash 按 attack_type 兜底：外观错误不该让武器失效
+const WEAPON_FX := {
+	"pistol": "bolt", "smg": "bolt", "pistol_ex": "bolt", "smg_ex": "bolt",
+	"blight_bow": "bolt", "gold_bell": "bell",
+	"shotgun": "pellet", "shotgun_ex": "pellet",
+	"flamethrower": "flame", "ember_fan": "flame",
+	"rocket": "rocket",
+	"sniper": "lance", "railgun": "lance",
+	"frost_staff": "frost", "frost_nova": "frost",
+	"thunder_gong": "thunder", "gold_scepter": "thunder",
+	"vine_lash": "vine",
+	"knife": "slash", "blade": "slash", "blade_ex": "slash",
+	"venom_dagger": "slash", "flame_jian": "slash",
+	"tar_whip": "whip",
+	"chaos_hammer": "smash", "frost_hammer": "smash",
+}
+const WEAPON_FX_KINDS := ["bolt", "pellet", "flame", "rocket", "lance",
+	"frost", "thunder", "vine", "bell", "slash", "whip", "smash"]
+
 ## 五行反应：type 取值 + 各 type 允许的 effect 键
 ## 未知键直接拒登，防 mod 写错字后静默无效
 const REACTION_TYPES := ["generate", "overcome"]
@@ -316,9 +339,19 @@ func register_weapon(data: Dictionary) -> bool:
 	_apply_defaults(data, {"ico": "🔧", "desc": "", "rarity": "common", "sfx": "shoot_pistol",
 		"bspeed": 540.0, "pellets": 1, "arc": 0.0, "spread": 0.0, "splash": 0.0,
 		"bullet_life": 1.1, "shake": 0.0, "price": 30, "shop_weight": 1.0,
-		"status": "", "status_chance": 1.0, "status_stacks": 1, "status_duration": 0.0})
+		"status": "", "status_chance": 1.0, "status_stacks": 1, "status_duration": 0.0,
+		# fx 缺省为空：mod 武器不写外观族时，由弹丸/挥砍按 attack_type 兜底成普通弹/刀光
+		"fx": ""})
 	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity", "sfx", "attack_type"]):
 		return _reject("武器", data, "文本字段类型非法")
+	# 外观族：未知值只提示并回退默认，不拒登 —— 外观写错不该让整把武器不可用
+	if data.has("fx"):
+		if typeof(data.fx) != TYPE_STRING:
+			return _reject("武器", data, "fx 必须是字符串")
+		if String(data.fx) != "" and String(data.fx) not in WEAPON_FX_KINDS:
+			push_warning("Registry: 武器 %s 的 fx 未知（%s），已回退默认外观"
+				% [data.get("id", "?"), data.fx])
+			data["fx"] = ""
 	if data.attack_type == "spread":   # 兼容早期清单命名
 		data["attack_type"] = "projectile"
 	var attack_type := String(data.attack_type)
@@ -1012,6 +1045,7 @@ func _register_builtin() -> void:
 		w["id"] = id
 		w["price"] = int(Config.WEAPON_PRICES[id])
 		w["shop_weight"] = float(Config.WEAPON_SHOP_WEIGHTS[id])
+		w["fx"] = String(WEAPON_FX.get(id, ""))   # 外观族（缺省由弹丸/挥砍按攻击类型兜底）
 		register_weapon(w)
 	items = {}
 	for it in Config.ITEMS:

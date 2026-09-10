@@ -765,6 +765,7 @@ func _check_items() -> void:
 	_check_event_cards()
 	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
 	await _check_character_traits()
+	await _check_weapon_fx()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -3463,6 +3464,83 @@ func _check_character_traits() -> void:
 	p.hp = float(p.stats.max_hp)
 	GameState.kills = saved_kills
 	print("SMOKE: character traits OK")
+
+## 武器外观族（Registry.WEAPON_FX）：映射完整性 / 与攻击方式匹配 / 未知值回退 / 数据链路。
+## 外观本身画不出断言，但「武器 → 外观族 → 弹丸/刀光实例」这条链路可以 ——
+## 漏映射、配错族、回退失败这三种情况都会让武器静默退化成默认外观（玩家只会觉得「没特效」）
+func _check_weapon_fx() -> void:
+	# ---- 1. 映射表与武器表一一对应 ----
+	var missing: Array = []
+	for wid in Config.WEAPONS:
+		if not Registry.WEAPON_FX.has(String(wid)):
+			missing.append(String(wid))
+	if not missing.is_empty():
+		_fail("武器缺少外观族映射：%s" % ", ".join(missing))
+		return
+	var orphans: Array = []
+	for wid2 in Registry.WEAPON_FX:
+		if not Config.WEAPONS.has(String(wid2)):
+			orphans.append(String(wid2))
+	if not orphans.is_empty():
+		_fail("外观族映射指向不存在的武器：%s" % ", ".join(orphans))
+		return
+	# ---- 2. 外观族必须与攻击方式匹配（近战配投射族 = 永远画不出来）----
+	var melee_fx := ["slash", "whip", "smash"]
+	var shoot_fx := ["bolt", "pellet", "flame", "rocket", "lance", "frost",
+		"thunder", "vine", "bell"]
+	for wid3 in Config.WEAPONS:
+		var fx := String(Registry.WEAPON_FX[wid3])
+		if fx not in Registry.WEAPON_FX_KINDS:
+			_fail("武器 %s 的外观族不在白名单：%s" % [String(wid3), fx])
+			return
+		var is_melee := String(Config.WEAPONS[wid3].get("attack_type", "projectile")) == "melee"
+		if is_melee and fx not in melee_fx:
+			_fail("近战武器 %s 配了投射外观族 %s" % [String(wid3), fx])
+			return
+		if not is_melee and fx in melee_fx:
+			_fail("投射武器 %s 配了近战外观族 %s" % [String(wid3), fx])
+			return
+	for wid4 in Registry.weapons:
+		if not Registry.weapons[wid4].has("fx"):
+			_fail("已注册武器 %s 缺少 fx 字段" % String(wid4))
+			return
+	print("SMOKE: weapon fx map OK (%d weapons / %d kinds)" % [
+		Registry.WEAPON_FX.size(), Registry.WEAPON_FX_KINDS.size()])
+	# ---- 3. 未知 fx 只回退、不拒登（外观写错不该让武器不可用）----
+	var probe := { "id": "__fx_probe", "name": "外观探针", "cd": 0.5, "dmg": 1.0,
+		"attack_type": "projectile", "fx": "no_such_fx" }
+	if not Registry.register_weapon(probe):
+		_fail("未知 fx 导致武器被拒登（应回退默认外观并保留武器）")
+		return
+	if String(Registry.weapons["__fx_probe"].get("fx", "x")) != "":
+		_fail("未知 fx 未被回退为空")
+		Registry.weapons.erase("__fx_probe")
+		return
+	Registry.weapons.erase("__fx_probe")
+	# ---- 4. 数据链路：武器配置 → 弹丸 / 刀光实例 ----
+	var bt: Node2D = preload("res://scenes/weapons/bullet.tscn").instantiate()
+	_main.add_child(bt)
+	bt.setup(Vector2.ZERO, 0.0, Registry.weapons["flamethrower"], { "dmg": 1.0, "crit": false })
+	if String(bt.fx) != "flame":
+		_fail("火焰喷射器的弹丸未取到 flame 外观族（%s）" % String(bt.fx))
+		bt.queue_free()
+		return
+	var burn_col := Color(String(Config.STATUS.burn.color))
+	if absf(bt.col.r - burn_col.r) > 0.01 or absf(bt.col.g - burn_col.g) > 0.01:
+		_fail("火焰喷射器的弹丸未按燃烧状态配色")
+		bt.queue_free()
+		return
+	bt.queue_free()
+	var sl := Slash.new()
+	_main.add_child(sl)
+	sl.setup(Vector2.ZERO, 0.0, 100.0, 1.9, String(Registry.weapons["blade"].get("fx", "")))
+	if String(sl.fx) != "slash":
+		_fail("太刀的刀光未取到 slash 外观族（%s）" % String(sl.fx))
+		sl.queue_free()
+		return
+	sl.queue_free()
+	await get_tree().process_frame
+	print("SMOKE: weapon fx wiring OK")
 
 func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
 		resist: float = 0.0) -> Node2D:

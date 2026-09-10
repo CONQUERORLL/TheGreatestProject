@@ -111,7 +111,16 @@ func _process(delta: float) -> void:
 		_weapons_key = key
 		_rebuild_weapons(groups)
 
-## 角色特性行：动态特性额外显示当前数值（战意加成 / 光环半径），静态特性只显示名称
+## 武器向加成键 → HUD 简称。只列与武器行为直接相关的，
+## 其余（经济 / 回复 / 护甲等）走左下属性行，避免 HUD 单行过长
+const TRAIT_WEAPON_KEYS := {
+	"bullet_speed_bonus": "弹速", "bullet_range_bonus": "射程",
+	"melee_range_bonus": "斩击范围", "aoe_radius_bonus": "爆炸范围",
+	"low_hp_dmg_bonus": "残血增伤",
+}
+
+## 角色特性行：动态特性显示当前数值，静态特性显示最关键的武器向加成 ——
+## 只写特性名玩家仍看不出「它到底加在哪」，写出来才叫「精准」
 func _trait_line() -> String:
 	var t: Dictionary = player.char_trait
 	if t.is_empty():
@@ -122,6 +131,12 @@ func _trait_line() -> String:
 			extra = "（+%d%%）" % roundi(float(player.stats.momentum_dmg_bonus) * 100.0)
 		"aura":
 			extra = "（半径 %d）" % roundi(player.aura_radius())
+		"stats":
+			var eff: Dictionary = t.get("effects", {})
+			for k in TRAIT_WEAPON_KEYS:
+				if eff.has(k):
+					extra = "（%s +%d%%）" % [TRAIT_WEAPON_KEYS[k], roundi(float(eff[k]) * 100.0)]
+					break
 	return "\n%s %s%s" % [String(t.get("ico", "⚡")), String(t.get("name", "特性")), extra]
 
 func _rebuild_weapons(groups: Dictionary) -> void:
