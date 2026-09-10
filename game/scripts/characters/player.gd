@@ -245,10 +245,9 @@ func _ensure_flame_jet() -> Node2D:
 	return _flame_jet
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
-	var b := BulletScene.instantiate()
+	var b = ObjectPool.acquire("bullet", BulletScene, get_parent())
 	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang,
 		_weapon_runtime_cfg(c), _roll_damage(c.dmg, c), _trait_tint_for(c))
-	get_parent().add_child(b)
 
 ## 武器配色：状态色优先（火焰长剑橙 / 毒牙匕首绿 / 霜冻法杖冰蓝），
 ## 没有状态的纯物理武器用象牙白刀光

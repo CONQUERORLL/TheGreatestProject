@@ -769,6 +769,7 @@ func _check_items() -> void:
 	_check_affinity()
 	_check_sigils()
 	_check_affinity_floor()
+	_check_object_pool()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -3789,6 +3790,43 @@ func _check_affinity_floor() -> void:
 	shop.goods = saved_goods
 	shop._affinity_cache = saved_aff
 	print("SMOKE: affinity floor OK (level-up + shop)")
+
+## 对象池：acquire/release 的复用与复位。用真实弹丸场景验证 setup 能完整重置
+func _check_object_pool() -> void:
+	ObjectPool.clear()
+	var bs: PackedScene = preload("res://scenes/weapons/bullet.tscn")
+	var parent := _main
+	# 首次 acquire：实例化新节点，池应为空
+	var a = ObjectPool.acquire("test_bullet", bs, parent)
+	if not is_instance_valid(a) or ObjectPool.idle_count() != 0:
+		_fail("首次 acquire 未实例化（或池不为空）")
+		return
+	# release：进入池、移出场景树
+	ObjectPool.release("test_bullet", a)
+	if ObjectPool.idle_count() != 1:
+		_fail("release 后未进入池（idle=%d）" % ObjectPool.idle_count())
+		return
+	if a.is_inside_tree():
+		_fail("release 后节点仍在场景树中")
+		return
+	# 再次 acquire：必须复用同一实例
+	var b = ObjectPool.acquire("test_bullet", bs, parent)
+	if b != a:
+		_fail("第二次 acquire 未复用同一实例")
+		return
+	if ObjectPool.idle_count() != 0:
+		_fail("复用后池未清空")
+		return
+	# 复用节点的 setup 必须完整复位（位置/伤害等运行时字段）
+	b.setup(Vector2(100.0, 100.0), 1.0, { "fx": "bolt", "bspeed": 700.0 },
+		{ "dmg": 5.0, "crit": false, "sigil": "" }, Color(0, 0, 0, 0))
+	if b.position != Vector2(100.0, 100.0) or float(b.dmg) != 5.0:
+		_fail("复用弹丸 setup 未完整复位（pos=%s dmg=%s）" % [str(b.position), str(b.dmg)])
+		ObjectPool.release("test_bullet", b)
+		return
+	ObjectPool.release("test_bullet", b)
+	ObjectPool.clear()
+	print("SMOKE: object pool OK")
 
 ## 构造 4 格假商品（synergy 固定为 v），供保底测试用
 func _cold_goods(entries: Array, v: int) -> Array:

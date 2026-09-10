@@ -169,6 +169,15 @@ bash game/tools/push.sh [分支]
   的视线判定，而 `Obstacles` 需要线段-圆解析解 —— 解法是让 `Obstacles` 本地实现那 15 行几何，
   只保留单向依赖 `Combat → Obstacles`。
 - mod / 数据校验失败用 `push_warning(...)` 跳过该条目，**不能中断其他内容加载**。
+- **类名冲突 / 方法名覆盖**：`class_name` 的静态方法不要用 `Object` 原生方法名 ——
+  本项目的 `ObjectPool.get()` 就覆盖了 `Object.get`，报
+  `The method "get()" overrides a method from native class "Object"`。
+  改用 `acquire` / `release` 这类无歧义的名字。
+- **本项目把「从 Variant 推断类型」当 error**（warning treated as error）：
+  对象池这类「返回复用节点」的工厂函数，若标返回 `Node`，调用方 `var x = ...`
+  会被推断成 `Node`，再调子类方法 `x.setup()` 直接报 `Nonexistent function 'setup' in base 'Node2D'`。
+  正确写法：**工厂函数不标返回类型（返回 Variant）**，内部 `var node: Node = null` +
+  `node = stack.pop_back() as Node`（显式 cast），调用方用 `var x = ...`（`=` 而非 `:=`）接收。
 
 ## 6. 架构约定
 

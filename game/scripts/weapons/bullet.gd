@@ -93,7 +93,7 @@ func _physics_process(delta: float) -> void:
 			Explosion.spawn(get_parent(), global_position, splash, dmg, crit, roll_data)
 		else:
 			Burst.spawn(get_parent(), global_position, col, 4, 90.0)
-		queue_free()
+		ObjectPool.release("bullet", self)
 		return
 	if not collision.is_empty():
 		var hit: Node2D = collision.enemy
@@ -103,14 +103,14 @@ func _physics_process(delta: float) -> void:
 		else:
 			hit.take_damage(dmg, crit)
 			hit.apply_hit_roll(roll_data)
-		queue_free()
+		ObjectPool.release("bullet", self)
 		return
 	global_position = next
 	var world := Rect2(0.0, 0.0, Config.WORLD.w, Config.WORLD.h)
 	if life <= 0.0 or not world.has_point(global_position):
 		if splash > 0.0:
 			Explosion.spawn(get_parent(), global_position, splash, dmg, crit, roll_data)
-		queue_free()
+		ObjectPool.release("bullet", self)
 		return
 	# 火焰 / 电弧 / 尾焰是随时间变化的形态，需要逐帧重绘；
 	# 其余外观相对节点自身静止（位移由引擎变换处理），画一次即可

@@ -593,10 +593,9 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
 	if get_tree().get_nodes_in_group("enemy_bullets").size() >= 150:
 		return
-	var b := EnemyBulletScene.instantiate()
+	var b = ObjectPool.acquire("enemy_bullet", EnemyBulletScene, get_parent())
 	b.setup(global_position, ang, bspeed, dmg, r, life_t)
 	b.player = player
-	get_parent().add_child(b)
 
 func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	if hp <= 0.0 or flee > 0.0:
@@ -674,17 +673,15 @@ func _artifact_system():
 
 ## 法宝掉落物：Loot.setup 的 value 是 int，承载不了法宝字符串 id，走独立入口
 func _spawn_artifact(id: String) -> void:
-	var l := LootScene.instantiate()
+	var l = ObjectPool.acquire("loot", LootScene, get_parent())
 	l.setup_artifact(id, global_position + Vector2(0.0, -6.0), Vector2(0.0, -70.0))
 	l.player = player
-	get_parent().add_child(l)
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
-	var l := LootScene.instantiate()
+	var l = ObjectPool.acquire("loot", LootScene, get_parent())
 	l.setup(kind_name, value, global_position + Vector2(GameRng.range_f(-6.0, 6.0),
 		GameRng.range_f(-6.0, 6.0)), velocity)
 	l.player = player
-	get_parent().add_child(l)
 
 func _draw() -> void:
 	var sc := 1.0 + (0.12 if flash_t > 0.0 else 0.0)
