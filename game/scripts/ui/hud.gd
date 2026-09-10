@@ -98,9 +98,9 @@ func _process(delta: float) -> void:
 	_stats_t -= delta
 	if _stats_t <= 0.0:
 		_stats_t = 0.2
-		_stats_label.text = "伤害 x%.2f ｜ 攻速 x%.2f ｜ 暴击 %d%%\n护甲 %d ｜ 闪避 %d%% ｜ 移速 x%.2f ｜ 回复 %.1f/s" % [
+		_stats_label.text = "伤害 x%.2f ｜ 攻速 x%.2f ｜ 暴击 %d%%\n护甲 %d ｜ 闪避 %d%% ｜ 移速 x%.2f ｜ 回复 %.1f/s%s" % [
 			s.dmg_mult, s.as_mult, roundi(s.crit_ch * 100.0), int(s.armor),
-			roundi(s.dodge * 100.0), s.speed_mult, s.regen]
+			roundi(s.dodge * 100.0), s.speed_mult, s.regen, _trait_line()]
 		_refresh_status_legend()
 	# 武器槽：分组 key 变化才重建（避免每帧建节点）
 	var groups := {}
@@ -110,6 +110,19 @@ func _process(delta: float) -> void:
 	if key != _weapons_key:
 		_weapons_key = key
 		_rebuild_weapons(groups)
+
+## 角色特性行：动态特性额外显示当前数值（战意加成 / 光环半径），静态特性只显示名称
+func _trait_line() -> String:
+	var t: Dictionary = player.char_trait
+	if t.is_empty():
+		return ""
+	var extra := ""
+	match String(t.get("kind", "")):
+		"momentum":
+			extra = "（+%d%%）" % roundi(float(player.stats.momentum_dmg_bonus) * 100.0)
+		"aura":
+			extra = "（半径 %d）" % roundi(player.aura_radius())
+	return "\n%s %s%s" % [String(t.get("ico", "⚡")), String(t.get("name", "特性")), extra]
 
 func _rebuild_weapons(groups: Dictionary) -> void:
 	for c in _weapons_box.get_children():

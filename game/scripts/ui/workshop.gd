@@ -121,7 +121,6 @@ const FIELD_DEFS := {
 		["id", "ID（英文唯一）", "text", "my_character"],
 		["name", "名称", "text", "新角色"], ["ico", "图标（emoji）", "text", "🧑"],
 		["color", "主题色（#RRGGBB）", "text", "#e8b84b"],
-		["start_weapon", "初始武器 ID", "text", "pistol"],
 		["desc", "描述", "text", "自定义角色"],
 	],
 	"artifacts": [
@@ -288,9 +287,10 @@ func _summary(d: Dictionary) -> String:
 	match _cat:
 		"characters":
 			var s: Dictionary = d.get("stats", {})
-			return "生命 %.0f ｜ 移速 %.0f ｜ 初始武器 %s ｜ %s" % [
+			var t: Dictionary = d.get("trait", {})
+			return "生命 %.0f ｜ 移速 %.0f ｜ 特性 %s ｜ %s" % [
 				float(s.get("max_hp", 0.0)), float(s.get("base_speed", 0.0)),
-				d.get("start_weapon", "-"), d.get("desc", "")]
+				String(t.get("name", "无")), d.get("desc", "")]
 		"weapons":
 			return "CD %.2fs ｜ 伤害 %.0f ｜ %s ｜ 售价 %d◆ ｜ %s" % [
 				float(d.get("cd", 0.0)), float(d.get("dmg", 0.0)),

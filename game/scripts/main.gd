@@ -443,6 +443,8 @@ func _on_codex_closed() -> void:
 func _on_wave_started(w: int) -> void:
 	Music.play_track(Music.track_for_wave(w), 0.35)
 	_apply_map_theme(GameState.map_theme)
+	if player != null and is_instance_valid(player):
+		player.on_wave_start()   # 角色特性：战意按"本波击杀"重新累积
 
 # ------------------------------------------------------------
 # 地图主题化（Phase 5）

@@ -41,6 +41,10 @@ const STAT_LIMITS := {
 	"on_hit_burn": Vector2(0.0, 1.0), "on_hit_poison": Vector2(0.0, 1.0),
 	"on_hit_freeze": Vector2(0.0, 1.0), "on_hit_slow": Vector2(0.0, 1.0),
 	"on_hit_stun": Vector2(0.0, 1.0), "on_hit_bleed": Vector2(0.0, 1.0),
+	# 武器行为加成（角色特性 / 道具 / 升级共用；加成语义）
+	"bullet_speed_bonus": Vector2(0.0, 10.0), "bullet_range_bonus": Vector2(0.0, 10.0),
+	"melee_range_bonus": Vector2(0.0, 10.0), "aoe_radius_bonus": Vector2(0.0, 10.0),
+	"low_hp_dmg_bonus": Vector2(0.0, 5.0), "momentum_dmg_bonus": Vector2(0.0, 5.0),
 }
 const EFFECT_LIMITS := {
 	"max_hp": 10000.0, "regen": 1000.0, "armor": 1000.0, "dodge": 0.95,
@@ -50,7 +54,16 @@ const EFFECT_LIMITS := {
 	"status_chance": 1.0, "status_dmg_mult": 10.0, "status_dur_mult": 10.0,
 	"status_spread": 1.0, "on_hit_burn": 1.0, "on_hit_poison": 1.0,
 	"on_hit_freeze": 1.0, "on_hit_slow": 1.0, "on_hit_stun": 1.0, "on_hit_bleed": 1.0,
+	"bullet_speed_bonus": 10.0, "bullet_range_bonus": 10.0, "melee_range_bonus": 10.0,
+	"aoe_radius_bonus": 10.0, "low_hp_dmg_bonus": 5.0, "momentum_dmg_bonus": 5.0,
 }
+
+## 角色专属特性的实现类别（未知 kind 直接拒登，防 mod 写错字后静默无效）
+##   stats    开局一次性注入 effects（与升级/道具同一套加法语义）
+##   aura     光环：按 interval 对范围内敌人施加状态 / 伤害
+##   thorns   荆棘：受击瞬间对周围敌人反击
+##   momentum 战意：每波按击杀累积增伤
+const TRAIT_KINDS := ["stats", "aura", "thorns", "momentum"]
 
 ## 五行反应：type 取值 + 各 type 允许的 effect 键
 ## 未知键直接拒登，防 mod 写错字后静默无效
@@ -241,9 +254,8 @@ func weapon_price(id: String) -> int:
 func register_character(data: Dictionary) -> bool:
 	if not _valid(data, "角色", ["id", "name"]):
 		return false
-	_apply_defaults(data, {"ico": "🧑", "desc": "", "color": "#e8b84b",
-		"start_weapon": "pistol", "stats": {}})
-	if not _string_fields(data, ["id", "name", "ico", "desc", "color", "start_weapon"]):
+	_apply_defaults(data, {"ico": "🧑", "desc": "", "color": "#e8b84b", "stats": {}})
+	if not _string_fields(data, ["id", "name", "ico", "desc", "color"]):
 		return _reject("角色", data, "文本字段类型非法")
 	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty():
 		return _reject("角色", data, "ID/名称不能为空")
@@ -251,7 +263,49 @@ func register_character(data: Dictionary) -> bool:
 		return _reject("角色", data, "颜色必须是 HTML 色值")
 	if typeof(data.stats) != TYPE_DICTIONARY or not _valid_stat_values(data.stats):
 		return _reject("角色", data, "stats 必须是合法数值字典")
+	if not _valid_character_trait(data):
+		return false
 	characters[String(data.id)] = data
+	return true
+
+## 角色专属特性校验：trait 可选（模组角色可以不带）；有则必须是完整可执行的描述。
+## 宁可拒登也不"当作没有特性" —— 静默降级会让玩家选到一个看似有特色、实则裸奔的角色
+func _valid_character_trait(data: Dictionary) -> bool:
+	# 注意：不能用 data.trait 点号访问 —— Godot 4.7 里 trait 是保留关键字，
+	# 只能走字典下标 data["trait"]
+	if not data.has("trait") or typeof(data["trait"]) != TYPE_DICTIONARY:
+		return true
+	var t: Dictionary = data["trait"]
+	if t.is_empty():
+		return true
+	if not _valid(t, "角色特性", ["id", "name", "kind"]):
+		return false
+	_apply_defaults(t, {"ico": "✨", "desc": ""})
+	if not _string_fields(t, ["id", "name", "ico", "desc", "kind"]):
+		return _reject("角色特性", data, "文本字段类型非法")
+	if String(t.id).strip_edges().is_empty() or String(t.name).strip_edges().is_empty():
+		return _reject("角色特性", data, "ID/名称不能为空")
+	if String(t.kind) not in TRAIT_KINDS:
+		return _reject("角色特性", data, "未知 kind：%s" % String(t.kind))
+	if String(t.kind) == "stats":
+		# effects 是「增量」语义，必须走 EFFECT_LIMITS：
+		# STAT_LIMITS 描述的是角色 stats 的绝对值区间（crit_mult 下限 1.0），
+		# 拿它校验增量会把合法的 "+0.4 暴伤" 判为非法
+		if not _valid_effects(t.get("effects", {})):
+			return _reject("角色特性", data, "effects 必须是合法数值字典")
+	elif String(t.kind) == "aura":
+		var sid := String(t.get("status", ""))
+		if sid != "" and not Config.STATUS.has(sid):
+			return _reject("角色特性", data, "未知状态 id：%s" % sid)
+		if t.has("interval") and not _number_in_range(t.interval, 0.05, 10.0):
+			return _reject("角色特性", data, "interval 必须在 [0.05, 10]")
+		if t.has("chance") and not _number_in_range(t.chance, 0.0, 1.0):
+			return _reject("角色特性", data, "chance 必须在 [0, 1]")
+	elif String(t.kind) == "thorns":
+		if not _number_in_range(t.get("dmg", 0.0), 0.0, 10000.0):
+			return _reject("角色特性", data, "thorns 必须给出合法 dmg")
+		if t.has("radius") and not _number_in_range(t.radius, 1.0, 600.0):
+			return _reject("角色特性", data, "radius 必须在 [1, 600]")
 	return true
 
 func register_weapon(data: Dictionary) -> bool:
@@ -719,131 +773,237 @@ func _register_builtin() -> void:
 		"potato": {
 			"id": "potato", "name": "土豆勇者", "ico": "🥔",
 			"desc": "均衡的冒险家，各项属性标准，适合任何构筑",
-			"color": "#e8b84b", "start_weapon": "pistol",
+			"color": "#e8b84b",
 			"stats": {},
+			"trait": {
+				"id": "even_keel", "name": "均衡之道", "ico": "✨",
+				"desc": "伤害 / 攻速 / 移速 +5%，材料获取 +10%：没有短板，但也不走极端",
+				"kind": "stats",
+				"effects": { "dmg_mult": 0.05, "as_mult": 0.05, "speed_mult": 0.05,
+					"harvesting": 0.10 },
+			},
 		},
 		"berserker": {
 			"id": "berserker", "name": "狂战士", "ico": "🪓",
-			"desc": "嗜血近战：生命与伤害极高、自带护甲，但攻速与移速略降。初始武器：太刀",
-			"color": "#d9534f", "start_weapon": "blade",
+			"desc": "嗜血近战：生命与伤害极高、自带护甲，但攻速与移速略降",
+			"color": "#d9534f",
 			"stats": { "max_hp": 130.0, "armor": 3.0, "dmg_mult": 1.25,
 				"as_mult": 0.95, "speed_mult": 0.92, "crit_ch": 0.03 },
+			"trait": {
+				"id": "blood_rage", "name": "血怒", "ico": "🩸",
+				"desc": "生命越低伤害越高，濒死时最高 +70%：厚血反打的核心",
+				"kind": "stats",
+				"effects": { "low_hp_dmg_bonus": 0.70 },
+			},
 		},
 		"ranger": {
 			"id": "ranger", "name": "游侠", "ico": "🏹",
-			"desc": "远程精准：高暴击高机动，放风筝打法，但身板脆弱。初始武器：狙击枪",
-			"color": "#3bbfae", "start_weapon": "sniper",
+			"desc": "远程精准：高暴击高机动，放风筝打法，但身板脆弱",
+			"color": "#3bbfae",
 			"stats": { "crit_ch": 0.15, "crit_mult": 2.4, "dodge": 0.10,
 				"speed_mult": 1.10, "max_hp": 75.0, "armor": -1.0 },
+			"trait": {
+				"id": "eagle_eye", "name": "鹰眼", "ico": "🎯",
+				"desc": "子弹速度 +50%、射程 +35%：远距离几乎不需要预判",
+				"kind": "stats",
+				"effects": { "bullet_speed_bonus": 0.50, "bullet_range_bonus": 0.35 },
+			},
 		},
 		"gambler": {
 			"id": "gambler", "name": "赌徒", "ico": "🎲",
 			"desc": "高风险高回报：暴击与闪避拉满、材料加成，但血薄甲脆、伤害不稳",
-			"color": "#e8902a", "start_weapon": "pistol",
+			"color": "#e8902a",
 			"stats": { "crit_ch": 0.28, "crit_mult": 2.6, "dodge": 0.12,
 				"harvesting": 0.35, "max_hp": 65.0, "armor": -2.0, "dmg_mult": 0.90 },
+			"trait": {
+				"id": "fate_dice", "name": "命运骰", "ico": "🎲",
+				"desc": "暴击伤害 +40%、材料获取 +25%：赌注越大，赢得越多",
+				"kind": "stats",
+				"effects": { "crit_mult": 0.40, "harvesting": 0.25 },
+			},
 		},
 		"farmer": {
 			"id": "farmer", "name": "收获者", "ico": "🌾",
 			"desc": "经济流：材料获取 +60%、超大拾取范围，用钱滚雪球碾压商店",
-			"color": "#7ec850", "start_weapon": "pistol",
+			"color": "#7ec850",
 			"stats": { "harvesting": 0.60, "pickup_range": 260.0,
 				"max_hp": 95.0, "dmg_mult": 0.92, "speed_mult": 1.02 },
+			"trait": {
+				"id": "fertile_soil", "name": "沃土", "ico": "🌱",
+				"desc": "材料获取 +30%、拾取范围 +100：滚雪球的核心",
+				"kind": "stats",
+				"effects": { "harvesting": 0.30, "pickup_range": 100.0 },
+			},
 		},
 		"vampire": {
 			"id": "vampire", "name": "血族", "ico": "🧛",
 			"desc": "续航之王：击杀回血 + 持续回复，越战越勇，但生命上限很低",
-			"color": "#b05ae0", "start_weapon": "knife",
+			"color": "#b05ae0",
 			"stats": { "lifesteal": 2.0, "regen": 1.2, "dodge": 0.08,
 				"max_hp": 70.0, "dmg_mult": 0.95, "speed_mult": 1.06 },
+			"trait": {
+				"id": "blood_mist", "name": "血雾领域", "ico": "🦇",
+				"desc": "周身血雾：范围内敌人持续流血，抵消你贴近战斗的代价",
+				"kind": "aura", "status": "bleed", "radius_mult": 1.05,
+				"interval": 0.7, "dmg": 3.0, "power": 20.0, "stacks": 1,
+			},
 		},
 		"guardian": {
 			"id": "guardian", "name": "铁卫", "ico": "🐢",
 			"desc": "不动如山：超高生命、护甲与回复，攻速补偿，代价是移速大幅降低",
-			"color": "#5a6dbf", "start_weapon": "knife",
+			"color": "#5a6dbf",
 			"stats": { "max_hp": 165.0, "armor": 6.0, "regen": 0.5,
 				"speed_mult": 0.82, "dodge": 0.0, "as_mult": 1.08 },
+			"trait": {
+				"id": "thorn_mail", "name": "荆棘重铠", "ico": "🌵",
+				"desc": "每次受击对周围 155 范围内所有敌人造成反击伤害：越被围越强",
+				"kind": "thorns", "dmg": 22.0, "radius": 155.0,
+			},
 		},
 		# ---- Phase 2 五行门派修士（5 个，每人专精一个五行状态） ----
 		"pyromancer": {
 			"id": "pyromancer", "name": "焚天祭司", "ico": "🔥",
-			"desc": "火系爆发：状态伤害 +35%，异常持续 +25%，命中率 +10%；代价是血薄甲脆。初始武器：火焰喷射器",
-			"color": "#ff7a3c", "start_weapon": "flamethrower",
+			"desc": "火系爆发：状态伤害 +35%，异常持续 +25%，命中率 +10%；代价是血薄甲脆",
+			"color": "#ff7a3c",
 			"stats": { "status_dmg_mult": 0.35, "status_dur_mult": 0.25, "status_chance": 0.10,
 				"max_hp": 85.0, "armor": -1.0, "dmg_mult": 0.95 },
+			"trait": {
+				"id": "ember_field", "name": "焚天领域", "ico": "🔥",
+				"desc": "周身烈焰：范围内敌人持续燃烧，与冰/水构筑自动触发五行反应",
+				"kind": "aura", "status": "burn", "radius_mult": 1.0,
+				"interval": 0.6, "dmg": 2.0, "power": 18.0, "stacks": 1,
+			},
 		},
 		"druid": {
 			"id": "druid", "name": "青囊药王", "ico": "🌿",
-			"desc": "毒扩散流：异常命中 +20%，持续 +35%，中毒扩散 +60%；材料获取微幅加成。初始武器：毒牙匕首",
-			"color": "#7ec850", "start_weapon": "venom_dagger",
+			"desc": "毒扩散流：异常命中 +20%，持续 +35%，中毒扩散 +60%；材料获取微幅加成",
+			"color": "#7ec850",
 			"stats": { "status_chance": 0.20, "status_dur_mult": 0.35, "status_spread": 0.60,
 				"max_hp": 90.0, "dmg_mult": 0.92, "harvesting": 0.15 },
+			"trait": {
+				"id": "miasma", "name": "瘴气领域", "ico": "🧪",
+				"desc": "周身瘴气：范围内敌人持续中毒（按最大生命比例掉血），对厚血敌人尤其致命",
+				"kind": "aura", "status": "poison", "radius_mult": 1.05,
+				"interval": 0.7, "dmg": 1.5,
+			},
 		},
 		"swordmaster": {
 			"id": "swordmaster", "name": "太白剑客", "ico": "⚔",
-			"desc": "剑道宗师：暴击 +12%、暴伤 +230%、攻速 +5%、伤害 +10%、异常命中 +8%。初始武器：太刀",
-			"color": "#dfe6f0", "start_weapon": "blade",
+			"desc": "剑道宗师：暴击 +12%、暴伤 +230%、攻速 +5%、伤害 +10%、异常命中 +8%",
+			"color": "#dfe6f0",
 			"stats": { "crit_ch": 0.12, "crit_mult": 2.3, "as_mult": 1.05, "dmg_mult": 1.10,
 				"status_chance": 0.08, "max_hp": 88.0 },
+			"trait": {
+				"id": "sword_intent", "name": "剑意", "ico": "⚔",
+				"desc": "斩击范围 +35%、暴击伤害 +80%：剑势所及，一刀两断",
+				"kind": "stats",
+				"effects": { "melee_range_bonus": 0.35, "crit_mult": 0.80 },
+			},
 		},
 		"tidecaller": {
 			"id": "tidecaller", "name": "沧海鲛人", "ico": "💧",
-			"desc": "冰控场：异常命中 +15%，异常持续 +30%，移速 +8%，护甲 +1。血薄。初始武器：霜冻法杖",
-			"color": "#8fd8ff", "start_weapon": "frost_staff",
+			"desc": "冰控场：异常命中 +15%，异常持续 +30%，移速 +8%，护甲 +1。血薄",
+			"color": "#8fd8ff",
 			"stats": { "status_chance": 0.15, "status_dur_mult": 0.30, "speed_mult": 1.08,
 				"armor": 1.0, "max_hp": 82.0 },
+			"trait": {
+				"id": "cold_tide", "name": "寒潮领域", "ico": "❄",
+				"desc": "周身寒潮：范围内敌人持续减速，走位压力大幅降低",
+				"kind": "aura", "status": "slow", "radius_mult": 1.15,
+				"interval": 0.6, "dmg": 4.0,
+			},
 		},
 		"geomancer": {
 			"id": "geomancer", "name": "厚土方士", "ico": "⛰",
-			"desc": "眩晕坦克：生命 140、护甲 4、回复 0.4/s、异常命中 +10%；代价是移速 -10%、伤害 -5%。初始武器：砍刀",
-			"color": "#ffd24a", "start_weapon": "knife",
+			"desc": "眩晕坦克：生命 140、护甲 4、回复 0.4/s、异常命中 +10%；代价是移速 -10%、伤害 -5%",
+			"color": "#ffd24a",
 			"stats": { "max_hp": 140.0, "armor": 4.0, "regen": 0.4, "status_chance": 0.10,
 				"dmg_mult": 0.95, "speed_mult": 0.90 },
+			"trait": {
+				"id": "gravity_well", "name": "厚土重压", "ico": "🪨",
+				"desc": "周身重压：范围内敌人持续受伤，并有 15% 概率被短暂眩晕",
+				"kind": "aura", "status": "stun", "chance": 0.15, "radius_mult": 1.0,
+				"interval": 1.0, "dmg": 6.0,
+			},
 		},
 		# ---- Phase 3 内容扩充（6 个：攻速 / 重击 / 闪避 / 回复 / 多元素异常 / 重装输出） ----
-		# 设计原则：只使用 Config.PLAYER 已有的 stats 键，不引入新机制——
-		# 内容量靠数值取舍拉开差异，而不是靠新系统（否则每加一个角色都要改战斗代码）
+		# 追加「角色特性」后，差异化不再只靠数值：每个角色都有一种专属机制或行为加成
 		"gunner": {
 			"id": "gunner", "name": "弹雨枪手", "ico": "🎯",
-			"desc": "弹幕压制：攻速 +50%、移速 +5%、生命 90，代价是单发伤害 -30%、暴击率 -2%。初始武器：冲锋枪",
-			"color": "#ffd24a", "start_weapon": "smg",
+			"desc": "弹幕压制：攻速 +50%、移速 +5%、生命 90，代价是单发伤害 -30%、暴击率 -2%",
+			"color": "#ffd24a",
 			"stats": { "as_mult": 1.50, "dmg_mult": 0.70, "speed_mult": 1.05,
 				"crit_ch": 0.03, "max_hp": 90.0 },
+			"trait": {
+				"id": "ballistics", "name": "弹道精通", "ico": "💨",
+				"desc": "子弹速度 +60%、射程 +20%：让弹幕真正追上敌人，高射速也不空转",
+				"kind": "stats",
+				"effects": { "bullet_speed_bonus": 0.60, "bullet_range_bonus": 0.20 },
+			},
 		},
 		"artillery": {
 			"id": "artillery", "name": "炮术家", "ico": "💣",
-			"desc": "一发制敌：伤害 +35%、暴伤 2.4，代价是攻速 -22%、移速 -6%。初始武器：火箭筒",
-			"color": "#e8902a", "start_weapon": "rocket",
+			"desc": "一发制敌：伤害 +35%、暴伤 2.4，代价是攻速 -22%、移速 -6%",
+			"color": "#e8902a",
 			"stats": { "dmg_mult": 1.35, "crit_mult": 2.4, "as_mult": 0.78,
 				"speed_mult": 0.94, "max_hp": 95.0 },
+			"trait": {
+				"id": "fire_cover", "name": "火力覆盖", "ico": "💥",
+				"desc": "爆炸范围 +50%、伤害 +10%：一发覆盖半个屏幕",
+				"kind": "stats",
+				"effects": { "aoe_radius_bonus": 0.50, "dmg_mult": 0.10 },
+			},
 		},
 		"monk": {
 			"id": "monk", "name": "无相武僧", "ico": "🥋",
-			"desc": "以巧破力：闪避 +22%、移速 +15%、攻速 +12%，代价是生命仅 68、护甲 -2。初始武器：砍刀",
-			"color": "#dfe6f0", "start_weapon": "knife",
+			"desc": "以巧破力：闪避 +22%、移速 +15%、攻速 +12%，代价是生命仅 68、护甲 -2",
+			"color": "#dfe6f0",
 			"stats": { "dodge": 0.22, "speed_mult": 1.15, "as_mult": 1.12,
 				"max_hp": 68.0, "armor": -2.0, "dmg_mult": 0.95 },
+			"trait": {
+				"id": "gale_step", "name": "疾风身法", "ico": "🌪",
+				"desc": "移速 +12%、斩击范围 +25%、攻速 +8%：以快打慢，刀比人先到",
+				"kind": "stats",
+				"effects": { "speed_mult": 0.12, "melee_range_bonus": 0.25, "as_mult": 0.08 },
+			},
 		},
 		"ascetic": {
 			"id": "ascetic", "name": "苦修者", "ico": "🧘",
-			"desc": "生生不息：回复 +2.8/秒、生命 130、护甲 +2，代价是伤害 -12%、攻速 -8%。初始武器：砍刀",
-			"color": "#7ec850", "start_weapon": "knife",
+			"desc": "生生不息：回复 +2.8/秒、生命 130、护甲 +2，代价是伤害 -12%、攻速 -8%",
+			"color": "#7ec850",
 			"stats": { "regen": 2.8, "max_hp": 130.0, "armor": 2.0,
 				"dmg_mult": 0.88, "as_mult": 0.92 },
+			"trait": {
+				"id": "asceticism", "name": "苦行", "ico": "🕯",
+				"desc": "持续回复 +1.2/秒、护甲 +1：用时间换生存，扛住长线消耗",
+				"kind": "stats",
+				"effects": { "regen": 1.2, "armor": 1.0 },
+			},
 		},
 		"alchemist": {
 			"id": "alchemist", "name": "丹鼎术士", "ico": "⚗",
-			"desc": "万毒归元：异常命中 +25%、状态伤害 +30%、拾取范围 180，代价是伤害 -10%。初始武器：毒牙匕首",
-			"color": "#6fd6c8", "start_weapon": "venom_dagger",
+			"desc": "万毒归元：异常命中 +25%、状态伤害 +30%、拾取范围 180，代价是伤害 -10%",
+			"color": "#6fd6c8",
 			"stats": { "status_chance": 0.25, "status_dmg_mult": 0.30,
 				"pickup_range": 180.0, "dmg_mult": 0.90, "max_hp": 92.0 },
+			"trait": {
+				"id": "myriad_venom", "name": "万毒归元", "ico": "☠",
+				"desc": "异常持续时间 +55%、异常伤害 +35%：让每一种状态都烧得更久、更痛",
+				"kind": "stats",
+				"effects": { "status_dur_mult": 0.55, "status_dmg_mult": 0.35 },
+			},
 		},
 		"warlord": {
 			"id": "warlord", "name": "百战军侯", "ico": "🛡",
-			"desc": "力战不退：生命 150、护甲 +5、伤害 +12%，代价是攻速 -14%、移速 -12%。初始武器：太刀",
-			"color": "#993c1d", "start_weapon": "blade",
+			"desc": "力战不退：生命 150、护甲 +5、伤害 +12%，代价是攻速 -14%、移速 -12%",
+			"color": "#993c1d",
 			"stats": { "max_hp": 150.0, "armor": 5.0, "dmg_mult": 1.12,
 				"as_mult": 0.86, "speed_mult": 0.88 },
+			"trait": {
+				"id": "battle_momentum", "name": "战意", "ico": "🔺",
+				"desc": "本波每击杀 8 名敌人伤害 +4%（最高 +50%），每波开始重置：越战越勇",
+				"kind": "momentum", "per_kills": 8, "per_stack": 0.04, "max_bonus": 0.50,
+			},
 		},
 	}
 	weapons = {}
@@ -969,11 +1129,6 @@ func _apply_manifest(path: String, mod_name: String) -> int:
 	return n
 
 func _resolve_overrides() -> void:
-	for character_id in characters:
-		var character: Dictionary = characters[character_id]
-		if not weapons.has(String(character.start_weapon)):
-			push_warning("Registry: 角色 %s 的初始武器不存在，已回退手枪" % character_id)
-			character["start_weapon"] = "pistol"
 	if _pending_boss_override != "":
 		if enemies.has(_pending_boss_override) and _enemy_is_boss(enemies[_pending_boss_override]):
 			boss_override = _pending_boss_override

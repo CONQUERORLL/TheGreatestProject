@@ -12,6 +12,13 @@ var artifacts_owned: Dictionary = {}   # 已持有法宝 id -> 1（每种限 1 �
 var artifact_stacks: Dictionary = {}   # 叠层法宝 id -> 当前层数（断刃锋/玄武核）
 var facing := 0.0
 var iframes := 0.0
+# ---- 角色专属特性（Character Trait）----
+# 注意：变量名不能用 trait —— Godot 4.7 已把 trait 列为保留关键字，
+# `var trait := ...` 会直接 Parse Error（"Expected variable name after var"）
+var char_trait: Dictionary = {}      # 当前角色特性（开局从 Registry 读取，空 = 无特性）
+var _aura_t := 0.0              # 光环/战意触发计时
+var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
+var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
 
 @onready var camera: Camera2D = $Camera
 
@@ -26,17 +33,35 @@ func _ready() -> void:
 		"status_chance": 0.0, "status_dmg_mult": 0.0, "status_dur_mult": 0.0, "status_spread": 0.0,
 		"on_hit_burn": 0.0, "on_hit_poison": 0.0, "on_hit_freeze": 0.0,
 		"on_hit_slow": 0.0, "on_hit_stun": 0.0, "on_hit_bleed": 0.0,
+		# 角色特性 / 道具 / 升级共用的武器行为加成（加成语义：0 = 无加成）
+		"bullet_speed_bonus": 0.0,   # 弹丸飞行速度
+		"bullet_range_bonus": 0.0,   # 弹丸存活时长（射程）
+		"melee_range_bonus": 0.0,    # 近战斩击半径
+		"aoe_radius_bonus": 0.0,     # 爆炸 / 溅射半径
+		"low_hp_dmg_bonus": 0.0,     # 残血增伤上限（按缺失生命比例发挥）
+		"momentum_dmg_bonus": 0.0,   # 战意当前增伤（特性运行时写入，每波清零）
 	}
 	# 角色（Registry 注册表）：stats 可只覆盖部分字段（创意工坊自定义角色）
 	var ch: Dictionary = Registry.get_character(GameState.character_id)
 	for k in ch.get("stats", {}):
 		stats[k] = ch.stats[k]
+	# 角色专属特性：stats 类在开局一次性注入（与升级/道具同一套加法语义）；
+	# 其余 kind（aura / thorns / momentum）不属于属性，由运行时逻辑在对应时机结算
+	char_trait = ch.get("trait", {})
+	if String(char_trait.get("kind", "")) == "stats":
+		for tk in char_trait.get("effects", {}):
+			var tv: Variant = char_trait.effects[tk]
+			if typeof(tv) == TYPE_INT or typeof(tv) == TYPE_FLOAT:
+				stats[String(tk)] = float(stats.get(String(tk), 0.0)) + float(tv)
 	_sanitize_stats()
 	hp = stats.max_hp
+	# 开局武器完全由玩家在向导中选定：角色不再绑定"初始武器"，
+	# 否则玩家在第 2 步改选武器时角色设定会被覆盖，绑定本身也就失去意义
 	var wt: String = GameState.loadout_weapon
-	if wt == "":
-		wt = ch.get("start_weapon", "pistol")
+	if wt == "" or not Registry.weapons.has(wt):
+		wt = "pistol"
 	weapons = [{ "type": wt, "cd": 0.3 }]
+	_momentum_base_kills = GameState.kills
 	queue_redraw()
 
 func _physics_process(delta: float) -> void:
@@ -66,11 +91,103 @@ func _physics_process(delta: float) -> void:
 	# ---- 回复 / 无敌帧 ----
 	hp = minf(stats.max_hp, hp + stats.regen * delta)
 	iframes = maxf(0.0, iframes - delta)
+	# ---- 角色特性（光环 / 战意） ----
+	_trait_tick(delta)
 	# ---- 武器自动攻击 ----
 	for w in weapons:
 		w.cd -= delta
 		if w.cd <= 0.0:
 			try_fire(w)
+
+## 每波开始（main 在 wave_started 时调用）：战意归零，按本波击杀重新累积
+func on_wave_start() -> void:
+	_momentum_base_kills = GameState.kills
+	stats.momentum_dmg_bonus = 0.0
+
+## 角色特性运行时结算。
+## 光环按 interval 节流（默认 0.6s）：逐帧施加状态会把 DoT 层数刷满、把五行反应
+## 打成每帧连锁，同时让 Combat 空间查询从"每秒一次"变成"每物理帧一次"
+func _trait_tick(delta: float) -> void:
+	var before := _trait_pulse
+	_trait_pulse = maxf(0.0, _trait_pulse - delta * 3.0)
+	if before != _trait_pulse:
+		queue_redraw()
+	var kind := String(char_trait.get("kind", ""))
+	if kind == "momentum":
+		# 战意：本波击杀每满 per_kills 层 +per_stack 伤害，上限 max_bonus
+		var per_kills := maxf(1.0, float(char_trait.get("per_kills", 8)))
+		var stacks := float(GameState.kills - _momentum_base_kills) / per_kills
+		var bonus := minf(float(char_trait.get("max_bonus", 0.5)),
+			stacks * float(char_trait.get("per_stack", 0.04)))
+		if not is_equal_approx(bonus, float(stats.momentum_dmg_bonus)):
+			stats.momentum_dmg_bonus = bonus
+			_trait_pulse = maxf(_trait_pulse, 0.5)
+			queue_redraw()
+		return
+	if kind != "aura":
+		return
+	_aura_t += delta
+	if _aura_t < maxf(0.2, float(char_trait.get("interval", 0.6))):
+		return
+	_aura_t = 0.0
+	_trait_pulse = 1.0
+	queue_redraw()
+	_apply_aura()
+
+## 光环半径：char_trait.radius > 0 用绝对值，否则按拾取范围 × radius_mult 推导
+## （挂在拾取范围上 → 拾取道具/升级同时强化光环，构筑有额外收益）
+func aura_radius() -> float:
+	var r := float(char_trait.get("radius", 0.0))
+	if r > 0.0:
+		return r
+	return float(stats.pickup_range) * float(char_trait.get("radius_mult", 1.0))
+
+## 光环结算：对范围内敌人施加状态（可选附带直接伤害）。
+## power 走玩家当前的状态伤害加成，让"堆异常"的构筑同样强化光环
+func _apply_aura() -> void:
+	var radius := aura_radius()
+	var sid := String(char_trait.get("status", ""))
+	var power := float(char_trait.get("power", 0.0)) * (1.0 + float(stats.status_dmg_mult))
+	var dur_mult := float(char_trait.get("dur_mult", 1.0)) * (1.0 + float(stats.status_dur_mult))
+	var dmg := float(char_trait.get("dmg", 0.0)) * float(stats.dmg_mult)
+	var chance := clampf(float(char_trait.get("chance", 1.0)), 0.0, 1.0)
+	for e in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+		if e.flee > 0.0:
+			continue
+		if global_position.distance_to(e.global_position) > radius + e.radius:
+			continue
+		if dmg > 0.0:
+			e.take_damage(dmg, false, true)   # dot 通道：不触发常规打击感反馈
+		if sid != "" and GameRng.chance(chance):
+			e.apply_status(sid, int(char_trait.get("stacks", 1)),
+				float(char_trait.get("duration", 0.0)), power, dur_mult)
+
+## 特性主题色：优先 char_trait.color，其次取光环状态配色，最后回退角色色
+func trait_color() -> Color:
+	if char_trait.has("color"):
+		return Color(String(char_trait.color))
+	var sid := String(char_trait.get("status", ""))
+	if sid != "" and Config.STATUS.has(sid):
+		return Color(String(Config.STATUS[sid].get("color", "#e8b84b")))
+	return Color(String(Registry.get_character(GameState.character_id).get("color", "#e8b84b")))
+
+## 特性：荆棘反击（受击瞬间对周围敌人结算一次伤害）
+func _trait_on_hurt() -> void:
+	if String(char_trait.get("kind", "")) != "thorns":
+		return
+	var dmg := float(char_trait.get("dmg", 0.0)) * float(stats.dmg_mult)
+	if dmg <= 0.0:
+		return
+	var radius := maxf(1.0, float(char_trait.get("radius", 150.0)))
+	_trait_pulse = 1.0
+	for e in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+		if e.flee > 0.0:
+			continue
+		if global_position.distance_to(e.global_position) <= radius + e.radius:
+			e.take_damage(dmg, false, true)
+	Burst.spawn(get_parent(), global_position, Color("ffd24a"), 10, 180.0)
+	queue_redraw()
+
 
 func _process(_delta: float) -> void:
 	# 受击无敌帧闪烁（原型 80ms 间隔）
@@ -106,19 +223,39 @@ func try_fire(w: Dictionary) -> void:
 
 func _spawn_bullet(c: Dictionary, ang: float) -> void:
 	var b := BulletScene.instantiate()
-	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang, c, _roll_damage(c.dmg, c))
+	b.setup(global_position + Vector2.from_angle(ang) * 18.0, ang,
+		_weapon_runtime_cfg(c), _roll_damage(c.dmg, c))
 	get_parent().add_child(b)
 
+## 武器运行参数：叠加角色的弹道类特性（弹速 / 射程 / 爆炸半径）。
+## 无加成时直接复用原字典 —— 高攻速武器每秒开火十余次，没必要每次都 duplicate
+func _weapon_runtime_cfg(c: Dictionary) -> Dictionary:
+	var sb := float(stats.bullet_speed_bonus)
+	var rb := float(stats.bullet_range_bonus)
+	var ab := float(stats.aoe_radius_bonus)
+	if sb <= 0.0 and rb <= 0.0 and ab <= 0.0:
+		return c
+	var wc := c.duplicate()
+	if sb > 0.0:
+		wc["bspeed"] = float(c.get("bspeed", 0.0)) * (1.0 + sb)
+	if rb > 0.0:
+		wc["bullet_life"] = float(c.get("bullet_life", 1.1)) * (1.0 + rb)
+	if ab > 0.0 and c.has("splash"):
+		wc["splash"] = float(c.get("splash", 0.0)) * (1.0 + ab)
+	return wc
+
 func _melee_slash(c: Dictionary, ang: float) -> void:
+	# 斩击范围受角色的近战范围特性加成（视觉与判定用同一个 reach）
+	var reach := float(c["range"]) * (1.0 + float(stats.melee_range_bonus))
 	var s := Slash.new()
-	s.setup(global_position, ang, c["range"], c.swing_arc)
+	s.setup(global_position, ang, reach, c.swing_arc)
 	get_parent().add_child(s)
 	# 一次性命中扇形范围内敌人（原型为 0.13s 持续检测，效果等价）
-	for e in Combat.enemies_near(global_position, float(c["range"]) + Combat.MAX_ENTITY_RADIUS):
+	for e in Combat.enemies_near(global_position, reach + Combat.MAX_ENTITY_RADIUS):
 		if e.flee > 0.0:
 			continue
 		var d := global_position.distance_to(e.global_position)
-		if d < c["range"] + e.radius:
+		if d < reach + e.radius:
 			var da := wrapf((e.global_position - global_position).angle() - ang, -PI, PI)
 			if absf(da) < c.swing_arc / 2.0:
 				var roll := _roll_damage(c.dmg, c)
@@ -129,6 +266,12 @@ func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 	# 伤害 = 基础 × 伤害加成 × 暴击倍率（对应原型 rollDamage）
 	# 同时打包状态载荷：武器自带 status + 道具 on_hit_* 概率，命中后由 Enemy.apply_hit_roll 结算
 	var dmg: float = base * stats.dmg_mult
+	# 特性增伤：残血增伤按缺失生命比例线性发挥（满血 0%、濒死 100%）；
+	# 战意由 _trait_tick 逐波累积后写入 stats，这里只做读取
+	var lhb := float(stats.low_hp_dmg_bonus)
+	if lhb > 0.0:
+		dmg *= 1.0 + lhb * (1.0 - clampf(hp / maxf(1.0, float(stats.max_hp)), 0.0, 1.0))
+	dmg *= 1.0 + float(stats.momentum_dmg_bonus)
 	var crit := GameRng.chance(stats.crit_ch)
 	if crit:
 		dmg *= stats.crit_mult
@@ -335,6 +478,13 @@ func _sanitize_stats() -> void:
 	stats.status_dmg_mult = maxf(0.0, float(stats.status_dmg_mult))
 	stats.status_dur_mult = maxf(0.0, float(stats.status_dur_mult))
 	stats.status_spread = clampf(float(stats.status_spread), 0.0, 1.0)
+	# 特性 / 道具共用的武器行为加成（负值无意义，统一抬到 0）
+	stats.bullet_speed_bonus = maxf(0.0, float(stats.bullet_speed_bonus))
+	stats.bullet_range_bonus = maxf(0.0, float(stats.bullet_range_bonus))
+	stats.melee_range_bonus = maxf(0.0, float(stats.melee_range_bonus))
+	stats.aoe_radius_bonus = maxf(0.0, float(stats.aoe_radius_bonus))
+	stats.low_hp_dmg_bonus = clampf(float(stats.low_hp_dmg_bonus), 0.0, 5.0)
+	stats.momentum_dmg_bonus = clampf(float(stats.momentum_dmg_bonus), 0.0, 5.0)
 	for sid in Config.STATUS:
 		var key := "on_hit_" + String(sid)
 		stats[key] = clampf(float(stats.get(key, 0.0)), 0.0, 1.0)
@@ -410,6 +560,7 @@ func evolve_progress() -> Array:
 func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）
 	var r: float = Config.PLAYER.radius
+	_draw_trait_aura()
 	draw_circle(Vector2.ZERO, stats.pickup_range, Color(0.494, 0.784, 0.31, 0.05))
 	# 身体：按角色主题色着色（游戏内外形象一致）
 	var body_col: Color = Color(String(Registry.get_character(
@@ -424,3 +575,19 @@ func _draw() -> void:
 	# 枪管
 	draw_rect(Rect2(r - 2.0, -3.0, 14.0, 6.0), Color("454b59"))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+## 特性视觉：光环范围圈 + 触发脉冲，让「范围多大 / 何时生效」肉眼可辨
+func _draw_trait_aura() -> void:
+	var kind := String(char_trait.get("kind", ""))
+	if kind == "aura":
+		var ar := aura_radius()
+		var tc := trait_color()
+		draw_circle(Vector2.ZERO, ar, Color(tc.r, tc.g, tc.b, 0.040 + 0.05 * _trait_pulse))
+		draw_arc(Vector2.ZERO, ar, 0.0, TAU, 64,
+			Color(tc.r, tc.g, tc.b, 0.14 + 0.30 * _trait_pulse), 2.0, true)
+	elif kind == "thorns" and _trait_pulse > 0.0:
+		draw_arc(Vector2.ZERO, maxf(1.0, float(char_trait.get("radius", 150.0))),
+			0.0, TAU, 64, Color(1.0, 0.82, 0.29, 0.32 * _trait_pulse), 3.0, true)
+	elif kind == "momentum" and _trait_pulse > 0.0:
+		draw_arc(Vector2.ZERO, Config.PLAYER.radius + 7.0, 0.0, TAU, 32,
+			Color(1.0, 0.51, 0.31, 0.5 * _trait_pulse), 2.5, true)

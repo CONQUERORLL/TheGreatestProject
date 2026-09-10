@@ -137,3 +137,14 @@ var picked: String = group.get_pressed_button().get_meta("id")
   全部被挡住时才退回最近目标（不允许「有敌人却不开火」）。
 - **手柄 UI 确认**：project.godot 显式绑定 `ui_accept`（Enter/Space/手柄按钮 0=A）与 `ui_cancel`（Esc/按钮 1=B），不要依赖引擎默认；InputMap 重绑定系统参考 `scripts/core/settings.gd`（事件序列化为 {t:key/jbtn/jmot} 描述符存 ConfigFile，同类设备事件替换、手柄绑定快照保留）。
 - **移动端触控**：虚拟摇杆参考 `scripts/ui/touch_controls.gd`——`DisplayServer.is_touchscreen_available()` 检测 + `phase_changed` 控制显隐；`_input` 处理 ScreenTouch/ScreenDrag（多点触控用 index 独占手指）；输出写 `GameState.touch_move` 模拟量，player 优先读取；Control 全程 `MOUSE_FILTER_IGNORE`，暂停钮 `FOCUS_NONE` 不抢手柄焦点；`.godot` 缓存丢失后先跑 `--import` 重建 class_name 缓存再 headless 测试。
+- **`trait` 是 Godot 4.7 保留关键字**：`var trait := {}`、`player.trait`、`data.trait`
+  一律 Parse Error（`Expected variable name after "var"` / 整个脚本加载失败）。
+  只有**裸标识符**位置会踩：字典键 `"trait"`（字符串）、`char_trait`、`_trait_tick`、
+  `trait_color` 这类带前后缀的名字都安全，改个名即可。
+  识别特征很隐蔽：报错脚本里的自定义属性会集体变成
+  `Invalid access to property or key 'stats' on a base object of type 'CharacterBody2D'`
+  ——节点脚本根本没挂上，退化成基类，看起来像「属性丢失」而不是「语法错误」。
+- **同一文件不要在同一回合并行发多个 Edit**：后一次写入基于旧快照回滚前一次的结果，
+  表现为「工具返回 Successfully edited，但内容没落盘」。本项目已踩两次
+  （main_menu.gd 插入函数、smoke_test.gd 替换断言各丢一处，靠 grep 复查才发现）。
+  改同一文件的多处请串行发送，或合并成一次 Edit。

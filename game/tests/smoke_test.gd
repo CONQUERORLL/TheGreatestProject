@@ -764,6 +764,7 @@ func _check_items() -> void:
 	_check_phase3_artifacts()
 	_check_event_cards()
 	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
+	await _check_character_traits()
 	if _failed:
 		return
 	print("SMOKE: status effects OK")
@@ -2080,9 +2081,11 @@ func _check_phase2_content() -> void:
 			_fail("Phase 2 角色未注册：%s" % cid)
 			return
 		var ch: Dictionary = Registry.characters[cid]
-		var sw := String(ch.get("start_weapon", ""))
-		if not Registry.weapons.has(sw):
-			_fail("角色 %s 的初始武器 %s 不存在" % [cid, sw])
+		# 角色不再绑定初始武器（开局武器完全由玩家在向导中选择），
+		# 改为校验每个角色都带合法的专属特性
+		var tr: Dictionary = ch.get("trait", {})
+		if tr.is_empty() or String(tr.get("kind", "")) not in Registry.TRAIT_KINDS:
+			_fail("角色 %s 缺少合法的专属特性" % cid)
 			return
 		if typeof(ch.get("stats", {})) != TYPE_DICTIONARY:
 			_fail("角色 %s 的 stats 不是字典" % cid)
@@ -2810,15 +2813,12 @@ func _check_phase3_content() -> void:
 		if not Registry.items.has(iid):
 			_fail("新增道具缺失：%s" % iid)
 			return
-	# ---- 自洽 1：角色初始武器必须存在且不是进化形态（进化形态商店权重为 0，开局拿不到）----
+	# ---- 自洽 1：每个角色都必须带合法专属特性（特性是角色差异化的唯一载体）----
 	for cid2 in Registry.characters:
 		var c: Dictionary = Registry.characters[cid2]
-		var sw := String(c.get("start_weapon", ""))
-		if sw == "" or not Registry.weapons.has(sw):
-			_fail("角色 %s 的初始武器无效（%s）" % [String(cid2), sw])
-			return
-		if Registry.weapons[sw].get("shop_weight", 1.0) <= 0.0:
-			_fail("角色 %s 的初始武器是进化形态，开局拿不到（%s）" % [String(cid2), sw])
+		var tr2: Dictionary = c.get("trait", {})
+		if tr2.is_empty() or String(tr2.get("kind", "")) not in Registry.TRAIT_KINDS:
+			_fail("角色 %s 的专属特性缺失或 kind 非法" % String(cid2))
 			return
 	# ---- 自洽 2：所有 effects / stats 键都必须落在 player.stats 已知键内 ----
 	var valid := {}
@@ -3308,6 +3308,162 @@ func _pool_weight(pool: Array, id: String) -> float:
 
 ## 反应测试用标靶：高血量 + 指定状态抗性 + 已写入空间索引（AOE/扩散查得到）
 ## resist 默认 0，让爆发伤害可精确计算；BOSS 抗性用例须把配置值显式传回来
+## 角色专属特性（Character Trait）：数据完整性 / 种类分布 / 四类运行时行为
+## 运行时验证直接复用主玩家实例：把 trait 临时换成待测特性再还原。
+## 这样不必新建玩家（新建会重跑 _ready 的角色 stats 注入，污染其他用例的数值假设）
+func _check_character_traits() -> void:
+	var p: Node2D = _main.get_node("Player")
+	var saved_trait: Dictionary = p.char_trait
+	var saved_kills: int = GameState.kills
+	var saved_crit: float = float(p.stats.crit_ch)
+	var saved_lh: float = float(p.stats.low_hp_dmg_bonus)
+	var saved_mom: float = float(p.stats.momentum_dmg_bonus)
+	# ---- 1. 数据结构：全部角色都必须带完整、可执行的特性 ----
+	var kinds := {}
+	var trait_ids := {}
+	var bad: Array = []
+	for cid in Registry.characters:
+		var c: Dictionary = Registry.characters[cid]
+		var t: Dictionary = c.get("trait", {})
+		var cname := String(cid)
+		if t.is_empty():
+			bad.append("%s 无特性" % cname)
+			continue
+		var miss := ""
+		for f in ["id", "name", "ico", "desc", "kind"]:
+			if not t.has(f) or String(t[f]).strip_edges().is_empty():
+				miss = String(f)
+				break
+		if miss != "":
+			bad.append("%s 缺字段 %s" % [cname, miss])
+			continue
+		var k := String(t.kind)
+		if k not in Registry.TRAIT_KINDS:
+			bad.append("%s kind=%s" % [cname, k])
+			continue
+		kinds[k] = int(kinds.get(k, 0)) + 1
+		var tid := String(t.id)
+		if trait_ids.has(tid):
+			bad.append("特性 id 重复：%s（%s / %s）" % [tid, String(trait_ids[tid]), cname])
+		trait_ids[tid] = cname
+	if not bad.is_empty():
+		_fail("角色特性数据异常：%s" % ", ".join(bad))
+		return
+	# 四类机制都必须有角色在用 —— 少了任何一类就说明新机制没接线
+	for k2 in Registry.TRAIT_KINDS:
+		if int(kinds.get(k2, 0)) <= 0:
+			_fail("没有任何角色使用 %s 类特性" % String(k2))
+			return
+	# ---- 2. stats 类特性的 effects 键必须已接线（写错字只会静默失效）----
+	var valid := {}
+	for k3 in p.stats:
+		valid[String(k3)] = true
+	var bad2: Array = []
+	for cid2 in Registry.characters:
+		var t2: Dictionary = Registry.characters[cid2].get("trait", {})
+		if String(t2.get("kind", "")) != "stats":
+			continue
+		for ek in t2.get("effects", {}):
+			if not valid.has(String(ek)):
+				bad2.append("%s → %s" % [String(cid2), String(ek)])
+	if not bad2.is_empty():
+		_fail("角色特性 effects 存在未接线键：%s" % ", ".join(bad2))
+		return
+	print("SMOKE: traits %d (stats=%d aura=%d thorns=%d momentum=%d)" % [
+		Registry.characters.size(), int(kinds.get("stats", 0)), int(kinds.get("aura", 0)),
+		int(kinds.get("thorns", 0)), int(kinds.get("momentum", 0))])
+	# ---- 3. 光环：范围内敌人获得状态，范围外不受影响 ----
+	p.char_trait = { "id": "t_aura", "name": "测试光环", "ico": "❄", "desc": "",
+		"kind": "aura", "status": "slow", "radius": 200.0, "interval": 0.5, "dmg": 0.0 }
+	var e_in: Node2D = _spawn_reaction_target("grunt", p.global_position + Vector2(80.0, 0.0), p)
+	var e_out: Node2D = _spawn_reaction_target("grunt", p.global_position + Vector2(260.0, 0.0), p)
+	await get_tree().physics_frame
+	p._apply_aura()
+	if not e_in.has_status("slow"):
+		_fail("光环未对范围内敌人施加状态")
+		e_in.queue_free()
+		e_out.queue_free()
+		p.char_trait = saved_trait
+		return
+	if e_out.has_status("slow"):
+		_fail("光环误伤了范围外的敌人")
+		e_in.queue_free()
+		e_out.queue_free()
+		p.char_trait = saved_trait
+		return
+	print("SMOKE: aura trait OK (radius=%d)" % roundi(p.aura_radius()))
+	e_in.queue_free()
+	e_out.queue_free()
+	await get_tree().process_frame
+	# ---- 4. 残血增伤：伤害随缺失生命线性提升 ----
+	p.char_trait = {}
+	p.stats.crit_ch = 0.0
+	p.stats.momentum_dmg_bonus = 0.0
+	p.stats.low_hp_dmg_bonus = 0.5
+	p.hp = float(p.stats.max_hp)
+	var full_dmg: float = float(p._roll_damage(100.0).dmg)
+	p.hp = 1.0
+	var low_dmg: float = float(p._roll_damage(100.0).dmg)
+	if low_dmg <= full_dmg * 1.30:
+		_fail("残血增伤未生效（满血 %.1f → 残血 %.1f）" % [full_dmg, low_dmg])
+		p.hp = float(p.stats.max_hp)
+		p.char_trait = saved_trait
+		return
+	print("SMOKE: low-hp trait %d → %d" % [roundi(full_dmg), roundi(low_dmg)])
+	p.hp = float(p.stats.max_hp)
+	# ---- 5. 战意：本波击杀累积增伤 + 上限封顶 + 换波归零 ----
+	p.char_trait = { "id": "t_mom", "name": "测试战意", "ico": "🔺", "desc": "",
+		"kind": "momentum", "per_kills": 8, "per_stack": 0.04, "max_bonus": 0.50 }
+	p.stats.momentum_dmg_bonus = 0.0
+	GameState.kills = saved_kills
+	p._momentum_base_kills = saved_kills
+	GameState.kills = saved_kills + 40   # 40 杀 / 每 8 杀一层 × 4% = 20%
+	p._trait_tick(0.016)
+	if absf(float(p.stats.momentum_dmg_bonus) - 0.20) > 0.005:
+		_fail("战意累积不正确（%.3f，应为 0.200）" % float(p.stats.momentum_dmg_bonus))
+		GameState.kills = saved_kills
+		p.char_trait = saved_trait
+		return
+	GameState.kills = saved_kills + 10000
+	p._trait_tick(0.016)
+	if float(p.stats.momentum_dmg_bonus) > 0.501:
+		_fail("战意未受上限约束（%.3f）" % float(p.stats.momentum_dmg_bonus))
+		GameState.kills = saved_kills
+		p.char_trait = saved_trait
+		return
+	p.on_wave_start()
+	if float(p.stats.momentum_dmg_bonus) > 0.001:
+		_fail("战意未在换波时归零（%.3f）" % float(p.stats.momentum_dmg_bonus))
+		GameState.kills = saved_kills
+		p.char_trait = saved_trait
+		return
+	GameState.kills = saved_kills
+	print("SMOKE: momentum trait OK")
+	# ---- 6. 荆棘反击：受击对周围敌人造成伤害 ----
+	p.char_trait = { "id": "t_thorn", "name": "测试荆棘", "ico": "🌵", "desc": "",
+		"kind": "thorns", "dmg": 1.0, "radius": 160.0 }
+	var e_t: Node2D = _spawn_reaction_target("grunt", p.global_position + Vector2(70.0, 0.0), p)
+	await get_tree().physics_frame
+	var hp_before: float = float(e_t.hp)
+	p._trait_on_hurt()
+	await get_tree().process_frame
+	if float(e_t.hp) >= hp_before:
+		_fail("荆棘反击未对范围内敌人造成伤害（%.0f → %.0f）" % [hp_before, float(e_t.hp)])
+		e_t.queue_free()
+		p.char_trait = saved_trait
+		return
+	print("SMOKE: thorns trait OK")
+	e_t.queue_free()
+	await get_tree().process_frame
+	# ---- 还原现场：trait / 击杀数 / 属性 / 生命 ----
+	p.char_trait = saved_trait
+	p.stats.crit_ch = saved_crit
+	p.stats.low_hp_dmg_bonus = saved_lh
+	p.stats.momentum_dmg_bonus = saved_mom
+	p.hp = float(p.stats.max_hp)
+	GameState.kills = saved_kills
+	print("SMOKE: character traits OK")
+
 func _spawn_reaction_target(type_id: String, pos: Vector2, p2: Node2D,
 		resist: float = 0.0) -> Node2D:
 	var e: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
