@@ -200,10 +200,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_1: event_card_ui._choose(0); get_viewport().set_input_as_handled()
 				KEY_2: event_card_ui._choose(1); get_viewport().set_input_as_handled()
 				KEY_3: event_card_ui._choose(2); get_viewport().set_input_as_handled()
-	# ---- 调试构建专属：1-5 换武器 / 6 射手 / 7 BOSS（限定 PLAYING，避免与升级卡 1-3 冲突） ----
+	# ---- 调试构建专属：Ctrl+1~5 换武器 / Ctrl+6 射手 / Ctrl+7 BOSS ----
+	# 必须按住 Ctrl：裸按数字键 1-7 会误触换武器，把 player.weapons 整体替换、武器+强化一次性丢失
 	# OS.is_debug_build() 守卫：发布版玩家不该能凭空换武器 / 刷 BOSS / 快速重开
 	elif event is InputEventKey and event.pressed and not event.echo and OS.is_debug_build():
-		if GameState.phase == GameState.Phase.PLAYING:
+		if GameState.phase == GameState.Phase.PLAYING and event.ctrl_pressed:
 			match event.physical_keycode:
 				KEY_1: _debug_set_weapon("pistol")
 				KEY_2: _debug_set_weapon("smg")
