@@ -314,21 +314,34 @@ func _build_step() -> void:
 					locked, Unlocks.unlock_hint("character", String(c.id))))
 		1:
 			_options.columns = 4
-			# 开局武器完全由玩家决定：角色不再绑定"初始武器"，
-			# 否则玩家改选武器时角色设定会被覆盖，绑定本身也就失去意义
-			for w: Dictionary in Registry.weapons.values():
-				if float(w.get("shop_weight", 1.0)) <= 0.0:
-					continue   # 进化形态不进开局池（只能靠波末同名武器合成获得）
-				var locked := not Unlocks.is_unlocked("weapon", String(w.id))
-				_options.add_child(_make_card(_g_weapon, w.id,
+			# 开局武器只开放基础档（LOADOUT_WEAPONS）：品阶统一、玩法各异，
+			# 高品阶武器（epic/mythic/legendary）局内通过商店/升级/掉落/合成逐步获得
+			for wid in Config.LOADOUT_WEAPONS:
+				if not Registry.weapons.has(wid):
+					continue
+				var w: Dictionary = Registry.weapons[wid]
+				var locked := not Unlocks.is_unlocked("weapon", wid)
+				_options.add_child(_make_card(_g_weapon, wid,
 					w.ico, w.name, "%s\n伤害 %.0f · CD %.2fs" % [w.desc, float(w.dmg), float(w.cd)],
-					w.id == _sel_weapon, Config.rarity_color(w.get("rarity", "common")), "",
-					locked, Unlocks.unlock_hint("weapon", String(w.id))))
+					wid == _sel_weapon, Config.rarity_color("common"), "",
+					locked, Unlocks.unlock_hint("weapon", wid)))
 		2:
 			_options.columns = 4
 			_options.add_child(_make_card(_g_item, "", "✖", "不带道具", "空手开局",
 				_sel_item == "", Color("5a6270")))
-			for it: Dictionary in Registry.items.values():
+			# 开局道具只开放前期过渡档（LOADOUT_ITEMS），并按当前角色+武器的构筑亲和排序，
+			# 相关道具优先展示 —— 不全部开放，避免开局就拿到神器直接降低难度
+			var aff: Array = Config.affinity_tags(_sel_char, [_sel_weapon], {})
+			var sorted_items: Array = []
+			for itid in Config.LOADOUT_ITEMS:
+				if not Registry.items.has(itid):
+					continue
+				var it: Dictionary = Registry.items[itid]
+				sorted_items.append({ "it": it,
+					"aff": Config.affinity_mult(Config.entry_tags(it), aff) })
+			sorted_items.sort_custom(func(a, b): return float(a["aff"]) > float(b["aff"]))
+			for e in sorted_items:
+				var it: Dictionary = e.it
 				_options.add_child(_make_card(_g_item, it.id,
 					it.ico, it.name, it.desc, it.id == _sel_item,
 					Config.rarity_color(it.get("rarity", "common"))))

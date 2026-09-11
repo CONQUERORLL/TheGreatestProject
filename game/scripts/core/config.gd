@@ -272,6 +272,21 @@ const WEAPON_SHOP_CHANCE := 0.42
 const WEAPON_SHOP_WEIGHTS := { "pistol": 3.0, "smg": 2.4, "knife": 2.4, "shotgun": 1.6, "rocket": 0.8, "sniper": 0.7, "blade": 1.0, "flamethrower": 1.5, "frost_staff": 0.9, "venom_dagger": 1.4, "thunder_gong": 0.9, "tar_whip": 1.5, "ember_fan": 1.3, "vine_lash": 1.2, "gold_bell": 1.0, "frost_nova": 0.9, "flame_jian": 1.2, "chaos_hammer": 1.0, "railgun": 0.55, "blight_bow": 1.3, "frost_hammer": 0.85, "gold_scepter": 0.6, "pistol_ex": 0.0, "smg_ex": 0.0, "shotgun_ex": 0.0, "blade_ex": 0.0 }
 const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "rocket": 60, "sniper": 75, "blade": 68, "flamethrower": 52, "frost_staff": 72, "venom_dagger": 48, "thunder_gong": 72, "tar_whip": 42, "ember_fan": 46, "vine_lash": 48, "gold_bell": 74, "frost_nova": 78, "flame_jian": 145, "chaos_hammer": 105, "railgun": 250, "blight_bow": 52, "frost_hammer": 92, "gold_scepter": 235, "pistol_ex": 30, "smg_ex": 30, "shotgun_ex": 30, "blade_ex": 30 }
 
+## ============================================================
+## 开局内容池（Loadout）—— 开局向导（角色→武器→道具）的可选范围
+##
+## 平衡目标：开局不崩、选择多样、高低品阶拉开成长曲线。
+##   - 开局武器只开放「基础档」（数值相近、玩法各异：远程/近战/AOE/状态流），
+##     且向导里统一按 common 品阶色展示，杜绝「开局选磁轨炮碾压全场」。
+##     高品阶武器（epic/mythic/legendary）只能局内通过商店/升级/掉落/波末合成获得。
+##   - 开局道具只开放「前期过渡档」（common/rare），且按当前角色+武器的构筑亲和排序，
+##     相关道具优先展示；高品阶道具只能局内通过商店/掉落/事件逐步获得。
+##   - 这两张白名单刻意从 Registry 反查（不在表里的 mod 内容默认不进开局池），
+##     既保证内置平衡，也不阻断 mod 内容在局内的正常获取。
+## ============================================================
+const LOADOUT_WEAPONS := ["pistol", "smg", "shotgun", "knife",
+	"flamethrower", "venom_dagger", "tar_whip", "ember_fan", "vine_lash", "blight_bow"]
+
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {
 	"grunt": { "name": "追击者", "hp": 14.0, "speed": 88.0, "dmg": 8.0, "xp": 2, "mat": 2, "r": 14.0, "color": "#d9534f", "shape": "circle", "heart_chance": 0.04 },
@@ -519,7 +534,23 @@ const ITEMS := [
 	{ "id": "i-frostmirror", "ico": "🪞", "name": "霜心镜", "desc": "命中时 14% 概率冻结，异常持续 +50%", "price": 72, "rarity": "epic", "effects": { "on_hit_freeze": 0.14, "status_dur_mult": 0.50 } },
 	{ "id": "i-ragecloak", "ico": "🧥", "name": "怒血披风", "desc": "濒死时最高 +28% 伤害，闪避 +5%", "price": 54, "rarity": "rare", "effects": { "low_hp_dmg_bonus": 0.28, "dodge": 0.05 } },
 	{ "id": "i-luckypouch", "ico": "👝", "name": "聚宝囊", "desc": "材料获取 +50%，拾取范围 +60", "price": 48, "rarity": "rare", "effects": { "harvesting": 0.50, "pickup_range": 60.0 } },
+	# ---- 前期过渡道具（Phase 6 平衡）：common 低价小件，补开局与前 3 波的空窗 ----
+	# 数值温和但覆盖移动 / 续航 / 元素三大前期需求，让新手开局也有明确的可选方向
+	{ "id": "i-boots", "ico": "👢", "name": "旧皮靴", "desc": "移速 +6%，闪避 +3%", "price": 20, "rarity": "common", "effects": { "speed_mult": 0.06, "dodge": 0.03 } },
+	{ "id": "i-bread", "ico": "🍞", "name": "行军干粮", "desc": "最大生命 +20，生命回复 +0.3/秒", "price": 24, "rarity": "common", "effects": { "max_hp": 20.0, "regen": 0.3 } },
+	{ "id": "i-flint", "ico": "🪨", "name": "打火石", "desc": "命中时 10% 概率点燃（伤害随攻击力）", "price": 26, "rarity": "common", "effects": { "on_hit_burn": 0.10 } },
+	# ---- 后期神品道具（Phase 6 平衡）：legendary 终极件，9 波后才有机会刷出 ----
+	# 数值对标王者桂冠 / 泰坦之力，但定位更极致：一件撑起输出 / 一件撑起生存
+	{ "id": "i-dragonsoul", "ico": "🐉", "name": "龙魂玉", "desc": "伤害 +50%，暴击伤害 +100%，攻速 +20%", "price": 300, "rarity": "legendary", "effects": { "dmg_mult": 0.50, "crit_mult": 1.00, "as_mult": 0.20 } },
+	{ "id": "i-immortal", "ico": "🏮", "name": "不灭真元", "desc": "最大生命 +80，护甲 +8，生命回复 +2.5/秒，闪避 +10%", "price": 300, "rarity": "legendary", "effects": { "max_hp": 80.0, "armor": 8.0, "regen": 2.5, "dodge": 0.10 } },
 ]
+
+## 开局道具池：只开放前期过渡档（common/rare），高品阶道具局内逐步获得。
+## 向导里会按「当前角色 + 武器」的构筑亲和排序，相关道具优先展示（见 main_menu）
+const LOADOUT_ITEMS := ["i-hp", "i-spd", "i-mag", "i-warden", "i-hunter", "i-lodestone",
+	"i-dmg", "i-as", "i-arm", "i-dod", "i-harv", "i-ember", "i-venom", "i-hemo", "i-tar",
+	"i-thorn", "i-feather", "i-focus", "i-ragecloak", "i-luckypouch",
+	"i-boots", "i-bread", "i-flint"]
 
 ## ============================================================
 ## 法宝（Phase 3）—— 触发式特效，区别于 ITEMS 的纯属性被动
@@ -859,8 +890,18 @@ const RARITY_BASE_WEIGHTS := {
 
 ## 稀有度抽取权重：progress = 波次（商店）或等级（升级三选一），
 ## 越往后高品阶权重越高，构筑成型期才有机会刷出金色/红色
+## 品阶门槛：进度不足时高品阶完全不出（权重 0），保证「LV1 红品概率为 0」、
+## 前期只出现白/蓝、紫品 3 级、金品 6 级、红品 9 级才逐步解锁 ——
+## 既让开局不崩，也保留后期刷出神品的期待感
 static func rarity_weight(rarity: String, progress: int) -> float:
 	var w := float(RARITY_BASE_WEIGHTS.get(rarity, 1.0))
+	match rarity:
+		"epic":
+			if progress < 3: return 0.0
+		"mythic":
+			if progress < 6: return 0.0
+		"legendary":
+			if progress < 9: return 0.0
 	var t := maxf(0.0, float(progress - 1))
 	match rarity:
 		"mythic": w *= 1.0 + 0.22 * t

@@ -322,9 +322,9 @@ func _check_wave() -> void:
 	if not Config.RARITIES.has("mythic") or not Config.RARITIES.has("legendary"):
 		_fail("稀有度枚举缺少 mythic/legendary")
 		return
-	if Config.rarity_weight("legendary", 1) <= 0.0 \
-			or Config.rarity_weight("legendary", 9) <= Config.rarity_weight("legendary", 1):
-		_fail("稀有度权重曲线错误（legendary 应随进度提升）")
+	if Config.rarity_weight("legendary", 1) != 0.0 \
+			or Config.rarity_weight("legendary", 9) <= 0.0:
+		_fail("稀有度权重曲线错误（legendary 应 LV1=0、LV9 起解锁）")
 		return
 	if not Registry.items.has("i-crown") or not Registry.upgrades.has("berserk") \
 			or not Registry.weapons.has("sniper") or not Registry.weapons.has("blade"):
@@ -2456,11 +2456,21 @@ func _check_phase3_artifacts() -> void:
 		return
 
 	# ---- 验证点 5：获取规则（抽取池 / BOSS 权重 / 三渠道常量 / 精英掉落实跑）----
-	if Registry.artifact_pool({}, 1, false).size() != Config.ARTIFACTS.size():
-		_fail("初始抽取池不是全部法宝（%d / %d）"
-			% [Registry.artifact_pool({}, 1, false).size(), Config.ARTIFACTS.size()])
+	# 品阶门槛（Phase 6 平衡）：低波次高品阶权重为 0，法宝池只含白/蓝；
+	# 到后期（wave>=9）全部品阶解锁，池才完整
+	var low_rarity_count := 0
+	for a in Config.ARTIFACTS:
+		if String(a.get("rarity", "common")) in ["common", "rare"]:
+			low_rarity_count += 1
+	if Registry.artifact_pool({}, 1, false).size() != low_rarity_count:
+		_fail("初始抽取池应只含白/蓝品阶法宝（%d / %d）"
+			% [Registry.artifact_pool({}, 1, false).size(), low_rarity_count])
 		return
-	var pool_less: Array = Registry.artifact_pool({ "art_cinder_seal": 1 }, 1, false)
+	if Registry.artifact_pool({}, 9, false).size() != Config.ARTIFACTS.size():
+		_fail("后期抽取池不是全部法宝（%d / %d）"
+			% [Registry.artifact_pool({}, 9, false).size(), Config.ARTIFACTS.size()])
+		return
+	var pool_less: Array = Registry.artifact_pool({ "art_cinder_seal": 1 }, 9, false)
 	if pool_less.size() != Config.ARTIFACTS.size() - 1 or _pool_has(pool_less, "art_cinder_seal"):
 		_fail("抽取池未排除已持有法宝（%d 件）" % pool_less.size())
 		return
@@ -3623,9 +3633,11 @@ func _check_affinity() -> void:
 		return
 	print("SMOKE: affinity artifact pool OK")
 	# ---- 5. 升级池在亲和加权后仍然可用（加权不能把任何条目算成 0）----
+	# 用 LV10 测：品阶门槛（LV1 只出白/蓝）会把高品阶升级权重算成 0，
+	# 那是在验「品阶解锁曲线」而非「亲和加权」，两者分开验
 	var counted := 0
 	for u in Registry.upgrade_list():
-		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), 1) \
+		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), 10) \
 			* Config.affinity_mult(Config.entry_tags(u), ["melee", "burn"])
 		if w <= 0.0:
 			_fail("升级 %s 亲和加权后权重非正" % String(u.id))
