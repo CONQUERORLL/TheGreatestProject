@@ -41,7 +41,7 @@ const SECT_TALENTS := {
 		"desc": "异常持续 +15% · 移速 +4% / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "status_dur_mult": 0.15, "speed_mult": 0.04 } } },
-	"earth": { "name": "厚土宗", "ico": "⛰", "character": "geomancer",
+	"earth": { "name": "厚土宗", "ico": "⛰", "character": "guardian",
 		"desc": "最大生命 +20 · 护甲 +1 / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "max_hp": 20.0, "armor": 1.0 } } },

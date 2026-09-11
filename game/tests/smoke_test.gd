@@ -330,7 +330,7 @@ func _check_wave() -> void:
 			or not Registry.weapons.has("sniper") or not Registry.weapons.has("blade"):
 		_fail("高品阶道具/升级/新武器未注册")
 		return
-	for cid in ["berserker", "ranger", "gambler", "farmer", "vampire", "guardian"]:
+	for cid in ["berserker", "ranger", "farmer", "vampire", "guardian", "gunner"]:
 		if not Registry.characters.has(cid):
 			_fail("新角色缺失：%s" % cid)
 			return
@@ -976,18 +976,27 @@ func _check_items() -> void:
 	if SaveRun.save(Config.WAVES_TOTAL + 1, p2) or SaveRun.slot_path(0) != "":
 		_fail("非法波次/槽位未被拒绝")
 		return
-	# ---- 武器进化：多分支（手枪 → 冲锋枪/散弹枪/双管神射，优先未持有分支）----
+	# ---- 武器进化：多分支待选队列 + 指定进化 ----
 	var p4: Node2D = _main.get_node("Player")
 	var saved_weapons4: Array = p4.weapons.duplicate(true)
 	p4.weapons = []
 	for _i2 in 4:
 		p4.weapons.append({ "type": "pistol", "cd": 0.1 })
 	p4.weapons.append({ "type": "rocket", "cd": 0.1 })   # 混入其他武器验证只合成同名
+	# 多分支不自动进化，进入待选队列
 	var evolved: Array = p4.evolve_weapons()
-	print("SMOKE: evolve results=%s weapons=%d" % [str(evolved), p4.weapons.size()])
-	# 4 把手枪（need=3）→ 优先未持有分支 = 冲锋枪
-	if evolved.size() != 1 or not String(evolved[0]).contains("冲锋枪"):
-		_fail("武器进化结果错误（%s）" % str(evolved))
+	if not evolved.is_empty():
+		_fail("多分支武器不应被自动进化（%s）" % str(evolved))
+		return
+	var choices: Array = p4.pending_evolve_choices()
+	if choices.size() != 1 or String(choices[0].weapon) != "pistol":
+		_fail("多分支待选队列错误（%s）" % str(choices))
+		return
+	# 指定进化到手枪第一个分支 = 冲锋枪
+	var txt: String = p4.evolve_weapon_to("pistol", "smg")
+	print("SMOKE: evolve_to=%s weapons=%d" % [txt, p4.weapons.size()])
+	if txt == "" or not txt.contains("冲锋枪"):
+		_fail("指定进化到冲锋枪失败（%s）" % txt)
 		return
 	var pistol_cnt := 0
 	var smg_cnt := 0
@@ -998,15 +1007,6 @@ func _check_items() -> void:
 			smg_cnt += 1
 	if pistol_cnt != 1 or smg_cnt != 1 or p4.weapons.size() != 3:
 		_fail("进化后武器列表错误（pistol=%d smg=%d total=%d）" % [pistol_cnt, smg_cnt, p4.weapons.size()])
-		return
-	# 多分支选择：3 把手枪 + 已持有冲锋枪 → 跳到下一个未持有分支 = 霰弹枪
-	p4.weapons = []
-	for _i3 in 3:
-		p4.weapons.append({ "type": "pistol", "cd": 0.1 })
-	p4.weapons.append({ "type": "smg", "cd": 0.1 })   # 已持有冲锋枪
-	var evolved2: Array = p4.evolve_weapons()
-	if evolved2.size() != 1 or not String(evolved2[0]).contains("霰弹枪"):
-		_fail("多分支进化未跳到未持有分支（%s）" % str(evolved2))
 		return
 	# 进化预览：2 把手枪显示 2/3
 	p4.weapons = [{ "type": "pistol", "cd": 0.1 }, { "type": "pistol", "cd": 0.1 }]
@@ -2095,8 +2095,8 @@ func _check_reactions() -> void:
 func _check_phase2_content() -> void:
 	if _failed:
 		return
-	# ---- 验证点 1：Registry 完整性（12 角色 / 22 武器 / 23 敌人） ----
-	var new_chars := ["pyromancer", "druid", "swordmaster", "tidecaller", "geomancer"]
+	# ---- 验证点 1：Registry 完整性（12 角色 / 28 武器 / 23 敌人） ----
+	var new_chars := ["pyromancer", "druid", "swordmaster", "tidecaller"]
 	for cid in new_chars:
 		if not Registry.characters.has(cid):
 			_fail("Phase 2 角色未注册：%s" % cid)
@@ -2111,8 +2111,8 @@ func _check_phase2_content() -> void:
 		if typeof(ch.get("stats", {})) != TYPE_DICTIONARY:
 			_fail("角色 %s 的 stats 不是字典" % cid)
 			return
-	if Registry.characters.size() < 12:
-		_fail("角色总数不足 12（%d）" % Registry.characters.size())
+	if Registry.characters.size() != 12:
+		_fail("角色总数应为 12（%d）" % Registry.characters.size())
 		return
 	var new_weapons := ["thunder_gong", "tar_whip", "ember_fan", "vine_lash",
 		"gold_bell", "frost_nova", "flame_jian", "chaos_hammer"]
@@ -2802,8 +2802,8 @@ func _check_phase3_content() -> void:
 		if bool(ecfg.get("is_boss", false)) or String(ecfg.get("ai", "")) == "boss":
 			bosses += 1
 	var plain_enemies := enemies - bosses
-	if chars < 15:
-		_fail("角色数量未达 Phase 3 目标（%d < 15）" % chars)
+	if chars < 12:
+		_fail("角色数量未达目标（%d < 12）" % chars)
 		return
 	if weapons < 20:
 		_fail("武器数量未达 Phase 3 目标（%d < 20）" % weapons)
@@ -2840,7 +2840,7 @@ func _check_phase3_content() -> void:
 			% [Registry.enemies.size(), Config.ENEMIES.size()])
 		return
 	# ---- 新增内容 id 齐全 ----
-	for cid in ["gunner", "artillery", "monk", "ascetic", "alchemist", "warlord"]:
+	for cid in ["gunner", "warlord"]:
 		if not Registry.characters.has(cid):
 			_fail("新增角色缺失：%s" % cid)
 			return
@@ -3744,6 +3744,10 @@ func _check_sigils() -> void:
 func _check_affinity_floor() -> void:
 	# ---- 1. 升级三选一：三张全不契合时必须换出至少一张契合项 ----
 	var lu: Node = _main.get_node("UI/LevelUp")
+	# 模拟近战构筑：否则「武器类型过滤」会把 melee 向升级拦掉，保底无从谈起
+	var aff_p: Node2D = _main.get_node("Player")
+	var aff_p_saved: Array = aff_p.weapons.duplicate(true)
+	aff_p.weapons = [{ "type": "knife", "cd": 0.1 }]
 	var cold: Array = []
 	for u in Registry.upgrade_list():
 		if not ("melee" in Config.entry_tags(u)):
@@ -3817,6 +3821,7 @@ func _check_affinity_floor() -> void:
 		return
 	shop.goods = saved_goods
 	shop._affinity_cache = saved_aff
+	aff_p.weapons = aff_p_saved   # 还原近战构筑模拟
 	print("SMOKE: affinity floor OK (level-up + shop)")
 
 ## 对象池：acquire/release 的复用与复位。用真实弹丸场景验证 setup 能完整重置

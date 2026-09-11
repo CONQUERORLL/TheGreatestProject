@@ -147,6 +147,7 @@ func restore(player: Node) -> int:
 			player.weapons.append({ "type": weapon_id, "cd": 0.3 })
 	if player.weapons.is_empty():
 		player.weapons = [{ "type": "pistol", "cd": 0.3 }]
+	player.load_family_synergy_snapshot()   # 存档 stats 已含共鸣，只记录不重算
 	player.items_owned = {}
 	for id: String in pl.items_owned:
 		if Registry.items.has(id):

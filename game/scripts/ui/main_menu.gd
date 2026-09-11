@@ -313,9 +313,9 @@ func _build_step() -> void:
 					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id,
 					locked, Unlocks.unlock_hint("character", String(c.id))))
 		1:
-			_options.columns = 2
-			# 开局武器只开放家族根（LOADOUT_WEAPONS）：手枪/砍刀，品阶统一，
-			# 同源武器（冲锋枪/散弹枪/太刀等）局内通过进化分支逐步获得
+			_options.columns = 3
+			# 开局武器开放各玩法代表（LOADOUT_WEAPONS），品阶统一展示，
+			# 同族进阶（冲锋枪/散弹枪/太刀等）局内通过进化分支逐步获得
 			for wid in Config.LOADOUT_WEAPONS:
 				if not Registry.weapons.has(wid):
 					continue

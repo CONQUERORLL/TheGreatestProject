@@ -4,10 +4,12 @@ extends CharacterBody2D
 
 const BulletScene := preload("res://scenes/weapons/bullet.tscn")
 const FlameJetScript := preload("res://scripts/fx/flame_jet.gd")
+const SkillFXScript := preload("res://scripts/fx/skill_fx.gd")
 
 var hp: float = 100.0
 var stats: Dictionary = {}
 var weapons: Array = []   # [{ "type": String, "cd": float }]，上限 Config.WEAPON_SLOTS
+var _family_synergy_bonus: Dictionary = {}   # 已应用到 stats 的同族共鸣加成（key = stats 键）
 var items_owned: Dictionary = {}   # 已购道具 id -> 数量（暂停/商店展示与出售用）
 var artifacts_owned: Dictionary = {}   # 已持有法宝 id -> 1（每种限 1 件，值仅为与存档格式对齐）
 var artifact_stacks: Dictionary = {}   # 叠层法宝 id -> 当前层数（断刃锋/玄武核）
@@ -22,6 +24,11 @@ var _aura_t := 0.0              # 光环/战意触发计时
 var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
 var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
 var _flame_jet: Node2D = null   # 枪口喷射锥（火焰喷射器的表现层，见 fx/flame_jet.gd）
+# ---- 主动技能（按 F 释放，开局从 Registry 角色定义读取）----
+var skill: Dictionary = {}        # 当前角色主动技能（空 = 无技能）
+var skill_cd := 0.0               # 技能冷却剩余秒
+var _skill_buff_t := 0.0          # 技能临时增益剩余秒
+var _skill_buff_effects: Dictionary = {}   # 技能临时增益的效果（结束后撤销）
 
 @onready var camera: Camera2D = $Camera
 
@@ -51,6 +58,7 @@ func _ready() -> void:
 	# 角色专属特性：stats 类在开局一次性注入（与升级/道具同一套加法语义）；
 	# 其余 kind（aura / thorns / momentum）不属于属性，由运行时逻辑在对应时机结算
 	char_trait = ch.get("trait", {})
+	skill = ch.get("skill", {})   # 主动技能（按 F 释放）
 	sigil = Config.sigil_for(GameState.character_id)
 	if String(char_trait.get("kind", "")) == "stats":
 		for tk in char_trait.get("effects", {}):
@@ -97,6 +105,8 @@ func _physics_process(delta: float) -> void:
 	iframes = maxf(0.0, iframes - delta)
 	# ---- 角色特性（光环 / 战意） ----
 	_trait_tick(delta)
+	# ---- 主动技能冷却 / 临时增益计时 ----
+	_skill_tick(delta)
 	# ---- 武器自动攻击 ----
 	for w in weapons:
 		w.cd -= delta
@@ -562,9 +572,8 @@ func take_damage(raw: float) -> void:
 		EventBus.player_died.emit()
 
 ## 武器进化（波末由 main 调用）：同名武器达到 evolve_need 时自动合成进化形态。
-## 4 把手枪 → 1 把双管神射（腾出槽位），返回进化公告文本列表（无进化返回空）
-## 多分支进化（evolve_branches）：同名武器达标时优先进化到「尚未持有」的分支，
-## 让玩家逐步集齐同源武器分支（手枪 → 冲锋枪 / 散弹枪 / 双管神射）
+## 只自动进化「单分支」武器；「多分支」武器由 main 弹进化选择 UI 让玩家挑方向
+## （见 pending_evolve_choices / evolve_weapon_to），返回进化公告文本列表（无进化返回空）
 func evolve_weapons() -> Array:
 	var results: Array = []
 	var counts := {}
@@ -576,7 +585,7 @@ func evolve_weapons() -> Array:
 		if cfg.is_empty():
 			continue
 		var need := int(cfg.get("evolve_need", 0))
-		if need > 0 and int(counts[wtype]) >= need and not _evolve_branches(cfg).is_empty():
+		if need > 0 and int(counts[wtype]) >= need and _evolve_branches(cfg).size() == 1:
 			to_process.append(wtype)
 	for wtype in to_process:
 		var cfg: Dictionary = Registry.weapons[wtype]
@@ -596,6 +605,7 @@ func evolve_weapons() -> Array:
 		weapons.append({ "type": target, "cd": 0.1 })
 		var ex_cfg: Dictionary = Registry.weapons[target]
 		results.append("%s ×%d → %s" % [cfg.name, need, ex_cfg.name])
+	refresh_family_synergy()
 	return results
 
 ## 进化分支列表：优先 evolve_branches（多分支），否则回退单 evolve_to
@@ -619,6 +629,47 @@ func _pick_evolve_target(cfg: Dictionary) -> String:
 		if Registry.weapons.has(String(b)) and not owned.has(String(b)):
 			return String(b)
 	return String(branches[0])
+
+## 待选择的进化选项：返回 [{weapon, need, branches:[id...]}]（仅多分支达标的武器，供进化选择 UI）
+func pending_evolve_choices() -> Array:
+	var counts := {}
+	for w in weapons:
+		counts[w.type] = counts.get(w.type, 0) + 1
+	var choices: Array = []
+	for wtype in counts:
+		var cfg: Dictionary = Registry.weapons.get(wtype, {})
+		if cfg.is_empty():
+			continue
+		var need := int(cfg.get("evolve_need", 0))
+		if need <= 0 or int(counts[wtype]) < need:
+			continue
+		var branches: Array = _evolve_branches(cfg)
+		if branches.size() > 1:
+			choices.append({ "weapon": wtype, "need": need, "branches": branches })
+	return choices
+
+## 指定进化：把 need 把 wtype 合成 1 把 target（进化选择 UI 选定方向后调用）。
+## 成功返回公告文本，数量不足或目标非法返回空串
+func evolve_weapon_to(wtype: String, target: String) -> String:
+	var cfg: Dictionary = Registry.weapons.get(wtype, {})
+	if cfg.is_empty() or not Registry.weapons.has(target):
+		return ""
+	var need := int(cfg.get("evolve_need", 0))
+	if need <= 0:
+		return ""
+	var removed := 0
+	var new_weapons: Array = []
+	for w in weapons:
+		if w.type == wtype and removed < need:
+			removed += 1
+		else:
+			new_weapons.append(w)
+	if removed < need:
+		return ""   # 数量不足（理论上不会，调用前已达标）
+	weapons = new_weapons
+	weapons.append({ "type": target, "cd": 0.1 })
+	refresh_family_synergy()
+	return "%s ×%d → %s" % [cfg.name, need, Registry.weapons[target].name]
 
 ## 进化预览：返回 [{type, name, have, need}]（商店/HUD 提示用）
 func evolve_progress() -> Array:
@@ -650,10 +701,202 @@ func next_evolve_name(wtype: String) -> String:
 			return String(Registry.weapons[String(b)].get("name", String(b)))
 	return String(Registry.weapons[String(branches[0])].get("name", String(branches[0])))
 
+## 同族武器共鸣：持有同 family 武器 ≥2 把时，每多一把叠加一次加成（Config.WEAPON_FAMILY_SYNERGY）。
+## 武器列表变化（购买/出售/进化）后调用 refresh_family_synergy()；先撤销旧加成再按当前阵容重新应用，
+## 保证 stats 里的共鸣永远只反映「当前」武器，不会因反复调用而叠加泄漏。
+## 读档场景特殊处理见 load_family_synergy_snapshot()。
+func refresh_family_synergy() -> void:
+	for k in _family_synergy_bonus:
+		stats[k] = stats.get(k, 0.0) - float(_family_synergy_bonus[k])
+	_family_synergy_bonus = _compute_family_synergy()
+	for k in _family_synergy_bonus:
+		stats[k] = stats.get(k, 0.0) + float(_family_synergy_bonus[k])
+	_sanitize_stats()
+	queue_redraw()
+
+## 计算当前武器阵容的同族共鸣加成（纯计算，不改 stats）
+func _compute_family_synergy() -> Dictionary:
+	var fam_count := {}
+	for w in weapons:
+		var wcfg: Dictionary = Registry.weapons.get(w.type, {})
+		var fam := String(wcfg.get("family", ""))
+		if fam != "":
+			fam_count[fam] = int(fam_count.get(fam, 0)) + 1
+	var bonus := {}
+	for fam in fam_count:
+		var layers: int = int(fam_count[fam]) - 1
+		if layers <= 0:
+			continue
+		var cfg: Dictionary = Config.WEAPON_FAMILY_SYNERGY.get(fam, {})
+		for k in cfg:
+			bonus[k] = float(bonus.get(k, 0.0)) + float(cfg[k]) * float(layers)
+	return bonus
+
+## 读档后调用：存档的 stats 已包含存档时刻的共鸣（无需重新应用），
+## 这里只记录当前共鸣量，保证后续 refresh 撤销时不会重复扣减
+func load_family_synergy_snapshot() -> void:
+	_family_synergy_bonus = _compute_family_synergy()
+
+# ------------------------------------------------------------
+# 主动技能（按 F 释放）：每个角色一个专属技能，冷却 + 临时增益
+# ------------------------------------------------------------
+
+## 技能冷却 / 临时增益计时（_physics_process 每帧调用）
+func _skill_tick(delta: float) -> void:
+	if skill_cd > 0.0:
+		skill_cd = maxf(0.0, skill_cd - delta)
+	if _skill_buff_t > 0.0:
+		_skill_buff_t -= delta
+		if _skill_buff_t <= 0.0:
+			_clear_skill_buff()
+
+## 释放主动技能。返回 true = 成功释放（进入冷却）；false = 冷却中 / 无技能 / 非战斗阶段
+func cast_skill() -> bool:
+	if skill.is_empty() or skill_cd > 0.0 or not GameState.is_running():
+		return false
+	var ok := false
+	match String(skill.get("kind", "")):
+		"nova_status": ok = _skill_nova_status()
+		"self_heal": ok = _skill_self_heal()
+		"buff": ok = _skill_buff()
+		"burst_damage": ok = _skill_burst_damage()
+		"grant_materials": ok = _skill_grant_materials()
+	if ok:
+		skill_cd = float(skill.get("cd", 12.0))
+		_trait_pulse = 1.0
+		_play_skill_vfx()
+		queue_redraw()
+		EventBus.banner_requested.emit("%s %s" % [String(skill.get("ico", "✨")),
+			String(skill.get("name", "技能"))], String(skill.get("desc", "")), 2.0)
+	return ok
+
+## 技能：范围状态（焚天烈焰 / 毒雾爆发 / 寒潮）
+func _skill_nova_status() -> bool:
+	var radius := float(skill.get("radius", 220.0))
+	var sid := String(skill.get("status", ""))
+	var power := float(skill.get("power", 0.0)) * (1.0 + float(stats.status_dmg_mult))
+	var dur_mult := 1.0 + float(stats.status_dur_mult)
+	var dmg := float(skill.get("dmg", 0.0)) * float(stats.dmg_mult)
+	var hit := 0
+	for e in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+		if e.flee > 0.0:
+			continue
+		if global_position.distance_to(e.global_position) > radius + e.radius:
+			continue
+		hit += 1
+		if dmg > 0.0:
+			e.take_damage(dmg, false, true)
+		if sid != "":
+			e.apply_status(sid, int(skill.get("stacks", 1)), 0.0, power, dur_mult)
+	return hit > 0
+
+## 技能：回复 + 眩晕周围敌人（血宴）
+func _skill_self_heal() -> bool:
+	var heal: float = float(stats.max_hp) * float(skill.get("heal_pct", 0.35))
+	hp = minf(float(stats.max_hp), hp + heal)
+	var stun_radius := float(skill.get("stun_radius", 0.0))
+	if stun_radius > 0.0:
+		for e in Combat.enemies_near(global_position, stun_radius + Combat.MAX_ENTITY_RADIUS):
+			if e.flee <= 0.0 and global_position.distance_to(e.global_position) <= stun_radius + e.radius:
+				e.apply_status("stun", 1, float(skill.get("stun_dur", 1.0)), 0.0, 1.0)
+	return true
+
+## 技能：临时增益（丰收鼓舞 / 铁壁 / 弹幕风暴 / 疾风步 / 战吼）
+func _skill_buff() -> bool:
+	_clear_skill_buff()
+	var effects: Dictionary = skill.get("effects", {})
+	_skill_buff_effects = {}
+	for k in effects:
+		var v := float(effects[k])
+		_skill_buff_effects[k] = v
+		stats[k] = stats.get(k, 0.0) + v
+	# 战吼：立即注入战意层数（减少基础击杀数，让战意计算多出对应层）
+	var mstacks := int(skill.get("momentum_stacks", 0))
+	if mstacks > 0:
+		var per_kills := maxf(1.0, float(char_trait.get("per_kills", 8)))
+		_momentum_base_kills -= int(mstacks * per_kills)
+	_skill_buff_t = float(skill.get("duration", 6.0))
+	_sanitize_stats()
+	queue_redraw()
+	return true
+
+func _clear_skill_buff() -> void:
+	for k in _skill_buff_effects:
+		stats[k] = stats.get(k, 0.0) - float(_skill_buff_effects[k])
+	_skill_buff_effects = {}
+	_sanitize_stats()
+	queue_redraw()
+
+## 技能：范围爆发伤害（血怒斩 / 剑气纵横）
+func _skill_burst_damage() -> bool:
+	var radius := float(skill.get("radius", 220.0))
+	var dmg := float(skill.get("mult", 3.0)) * 20.0 * float(stats.dmg_mult)
+	# 血怒斩：生命越低伤害越高
+	if String(skill.get("name", "")) == "血怒斩" and stats.max_hp > 0.0:
+		dmg *= 1.0 + (1.0 - hp / stats.max_hp)
+	var hit := 0
+	for e in Combat.enemies_near(global_position, radius + Combat.MAX_ENTITY_RADIUS):
+		if e.flee > 0.0:
+			continue
+		if global_position.distance_to(e.global_position) > radius + e.radius:
+			continue
+		hit += 1
+		e.take_damage(dmg, false, false)
+	return hit > 0
+
+## 技能：获得材料（丰收）
+func _skill_grant_materials() -> bool:
+	GameState.add_materials(int(skill.get("materials", 60)))
+	return true
+
+## 技能视觉主题色：状态类取状态配色，伤害/增益类取角色主题色
+func _skill_color() -> Color:
+	var sid := String(skill.get("status", ""))
+	if sid != "" and Config.STATUS.has(sid):
+		return Color(String(Config.STATUS[sid].get("color", "#e8b84b")))
+	return Color(String(Registry.get_character(GameState.character_id).get("color", "#e8b84b")))
+
+## 技能释放的视觉 / 震动 / 音效：冲击波环 + 粒子迸发 + 震屏 + 专属音效，
+## 不同 kind 强度与配色不同，让「技能放出去了」肉眼可辨
+func _play_skill_vfx() -> void:
+	var col := _skill_color()
+	var kind := String(skill.get("kind", ""))
+	var parent := get_parent()
+	match kind:
+		"nova_status", "burst_damage":
+			# 范围伤害/状态：满强度冲击波 + 双层粒子 + 强震屏
+			var rad := float(skill.get("radius", 220.0))
+			SkillFXScript.spawn(parent, global_position, col, rad, 1.0)
+			Burst.spawn(parent, global_position, col, 26, 300.0)
+			Burst.spawn(parent, global_position, col.lightened(0.45), 14, 150.0)
+			EventBus.screen_shake.emit(6.0)
+		"self_heal":
+			# 血宴：血红冲击波（吸血）+ 绿色粒子（回复）点缀
+			var heal_col := Color("e05a4f")
+			var srad := float(skill.get("stun_radius", 200.0))
+			SkillFXScript.spawn(parent, global_position, heal_col, maxf(srad, 160.0), 0.85)
+			Burst.spawn(parent, global_position, heal_col, 16, 200.0)
+			Burst.spawn(parent, global_position, Color("5ef27e"), 10, 140.0)
+			EventBus.screen_shake.emit(3.0)
+		"buff":
+			# 增益：柔和冲击波（后续光环由 _draw_skill_buff_aura 持续表现）
+			SkillFXScript.spawn(parent, global_position, col, 170.0, 0.8)
+			Burst.spawn(parent, global_position, col, 14, 180.0)
+			EventBus.screen_shake.emit(2.5)
+		"grant_materials":
+			# 丰收：金色粒子喷涌
+			var gold := Color("ffd24a")
+			SkillFXScript.spawn(parent, global_position, gold, 150.0, 0.7)
+			Burst.spawn(parent, global_position, gold, 20, 240.0)
+			EventBus.screen_shake.emit(1.5)
+	Sfx.play("skill_cast")
+	Haptics.rumble(0.45, 0.12, 0.3)
+
 func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）
 	var r: float = Config.PLAYER.radius
 	_draw_trait_aura()
+	_draw_skill_buff_aura()
 	draw_circle(Vector2.ZERO, stats.pickup_range, Color(0.494, 0.784, 0.31, 0.05))
 	# 身体：按角色主题色着色（游戏内外形象一致）
 	var body_col: Color = Color(String(Registry.get_character(
@@ -668,6 +911,19 @@ func _draw() -> void:
 	# 枪管
 	draw_rect(Rect2(r - 2.0, -3.0, 14.0, 6.0), Color("454b59"))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+## 技能增益持续光环：buff 类技能持续期间（_skill_buff_t > 0）随玩家移动的呼吸光环，
+## 让「增益还在生效」肉眼可辨，透明度随剩余时间衰减
+func _draw_skill_buff_aura() -> void:
+	if _skill_buff_t <= 0.0:
+		return
+	var dur := maxf(0.001, float(skill.get("duration", 6.0)))
+	var remain := clampf(_skill_buff_t / dur, 0.0, 1.0)
+	var pulse := 0.55 + 0.45 * sin(Time.get_ticks_msec() * 0.006)
+	var sc := _skill_color()
+	var rr := float(Config.PLAYER.radius) + 9.0
+	draw_circle(Vector2.ZERO, rr + 4.0, Color(sc.r, sc.g, sc.b, 0.10 * pulse * remain))
+	draw_arc(Vector2.ZERO, rr, 0.0, TAU, 48, Color(sc.r, sc.g, sc.b, 0.5 * remain), 3.0, true)
 
 ## 特性视觉：光环范围圈 + 触发脉冲，让「范围多大 / 何时生效」肉眼可辨
 func _draw_trait_aura() -> void:

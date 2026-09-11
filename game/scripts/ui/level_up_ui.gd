@@ -39,6 +39,8 @@ func open() -> void:
 	var aff := Config.affinity_tags(GameState.character_id, wps, arts)
 	var weighted: Array = []
 	for u in Registry.upgrade_list():
+		if not Config.entry_weapon_relevant(u, wps):
+			continue   # 过滤「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) \
 			* Config.affinity_mult(Config.entry_tags(u), aff)
 		weighted.append({ "item": u, "w": w })
@@ -75,8 +77,11 @@ func _ensure_affinity_choice(aff: Array) -> void:
 	for c2 in _choices:
 		taken[String(c2.get("id", ""))] = true
 	var pool: Array = []
+	var wps2: Array = player.weapons if player != null and is_instance_valid(player) else []
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
+			continue
+		if not Config.entry_weapon_relevant(u, wps2):
 			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), aff)
 		if m <= 1.0:

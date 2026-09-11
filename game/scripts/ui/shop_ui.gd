@@ -375,12 +375,16 @@ func _ensure_affinity_goods() -> void:
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
 			continue
+		if not Config.entry_weapon_relevant(u, player.weapons):
+			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
 		if m > 1.0:
 			pool.append({ "item": u,
 				"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m })
 	for it in Registry.item_list():
 		if taken.has(String(it.get("id", ""))):
+			continue
+		if not Config.entry_weapon_relevant(it, player.weapons):
 			continue
 		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
 		if m2 > 1.0:
@@ -436,11 +440,14 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 		"sold": false, "locked": false }
 
 ## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
-## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）
+## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）；
+## 同时过滤掉「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 func _rarity_pool(entries: Array) -> Array:
 	var aff := _affinity()
 	var pool: Array = []
 	for e in entries:
+		if not Config.entry_weapon_relevant(e, player.weapons):
+			continue
 		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
 			* Config.affinity_mult(Config.entry_tags(e), aff)
 		pool.append({ "item": e, "w": w })
@@ -667,6 +674,7 @@ func buy(i: int) -> void:
 	Sfx.play("buy")
 	if g.kind == "weapon":
 		player.weapons.append({ "type": g.wtype, "cd": 0.1 })
+		player.refresh_family_synergy()
 	elif g.kind == "upgrade":
 		player.apply_upgrade(g.id)
 	elif g.kind == "artifact":

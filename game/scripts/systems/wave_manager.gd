@@ -229,7 +229,8 @@ func _settle_event_wave() -> void:
 			var pool: Array = []
 			for it in Registry.item_list():
 				var r := String(it.get("rarity", "common"))
-				if r in ["epic", "mythic", "legendary"]:
+				if r in ["epic", "mythic", "legendary"] \
+						and Config.entry_weapon_relevant(it, player.weapons):
 					pool.append({ "item": it, "w": Config.rarity_weight(r, wave) * 6.0 })
 			if not pool.is_empty():
 				var loot: Dictionary = GameRng.weighted_pick(pool)

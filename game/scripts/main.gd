@@ -57,6 +57,11 @@ var event_card_ui: Control = null
 var _pending_wave_after_event := 0   # 事件选择结束后要启动的波次（0 = 无待处理）
 var event_cards_played := 0          # 测试观测：本局实际弹出的奇遇次数
 
+## 武器进化方向选择弹窗（多分支进化时让玩家挑方向）
+var evolve_choose_ui: Control = null
+var _pending_evolve_choices: Array = []   # 待选择的进化选项队列（逐个弹出）
+var _pending_evolve_wave := 0             # 进化流程结束后要写入存档的波次（0 = 无）
+
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
 	for arg in OS.get_cmdline_user_args():
@@ -98,6 +103,10 @@ func _ready() -> void:
 	$UI.add_child(event_card_ui)
 	event_card_ui.player = player
 	event_card_ui.chosen.connect(_on_event_choice)
+	# 武器进化方向选择弹窗（多分支进化时让玩家挑方向）
+	evolve_choose_ui = preload("res://scenes/ui/evolve_choose.tscn").instantiate()
+	$UI.add_child(evolve_choose_ui)
+	evolve_choose_ui.evolved.connect(_on_evolve_choice)
 	# 开发者面板（F1 呼出）
 	var dev := preload("res://scenes/ui/dev_panel.tscn").instantiate()
 	$UI.add_child(dev)
@@ -162,6 +171,13 @@ func _process(delta: float) -> void:
 			_next_toast()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 主动技能：F 键释放（战斗阶段）
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.physical_keycode == KEY_F \
+			and GameState.phase == GameState.Phase.PLAYING:
+		player.cast_skill()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("toggle_mute"):
@@ -637,10 +653,13 @@ func _execute_event_effect(effect: Dictionary) -> void:
 func _grant_random_item(rarity: String) -> void:
 	var pool: Array = []
 	for it in Registry.item_list():
-		if String(it.get("rarity", "common")) == rarity:
+		if String(it.get("rarity", "common")) == rarity \
+				and Config.entry_weapon_relevant(it, player.weapons):
 			pool.append({ "item": it, "w": 1.0 })
 	if pool.is_empty():
 		for it2 in Registry.item_list():
+			if not Config.entry_weapon_relevant(it2, player.weapons):
+				continue
 			pool.append({ "item": it2,
 				"w": Config.rarity_weight(String(it2.get("rarity", "common")), wave_manager.wave) })
 	if pool.is_empty():
@@ -666,6 +685,7 @@ func _grant_random_weapon() -> void:
 	if wid == "":
 		return
 	player.weapons.append({ "type": wid, "cd": 0.1 })
+	player.refresh_family_synergy()
 	var cfg: Dictionary = Registry.weapons.get(wid, {})
 	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
 		"获得 %s %s" % [String(cfg.get("ico", "")), String(cfg.get("name", wid))], Color("ffd24a"))
@@ -703,16 +723,50 @@ func _on_wave_ended(w: int) -> void:
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
 	shop_ui._refresh()   # 回收后刷新材料显示
-	# 武器进化：同名武器达标自动合成（回收后、存档前，进度包含进化结果）
+	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、存档前）
+	_start_evolve_flow(w)
+
+## 波末武器进化流程：先自动进化「单分支」武器，再逐个弹出「多分支」选择；
+## 全部处理完后统一存档（进度包含所有进化结果）
+func _start_evolve_flow(w: int) -> void:
 	var evolved: Array = player.evolve_weapons()
 	if not evolved.is_empty():
 		Haptics.rumble(0.5, 0.2, 0.3)
 		Sfx.play("victory")
-		EventBus.banner_requested.emit("⚔ 武器进化！",
-			" · ".join(evolved), 3.0)
+		EventBus.banner_requested.emit("⚔ 武器进化！", " · ".join(evolved), 3.0)
 		CodexData.add_stat("evolutions", evolved.size())
 		shop_ui._refresh()   # 武器栏已变化
-	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+	_pending_evolve_choices = player.pending_evolve_choices()
+	_pending_evolve_wave = w
+	if _pending_evolve_choices.is_empty():
+		_finish_evolve_flow()
+	else:
+		_show_next_evolve_choice()
+
+## 弹出下一个待选择的进化方向
+func _show_next_evolve_choice() -> void:
+	if _pending_evolve_choices.is_empty():
+		_finish_evolve_flow()
+		return
+	var choice: Dictionary = _pending_evolve_choices.pop_front()
+	evolve_choose_ui.setup(choice)
+
+## 玩家选定进化方向：执行指定进化 → 继续下一个待选
+func _on_evolve_choice(weapon: String, target: String) -> void:
+	var txt: String = player.evolve_weapon_to(weapon, target)
+	if txt != "":
+		Haptics.rumble(0.5, 0.2, 0.3)
+		Sfx.play("victory")
+		EventBus.banner_requested.emit("⚔ 武器进化！", txt, 3.0)
+		CodexData.add_stat("evolutions", 1)
+		shop_ui._refresh()
+	_show_next_evolve_choice()
+
+## 进化流程收尾：所有进化处理完，写入存档
+func _finish_evolve_flow() -> void:
+	var w := _pending_evolve_wave
+	_pending_evolve_wave = 0
+	if w > 0 and not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
 func _on_player_died() -> void:
