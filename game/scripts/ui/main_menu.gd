@@ -305,7 +305,7 @@ func _build_step() -> void:
 	_next_btn.text = "开 始 游 戏" if _step == TOTAL_STEPS - 1 else "下一步 →"
 	match _step:
 		0:
-			_options.columns = 3
+			_options.columns = 4
 			for c: Dictionary in Registry.characters.values():
 				var locked := not Unlocks.is_unlocked("character", String(c.id))
 				_options.add_child(_make_card(_g_char, c.id,
@@ -313,9 +313,9 @@ func _build_step() -> void:
 					c.id == _sel_char, Color(c.get("color", "#e8b84b")), c.id,
 					locked, Unlocks.unlock_hint("character", String(c.id))))
 		1:
-			_options.columns = 4
-			# 开局武器只开放基础档（LOADOUT_WEAPONS）：品阶统一、玩法各异，
-			# 高品阶武器（epic/mythic/legendary）局内通过商店/升级/掉落/合成逐步获得
+			_options.columns = 2
+			# 开局武器只开放家族根（LOADOUT_WEAPONS）：手枪/砍刀，品阶统一，
+			# 同源武器（冲锋枪/散弹枪/太刀等）局内通过进化分支逐步获得
 			for wid in Config.LOADOUT_WEAPONS:
 				if not Registry.weapons.has(wid):
 					continue

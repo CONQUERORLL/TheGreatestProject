@@ -235,10 +235,10 @@ static func _is_number(v: Variant) -> bool:
 ## 武器：dmg 基础伤害，cd 基础冷却秒；近战用 range / swing_arc
 ## evolve_need：持有同名武器达到该数量，波末自动合成为 evolve_to（吸血鬼幸存者式）
 const WEAPONS := {
-	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "evolve_need": 4, "evolve_to": "pistol_ex", "desc": "稳定单体远程" },
+	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "family": "gun", "evolve_need": 3, "evolve_branches": ["smg", "shotgun", "pistol_ex"], "desc": "稳定单体远程，可进化多分支" },
 	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "evolve_need": 4, "evolve_to": "smg_ex", "desc": "极快射速，轻微散射" },
 	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "evolve_need": 3, "evolve_to": "shotgun_ex", "desc": "一次射出5发扇形弹丸" },
-	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "evolve_need": 4, "evolve_to": "blade_ex", "desc": "近战弧形挥砍，概率造成流血" },
+	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "family": "blade", "evolve_need": 3, "evolve_branches": ["blade", "venom_dagger", "tar_whip", "blade_ex"], "desc": "近战弧形挥砍，概率造成流血，可进化多分支" },
 	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "status": "burn", "status_chance": 0.45, "rarity": "epic", "desc": "命中范围爆炸 AOE，概率点燃" },
 	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "status": "bleed", "status_chance": 0.35, "rarity": "epic", "desc": "一发入魂的超远距重击，概率造成流血" },
 	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 120.0, "swing_arc": 1.9, "status": "bleed", "status_chance": 0.45, "rarity": "epic", "desc": "刀身更长的大开大合宽弧重斩，高概率造成流血" },
@@ -276,16 +276,16 @@ const WEAPON_PRICES := { "pistol": 25, "smg": 35, "knife": 28, "shotgun": 42, "r
 ## 开局内容池（Loadout）—— 开局向导（角色→武器→道具）的可选范围
 ##
 ## 平衡目标：开局不崩、选择多样、高低品阶拉开成长曲线。
-##   - 开局武器只开放「基础档」（数值相近、玩法各异：远程/近战/AOE/状态流），
-##     且向导里统一按 common 品阶色展示，杜绝「开局选磁轨炮碾压全场」。
-##     高品阶武器（epic/mythic/legendary）只能局内通过商店/升级/掉落/波末合成获得。
+##   - 开局武器只开放「家族根武器」：手枪（枪械根）、砍刀（近战根），
+##     向导里统一按 common 品阶色展示。同源武器（冲锋枪/散弹枪/太刀/毒牙匕首等）
+##     不再作为独立开局选项，而是通过手枪/砍刀的「进化分支」（evolve_branches）
+##     在局内波末合成获得，形成清晰的武器进化树，杜绝「开局选磁轨炮碾压全场」。
 ##   - 开局道具只开放「前期过渡档」（common/rare），且按当前角色+武器的构筑亲和排序，
 ##     相关道具优先展示；高品阶道具只能局内通过商店/掉落/事件逐步获得。
 ##   - 这两张白名单刻意从 Registry 反查（不在表里的 mod 内容默认不进开局池），
 ##     既保证内置平衡，也不阻断 mod 内容在局内的正常获取。
 ## ============================================================
-const LOADOUT_WEAPONS := ["pistol", "smg", "shotgun", "knife",
-	"flamethrower", "venom_dagger", "tar_whip", "ember_fan", "vine_lash", "blight_bow"]
+const LOADOUT_WEAPONS := ["pistol", "knife"]
 
 ## 敌人：W1 基础值；血量/伤害随波次缩放（见 wave_* 系列函数）
 const ENEMIES := {

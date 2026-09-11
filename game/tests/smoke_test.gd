@@ -976,7 +976,7 @@ func _check_items() -> void:
 	if SaveRun.save(Config.WAVES_TOTAL + 1, p2) or SaveRun.slot_path(0) != "":
 		_fail("非法波次/槽位未被拒绝")
 		return
-	# ---- 武器进化：4 把手枪波末合成双管神射 ----
+	# ---- 武器进化：多分支（手枪 → 冲锋枪/散弹枪/双管神射，优先未持有分支）----
 	var p4: Node2D = _main.get_node("Player")
 	var saved_weapons4: Array = p4.weapons.duplicate(true)
 	p4.weapons = []
@@ -985,23 +985,33 @@ func _check_items() -> void:
 	p4.weapons.append({ "type": "rocket", "cd": 0.1 })   # 混入其他武器验证只合成同名
 	var evolved: Array = p4.evolve_weapons()
 	print("SMOKE: evolve results=%s weapons=%d" % [str(evolved), p4.weapons.size()])
-	if evolved.size() != 1 or not String(evolved[0]).contains("双管神射"):
+	# 4 把手枪（need=3）→ 优先未持有分支 = 冲锋枪
+	if evolved.size() != 1 or not String(evolved[0]).contains("冲锋枪"):
 		_fail("武器进化结果错误（%s）" % str(evolved))
 		return
 	var pistol_cnt := 0
-	var ex_cnt := 0
+	var smg_cnt := 0
 	for w in p4.weapons:
 		if w.type == "pistol":
 			pistol_cnt += 1
-		if w.type == "pistol_ex":
-			ex_cnt += 1
-	if pistol_cnt != 0 or ex_cnt != 1 or p4.weapons.size() != 2:
-		_fail("进化后武器列表错误（pistol=%d ex=%d total=%d）" % [pistol_cnt, ex_cnt, p4.weapons.size()])
+		if w.type == "smg":
+			smg_cnt += 1
+	if pistol_cnt != 1 or smg_cnt != 1 or p4.weapons.size() != 3:
+		_fail("进化后武器列表错误（pistol=%d smg=%d total=%d）" % [pistol_cnt, smg_cnt, p4.weapons.size()])
 		return
-	# 进化预览：2 把手枪显示 2/4
+	# 多分支选择：3 把手枪 + 已持有冲锋枪 → 跳到下一个未持有分支 = 霰弹枪
+	p4.weapons = []
+	for _i3 in 3:
+		p4.weapons.append({ "type": "pistol", "cd": 0.1 })
+	p4.weapons.append({ "type": "smg", "cd": 0.1 })   # 已持有冲锋枪
+	var evolved2: Array = p4.evolve_weapons()
+	if evolved2.size() != 1 or not String(evolved2[0]).contains("霰弹枪"):
+		_fail("多分支进化未跳到未持有分支（%s）" % str(evolved2))
+		return
+	# 进化预览：2 把手枪显示 2/3
 	p4.weapons = [{ "type": "pistol", "cd": 0.1 }, { "type": "pistol", "cd": 0.1 }]
 	var prog: Array = p4.evolve_progress()
-	if prog.size() != 1 or int(prog[0].have) != 2 or int(prog[0].need) != 4:
+	if prog.size() != 1 or int(prog[0].have) != 2 or int(prog[0].need) != 3:
 		_fail("进化进度预览错误（%s）" % str(prog))
 		return
 	p4.weapons = saved_weapons4   # 还原

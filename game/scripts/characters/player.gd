@@ -563,6 +563,8 @@ func take_damage(raw: float) -> void:
 
 ## 武器进化（波末由 main 调用）：同名武器达到 evolve_need 时自动合成进化形态。
 ## 4 把手枪 → 1 把双管神射（腾出槽位），返回进化公告文本列表（无进化返回空）
+## 多分支进化（evolve_branches）：同名武器达标时优先进化到「尚未持有」的分支，
+## 让玩家逐步集齐同源武器分支（手枪 → 冲锋枪 / 散弹枪 / 双管神射）
 func evolve_weapons() -> Array:
 	var results: Array = []
 	var counts := {}
@@ -574,11 +576,14 @@ func evolve_weapons() -> Array:
 		if cfg.is_empty():
 			continue
 		var need := int(cfg.get("evolve_need", 0))
-		if need > 0 and int(counts[wtype]) >= need and Registry.weapons.has(cfg.evolve_to):
+		if need > 0 and int(counts[wtype]) >= need and not _evolve_branches(cfg).is_empty():
 			to_process.append(wtype)
 	for wtype in to_process:
 		var cfg: Dictionary = Registry.weapons[wtype]
 		var need := int(cfg.evolve_need)
+		var target := _pick_evolve_target(cfg)
+		if target == "":
+			continue
 		# 移除 need 把同名武器，追加 1 把进化形态
 		var removed := 0
 		var new_weapons: Array = []
@@ -588,10 +593,32 @@ func evolve_weapons() -> Array:
 			else:
 				new_weapons.append(w)
 		weapons = new_weapons
-		weapons.append({ "type": cfg.evolve_to, "cd": 0.1 })
-		var ex_cfg: Dictionary = Registry.weapons[cfg.evolve_to]
+		weapons.append({ "type": target, "cd": 0.1 })
+		var ex_cfg: Dictionary = Registry.weapons[target]
 		results.append("%s ×%d → %s" % [cfg.name, need, ex_cfg.name])
 	return results
+
+## 进化分支列表：优先 evolve_branches（多分支），否则回退单 evolve_to
+func _evolve_branches(cfg: Dictionary) -> Array:
+	var br: Array = cfg.get("evolve_branches", [])
+	if not br.is_empty():
+		return br
+	if Registry.weapons.has(String(cfg.get("evolve_to", ""))):
+		return [String(cfg.evolve_to)]
+	return []
+
+## 选择进化目标：优先进化到「尚未持有」的分支（按 branches 数据顺序），全部持有则回退第一个
+func _pick_evolve_target(cfg: Dictionary) -> String:
+	var branches: Array = _evolve_branches(cfg)
+	if branches.is_empty():
+		return ""
+	var owned := {}
+	for w in weapons:
+		owned[w.type] = true
+	for b in branches:
+		if Registry.weapons.has(String(b)) and not owned.has(String(b)):
+			return String(b)
+	return String(branches[0])
 
 ## 进化预览：返回 [{type, name, have, need}]（商店/HUD 提示用）
 func evolve_progress() -> Array:
@@ -602,10 +629,26 @@ func evolve_progress() -> Array:
 	for wtype in counts:
 		var cfg: Dictionary = Registry.weapons.get(wtype, {})
 		var need := int(cfg.get("evolve_need", 0))
-		if need > 0 and int(counts[wtype]) < need and Registry.weapons.has(cfg.get("evolve_to", "")):
+		if need > 0 and int(counts[wtype]) < need and not _evolve_branches(cfg).is_empty():
 			progress.append({ "type": wtype, "name": cfg.name,
 				"have": int(counts[wtype]), "need": need })
 	return progress
+
+## 下一个进化目标名（多分支时优先「尚未持有」的方向），供商店/图鉴提示；无进化返回空串
+func next_evolve_name(wtype: String) -> String:
+	var cfg: Dictionary = Registry.weapons.get(wtype, {})
+	if cfg.is_empty():
+		return ""
+	var branches: Array = _evolve_branches(cfg)
+	if branches.is_empty():
+		return ""
+	var owned := {}
+	for w in weapons:
+		owned[w.type] = true
+	for b in branches:
+		if Registry.weapons.has(String(b)) and not owned.has(String(b)):
+			return String(Registry.weapons[String(b)].get("name", String(b)))
+	return String(Registry.weapons[String(branches[0])].get("name", String(branches[0])))
 
 func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）

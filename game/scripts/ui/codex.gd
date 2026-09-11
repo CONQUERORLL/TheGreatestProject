@@ -859,12 +859,18 @@ func _detail_weapon(id: String) -> void:
 			"命中 %d%% · %d 层" % [roundi(float(w.get("status_chance", 1.0)) * 100.0),
 				int(w.get("status_stacks", 1))]))
 	var need := int(w.get("evolve_need", 0))
-	if need > 0 and Registry.weapons.has(String(w.get("evolve_to", ""))):
-		var evo: Dictionary = Registry.weapons[String(w.get("evolve_to"))]
+	var branches: Array = w.get("evolve_branches", [])
+	if branches.is_empty() and Registry.weapons.has(String(w.get("evolve_to", ""))):
+		branches = [String(w.get("evolve_to", ""))]
+	if need > 0 and not branches.is_empty():
 		_detail.add_child(_section("进化"))
-		_detail.add_child(_row(String(evo.get("ico", "🔧")), String(evo.get("name", "")),
-			Config.rarity_color(String(evo.get("rarity", "common"))), String(evo.get("desc", "")),
-			"持有 %d 把自动进化" % need))
+		for b in branches:
+			if not Registry.weapons.has(String(b)):
+				continue
+			var evo: Dictionary = Registry.weapons[String(b)]
+			_detail.add_child(_row(String(evo.get("ico", "🔧")), String(evo.get("name", "")),
+				Config.rarity_color(String(evo.get("rarity", "common"))), String(evo.get("desc", "")),
+				"持有 %d 把进化分支" % need))
 
 # ---------------- 道具 / 升级详情 ----------------
 

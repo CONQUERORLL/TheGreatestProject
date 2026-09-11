@@ -579,15 +579,16 @@ func _make_good_card(i: int) -> Control:
 				owned += 1
 		if owned > 0:
 			name_l.text = "%s  x%d" % [g.name, owned]
-		# 进化提示：拥有同名武器时显示进度/预告
+		# 进化提示：拥有同名武器时显示进度/预告（多分支时显示下一个未持有的进化方向）
 		var wcfg: Dictionary = Registry.weapons.get(g.wtype, {})
 		var need := int(wcfg.get("evolve_need", 0))
 		if need > 0 and owned > 0:
-			var ex_name: String = Registry.weapons[wcfg.evolve_to].name
-			if owned >= need:
-				g.desc = "★ 波末自动进化 → %s" % ex_name
-			else:
-				g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
+			var ex_name: String = player.next_evolve_name(String(g.wtype))
+			if ex_name != "":
+				if owned >= need:
+					g.desc = "★ 波末自动进化 → %s" % ex_name
+				else:
+					g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
 	# 契合标记：让「这件东西跟你的角色 / 武器是一路的」一眼可见
 	if int(g.get("synergy", 0)) > 0:
