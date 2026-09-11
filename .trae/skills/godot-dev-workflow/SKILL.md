@@ -210,6 +210,13 @@ bash game/tools/push.sh [分支]
   **Config 声明的内容数必须 ≤ Registry 实注册数**，任何越界都应让测试失败。
 - 注册表关键上限备查：`bspeed ≤ 1200` / `dmg ≤ 500` / `cd 0.05~5` / `price ≤ 300` /
   `shop_weight ≤ 5` / `shake ≤ 10` / 近战 `range ≤ 400` / `swing_arc ≤ TAU` / `splash ≤ 400`。
+- **调试后门绝不要用裸数字/字母键**：调试功能（换武器、刷怪、跳关等）绑定裸数字键
+  会和玩家正常按键习惯冲突，误触即造成不可逆数据破坏（`_debug_set_weapon` 用
+  `player.weapons = [{type,cd}]` 整体覆盖，武器+强化一次性丢失）。调试键必须加修饰键
+  （`event.ctrl_pressed`）或改用 F 区键，且用 `OS.is_debug_build()` 守卫。
+- **选卡/弹窗 UI 的键盘选择必须 `get_viewport().set_input_as_handled()`**：
+  `_unhandled_input` 自底向上派发，子节点（升级卡/事件卡）处理完按键后若不标记已处理，
+  事件继续冒泡到根节点 main 的其它处理器，造成「选完卡又触发别的动作」（本项目踩过两次）。
 
 ## 7. 工具使用禁忌
 
