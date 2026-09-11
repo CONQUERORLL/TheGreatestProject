@@ -333,12 +333,30 @@ const ENEMIES := {
 	"ice_witch": { "name": "玄冰女妖", "hp": 28.0, "speed": 58.0, "dmg": 12.0, "xp": 10, "mat": 7, "r": 16.0, "color": "#5aa8d8", "shape": "circle", "keep_dist": 320.0, "shoot_cd": 1.8, "bspeed": 340.0, "heart_chance": 0.10, "status_resist": 0.40 },
 	"earth_golem": { "name": "土灵石俑", "hp": 75.0, "speed": 38.0, "dmg": 18.0, "xp": 12, "mat": 8, "r": 24.0, "color": "#ffd24a", "shape": "square", "heart_chance": 0.12, "status_resist": 0.30 },
 	"stone_titan": { "name": "山岳巨人", "hp": 140.0, "speed": 32.0, "dmg": 24.0, "xp": 16, "mat": 12, "r": 30.0, "color": "#c8a030", "shape": "square", "heart_chance": 0.18, "status_resist": 0.40 },
-	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "death_skill": "ring", "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "death_skill": "miasma", "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "death_skill": "rebirth", "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0 },
-	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "death_skill": "shockwave", "status_resist": 0.70, "heart_chance": 1.0 },
+	"boss": { "name": "巨型土豆王", "hp": 768000.0, "speed": 64.0, "dmg": 28.0, "xp": 60, "mat": 100, "r": 56.0, "color": "#b01e2e", "shape": "circle", "ring_cd": 2.2, "ring_count": 16, "bspeed": 260.0, "death_skill": "ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "skills": [
+		{ "type": "fan", "name": "弹幕压制", "cd": 4.2, "count": 5, "arc": 0.9, "bspeed": 300.0, "dmg_mult": 0.65 },
+		{ "type": "charge", "name": "王者冲撞", "cd": 7.0, "warn": 0.5, "duration": 0.45, "speed_mult": 6.0 },
+	] },
+	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "skills": [
+		{ "type": "aimed", "name": "织网锁定", "cd": 3.6, "count": 3, "interval": 0.16, "bspeed": 420.0, "dmg_mult": 0.7 },
+		{ "type": "nova", "name": "深渊落雷", "cd": 5.5, "count": 2, "radius": 105.0, "warn": 0.8, "dmg_mult": 0.9 },
+	] },
+	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "death_skill": "miasma", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "skills": [
+		{ "type": "nova", "name": "腐土毒沼", "cd": 6.0, "count": 3, "radius": 95.0, "warn": 0.85, "dmg_mult": 0.8 },
+		{ "type": "fan", "name": "腐蚀喷吐", "cd": 4.5, "count": 7, "arc": 1.2, "bspeed": 280.0, "dmg_mult": 0.6 },
+	] },
+	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "death_skill": "rebirth", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "skills": [
+		{ "type": "charge", "name": "烈焰俯冲", "cd": 5.0, "warn": 0.45, "duration": 0.5, "speed_mult": 7.0 },
+		{ "type": "nova", "name": "天火坠落", "cd": 4.5, "count": 3, "radius": 100.0, "warn": 0.7, "dmg_mult": 0.85 },
+	] },
+	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "skills": [
+		{ "type": "aimed", "name": "寒水连狙", "cd": 3.2, "count": 4, "interval": 0.13, "bspeed": 440.0, "dmg_mult": 0.65 },
+		{ "type": "fan", "name": "冰潮扇", "cd": 4.0, "count": 7, "arc": 1.0, "bspeed": 300.0, "dmg_mult": 0.6 },
+	] },
+	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "death_skill": "shockwave", "status_resist": 0.70, "heart_chance": 1.0, "dmg_cap_pct": 0.004, "skills": [
+		{ "type": "charge", "name": "山崩冲撞", "cd": 8.0, "warn": 0.7, "duration": 0.55, "speed_mult": 5.0 },
+		{ "type": "nova", "name": "落石", "cd": 5.0, "count": 2, "radius": 130.0, "warn": 0.9, "dmg_mult": 1.0 },
+	] },
 }
 
 ## BOSS 轮换池：标准第 10 波 / 无尽每 10 波，按种子随机轮换（每日挑战全服同 BOSS）

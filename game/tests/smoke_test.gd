@@ -458,6 +458,36 @@ func _check_levelup() -> void:
 	if GameState.phase != GameState.Phase.PLAYING or GameState.level_queue != 0:
 		_fail("连升完成后未恢复 PLAYING")
 		return
+	# ---- 空白卡回归：品阶门槛把亲和保底池清零时（契合升级全是 epic 且 Lv<3），
+	# weighted_pick 曾返回 null → 第三张卡只剩 [3] 的空白卡。复现路径：
+	# 火焰喷射器开局 → 亲和标签 {burn} → 契合升级只有 epic 的 burningheart（Lv 1 权重 0）----
+	var lvl_bak: int = GameState.level
+	var wps_bak: Array = player.weapons
+	GameState.level = 1
+	player.weapons = [{ "type": "flamethrower", "cd": 0.0 }]
+	var blank_runs := 0
+	for _r in 6:   # 多次开框：保底只在「前三张都不契合」时触发，多跑几轮覆盖
+		ui.open()
+		await get_tree().process_frame
+		if ui.card_count() != 3:
+			_fail("升级卡不足三张（%d）" % ui.card_count())
+			GameState.level = lvl_bak
+			player.weapons = wps_bak
+			return
+		for ci in 3:
+			var cid := ""
+			if typeof(ui._choices[ci]) == TYPE_DICTIONARY:
+				cid = String(ui._choices[ci].get("id", ""))
+			if cid == "":
+				blank_runs += 1
+		ui._choose(0)   # 关掉当前框（queue 为 0 → 回 PLAYING）
+		await get_tree().process_frame
+	GameState.level = lvl_bak
+	player.weapons = wps_bak
+	if blank_runs > 0:
+		_fail("品阶门槛期出现 %d 张空白升级卡（亲和保底池全零未兜底）" % blank_runs)
+		return
+	print("SMOKE: level-up blank card regression OK")
 	# ---- 商店流程验证：压缩第 2 波 → 清场 → 自动进商店 → 购买/刷新/回血/下一波 ----
 	var wm: Node = _main.get_node("WaveManager")
 	wm.wave_timer = 0.5
@@ -775,6 +805,7 @@ func _check_items() -> void:
 	_check_affinity_floor()
 	_check_object_pool()
 	_check_boss_death_skills()
+	_check_boss_skills()
 	_check_unlocks()
 	_check_sect_talents()
 	if _failed:
@@ -4307,10 +4338,13 @@ func _check_boss_death_skills() -> void:
 	phx.setup("boss_phoenix", 10)
 	phx.player = _main.get_node("Player")
 	var max_hp: float = phx.max_hp
+	# 巨额抗性（dmg_cap_pct）让单发伤害无法秒 BOSS —— 把血量压到 1 再打出致命一击
+	phx.hp = 1.0
 	phx.take_damage(max_hp * 10.0, false)
 	var ok_first: bool = killed[0] == 0 and phx.hp > 0.0 \
 		and is_equal_approx(phx.hp, max_hp * 0.5)
-	phx.take_damage(phx.hp * 10.0, false)
+	phx.hp = 1.0
+	phx.take_damage(phx.max_hp * 10.0, false)
 	var ok_second: bool = killed[0] == 1
 	EventBus.boss_killed.disconnect(cb)
 	restore.call()
@@ -4338,6 +4372,101 @@ func _check_boss_death_skills() -> void:
 	for eb in get_tree().get_nodes_in_group("enemy_bullets"):
 		eb.queue_free()
 	print("SMOKE: boss death skills OK")
+
+## BOSS 技能系统 + 巨额抗性：
+## ① 每个 BOSS 的 skills 配置合法且注册后保留；② dmg_cap_pct 单次伤害上限生效
+## （防爆发秒杀 + 堵死土克水处决秒 BOSS 的漏洞）；③ 狂暴减伤 ×0.8；
+## ④ 四种技能形态都能真实出手（fan 产弹 / aimed 进队列 / nova 落预警圈 / charge 进蓄力）
+func _check_boss_skills() -> void:
+	# ---- 1. 配置完整性：每个 BOSS 至少 2 个技能，类型在白名单 ----
+	for bid in Config.BOSS_POOL:
+		var bcfg: Dictionary = Registry.enemies.get(String(bid), {})
+		var skills: Array = bcfg.get("skills", [])
+		if skills.size() < 2:
+			_fail("BOSS %s 技能不足 2 个（%d）" % [String(bid), skills.size()])
+			return
+		for sk in skills:
+			if String(sk.get("type", "")) not in Registry.BOSS_SKILL_TYPES:
+				_fail("BOSS %s 技能类型非法：%s" % [String(bid), String(sk.get("type", "?"))])
+				return
+	# ---- 2. 巨额抗性：单发巨伤被 dmg_cap_pct 截断，BOSS 不被秒 ----
+	var player: Node2D = _main.get_node("Player")
+	var b = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(b)
+	b.setup("boss", 10)
+	b.player = player
+	var cap: float = b.max_hp * float(b.cfg.get("dmg_cap_pct", 0.005))
+	var hp0: float = b.hp
+	b.take_damage(b.max_hp * 5.0, false)   # 5 倍最大生命的单发，理论上必秒
+	var lost: float = hp0 - b.hp
+	if lost > cap * 1.01 or b.hp <= 0.0:
+		_fail("巨额抗性未生效：单发掉血 %.0f 超过上限 %.0f（或 BOSS 被秒）" % [lost, cap])
+		b.queue_free()
+		return
+	# 处决路径（土克水 take_damage(hp+1)）同样被截断 —— BOSS 免机制秒杀。
+	# 注意测试血量必须高于 cap：处决伤害恒为 hp+1，只有「cap < 当前 hp」时截断才能保命
+	b.hp = b.max_hp * 0.15
+	b.take_damage(b.hp + 1.0, false)
+	if b.hp <= 0.0:
+		_fail("BOSS 被处决路径秒杀（dmg_cap 应拦截）")
+		b.queue_free()
+		return
+	b.hp = b.max_hp
+	# ---- 3. 狂暴减伤：enraged 后同等伤害 ×0.8 ----
+	b.enraged = true
+	var hp1: float = b.hp
+	b.take_damage(1000.0, false)
+	var lost_normal: float = hp1 - b.hp
+	if lost_normal <= 0.0 or absf(lost_normal - 1000.0 * 0.8) > 1.0:
+		_fail("狂暴减伤不符（掉血 %.1f，期望 %.1f）" % [lost_normal, 800.0])
+		b.queue_free()
+		return
+	# ---- 4. 技能运行时：冷却数组与 cfg 对齐 ----
+	if b._skill_cds.size() != b.cfg.get("skills", []).size():
+		_fail("BOSS 技能冷却数组未按 cfg 初始化（%d vs %d）"
+			% [b._skill_cds.size(), b.cfg.get("skills", []).size()])
+		b.queue_free()
+		return
+	# fan：立刻产生敌弹
+	var eb0 := get_tree().get_nodes_in_group("enemy_bullets").size()
+	b._cast_boss_skill({ "type": "fan", "count": 5, "arc": 0.9, "bspeed": 300.0, "dmg_mult": 0.5 })
+	var eb1 := get_tree().get_nodes_in_group("enemy_bullets").size()
+	if eb1 < eb0 + 5:
+		_fail("fan 技能未按数产弹（%d → %d）" % [eb0, eb1])
+		b.queue_free()
+		return
+	# aimed：进入连发队列（首发出弹在下一物理帧，这里只验队列）
+	b._cast_boss_skill({ "type": "aimed", "count": 3, "interval": 0.1, "bspeed": 400.0, "dmg_mult": 0.5 })
+	if b._aimed_left != 3:
+		_fail("aimed 技能未进入连发队列（left=%d）" % b._aimed_left)
+		b.queue_free()
+		return
+	# nova：fx 组新增 Meteor 预警圈
+	var fx0 := get_tree().get_nodes_in_group("fx").size()
+	b._cast_boss_skill({ "type": "nova", "count": 2, "radius": 100.0, "warn": 0.8, "dmg_mult": 0.5 })
+	var meteors := 0
+	for n in get_tree().get_nodes_in_group("fx"):
+		if n is Meteor:
+			meteors += 1
+	if meteors < 2:
+		_fail("nova 技能未生成预警圈（Meteor 仅 %d 个）" % meteors)
+		b.queue_free()
+		return
+	# charge：进入蓄力预警态，方向朝玩家
+	b._cast_boss_skill({ "type": "charge", "warn": 0.5, "duration": 0.4, "speed_mult": 6.0 })
+	if b._charge_state != 1 or b._charge_dir == Vector2.ZERO:
+		_fail("charge 技能未进入蓄力预警（state=%d）" % b._charge_state)
+		b.queue_free()
+		return
+	b.queue_free()
+	# 清理技能测试产生的弹幕与预警圈
+	for eb2 in get_tree().get_nodes_in_group("enemy_bullets"):
+		eb2.queue_free()
+	for m in get_tree().get_nodes_in_group("fx"):
+		if m is Meteor:
+			m.queue_free()
+	print("SMOKE: boss skills + resistance OK")
+
 
 ## 构造 4 格假商品（synergy 固定为 v），供保底测试用
 func _cold_goods(entries: Array, v: int) -> Array:
@@ -4544,9 +4673,11 @@ func _check_endless() -> void:
 	if vboss_hp < 2400.0:
 		_fail("BOSS 血量未强化（max_hp=%.0f）" % vboss_hp)
 		return
+	vboss.hp = 1.0   # 巨额抗性（dmg_cap_pct）下单发无法秒杀：压到 1 血再打致命一击
 	vboss.take_damage(1.0e9, false)
 	# 焚天凤凰会涅槃复活一次：一击后若仍未进结算（phase 仍 INTRO），补一刀
 	if GameState.phase != GameState.Phase.VICTORY and is_instance_valid(vboss):
+		vboss.hp = 1.0
 		vboss.take_damage(1.0e9, false)
 	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.VICTORY or not _main._victory_menu.visible:
@@ -4614,9 +4745,11 @@ func _check_endless() -> void:
 		_fail("无尽模式击杀未计积分")
 		return
 	# BOSS 击破 → 商店衔接 + wave11 存档
+	boss.hp = 1.0   # 巨额抗性下单发无法秒杀：压到 1 血再打
 	boss.take_damage(1.0e9, false)
 	# 焚天凤凰会涅槃复活一次：一击后若仍未进商店（phase 仍 INTRO 且 boss 仍存活），补一刀
 	if GameState.phase != GameState.Phase.SHOP and is_instance_valid(boss):
+		boss.hp = 1.0
 		boss.take_damage(1.0e9, false)
 	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.SHOP or wm.boss != null:

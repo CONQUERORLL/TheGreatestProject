@@ -491,7 +491,51 @@ func register_enemy(data: Dictionary) -> bool:
 				or not _number_in_range(data.get("ring_cd"), 0.05, 10.0) \
 				or not _number_in_range(data.get("bspeed"), 1.0, 800.0):
 			return _reject("敌人", data, "BOSS 弹速/弹数/间隔超出范围")
+		if not _number_in_range(data.get("dmg_cap_pct", 0.005), 0.001, 0.2):
+			return _reject("敌人", data, "dmg_cap_pct 必须在 [0.001, 0.2]")
+		if data.has("skills") and not _valid_boss_skills(data.skills):
+			return _reject("敌人", data, "BOSS 技能配置非法")
 	enemies[String(data.id)] = data
+	return true
+
+## BOSS 技能白名单校验：type 必须是已实现形态，cd/count 等参数在合理区间。
+## 缺省参数由 enemy._cast_boss_skill 兜底，这里只查显式写出的值。
+const BOSS_SKILL_TYPES := ["fan", "aimed", "nova", "charge"]
+
+func _valid_boss_skills(skills: Variant) -> bool:
+	if typeof(skills) != TYPE_ARRAY or skills.size() > 6:
+		return false
+	for sk in skills:
+		if typeof(sk) != TYPE_DICTIONARY:
+			return false
+		var stype := String(sk.get("type", ""))
+		if stype not in BOSS_SKILL_TYPES:
+			return false
+		if not _number_in_range(sk.get("cd", 4.0), 0.5, 30.0):
+			return false
+		if sk.has("name") and typeof(sk.name) != TYPE_STRING:
+			return false
+		match stype:
+			"fan":
+				if not _number_in_range(sk.get("count", 5), 1, 12) \
+						or not _number_in_range(sk.get("arc", 0.9), 0.1, 3.2) \
+						or not _number_in_range(sk.get("bspeed", 300.0), 50.0, 800.0):
+					return false
+			"aimed":
+				if not _number_in_range(sk.get("count", 3), 1, 8) \
+						or not _number_in_range(sk.get("interval", 0.15), 0.05, 1.0) \
+						or not _number_in_range(sk.get("bspeed", 420.0), 50.0, 900.0):
+					return false
+			"nova":
+				if not _number_in_range(sk.get("count", 1), 1, 5) \
+						or not _number_in_range(sk.get("radius", 110.0), 40.0, 300.0) \
+						or not _number_in_range(sk.get("warn", 0.8), 0.3, 3.0):
+					return false
+			"charge":
+				if not _number_in_range(sk.get("warn", 0.5), 0.2, 2.0) \
+						or not _number_in_range(sk.get("duration", 0.45), 0.2, 1.5) \
+						or not _number_in_range(sk.get("speed_mult", 6.0), 2.0, 12.0):
+					return false
 	return true
 
 func register_difficulty(data: Dictionary) -> bool:
