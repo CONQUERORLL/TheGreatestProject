@@ -148,9 +148,11 @@ bash game/tools/push.sh [分支]
 | `Start-Process` **被静默拦掉** | 表现为 exit 0，但日志时间戳不变、也没有进程（最容易被骗） |
 | **新建目录会被回滚** | `mkdir -p` 当场返回 0，下一次调用就消失 |
 | `refs/remotes/**` 写入不持久 | 见 §3 |
+| **GUI 窗口无法长期存活** | 沙箱无持久桌面/显示服务；Godot 引擎能初始化（OpenGL 上下文 + mod 注册都成功）、任务列表里前 20~30 秒能看到进程（~265MB），之后退出 —— 拉起 GUI 给用户看不可行，只能跑 headless 自检 |
+| **环境变量 `$env:APPDATA` 为空** | Godot 的 user://（存档/解锁/成就）找不到落盘点会降级失败；启动前必须 `$env:APPDATA = 'C:\Users\<user>\AppData\Roaming'` |
 | `find` / `grep` 等可用 | Bash 工具本身正常工作 |
 
-推论：**能做 GUI 启动的只剩「Bash 直调 exe + `run_in_background`」这一条路**（见 §2）。
+推论：**能做 GUI 启动的只剩「Bash 直调 exe + `run_in_background`」这一条路**（见 §2）。但窗口会在 ~30 秒后被沙箱回收，所以 agent 内的 GUI 启动只能用来**验引擎能起来**（看 stdout 有没有 SCRIPT ERROR + `tasklist` 早期能不能看到进程），实际游玩必须用户在终端跑 `game/tools/run_game.ps1`。
 
 ## 5. GDScript 语言陷阱（本项目踩过）
 
