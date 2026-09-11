@@ -474,7 +474,7 @@ func _synergy(e: Dictionary) -> int:
 	return hit
 
 func _price_of(g: Dictionary) -> int:
-	return Config.shop_price(g.base_price, _wave)
+	return int(round(float(Config.shop_price(g.base_price, _wave)) * RunRules.shop_price_mult()))
 
 func _refresh() -> void:
 	# 记录当前焦点所在卡片，重建后优先原位恢复（避免焦点跳回第一张）
@@ -482,11 +482,20 @@ func _refresh() -> void:
 	_mat.text = "◆ %d" % GameState.materials
 	_refresh_left()
 	_refresh_right()
-	_reroll_btn.text = "刷新 (%d ◆)" % _reroll_cost
-	_reroll_btn.disabled = GameState.materials < _reroll_cost
-	_heal_btn.text = "回血 50%% (%d ◆)" % Config.SHOP_HEAL_PRICE
-	_heal_btn.disabled = GameState.materials < Config.SHOP_HEAL_PRICE \
-		or player.hp >= player.stats.max_hp
+	# 自定义规则：禁用刷新 / 禁用回血（按钮保留但灰掉，让玩家看得见"这是规则限制"）
+	if RunRules.reroll_disabled():
+		_reroll_btn.text = "刷新（规则禁用）"
+		_reroll_btn.disabled = true
+	else:
+		_reroll_btn.text = "刷新 (%d ◆)" % _reroll_cost
+		_reroll_btn.disabled = GameState.materials < _reroll_cost
+	if RunRules.heal_disabled():
+		_heal_btn.text = "回血（规则禁用）"
+		_heal_btn.disabled = true
+	else:
+		_heal_btn.text = "回血 50%% (%d ◆)" % Config.SHOP_HEAL_PRICE
+		_heal_btn.disabled = GameState.materials < Config.SHOP_HEAL_PRICE \
+			or player.hp >= player.stats.max_hp
 	_build_goods()
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
 	if visible:
@@ -688,6 +697,9 @@ func buy(i: int) -> void:
 
 ## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
 func reroll() -> void:
+	if RunRules.reroll_disabled():
+		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店刷新", 1.6)
+		return
 	if GameState.materials < _reroll_cost:
 		return
 	GameState.add_materials(-_reroll_cost)
@@ -707,6 +719,9 @@ func reroll() -> void:
 
 ## 回血：15 ◆ 回复 50% 最大生命（原型 btnHeal）
 func heal() -> void:
+	if RunRules.heal_disabled():
+		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店回血", 1.6)
+		return
 	if GameState.materials < Config.SHOP_HEAL_PRICE:
 		return
 	GameState.add_materials(-Config.SHOP_HEAL_PRICE)

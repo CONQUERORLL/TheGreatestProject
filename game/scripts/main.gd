@@ -76,6 +76,12 @@ func _ready() -> void:
 	# 每日挑战不吃局外天赋（全服同局，天赋会造成个体差异）
 	if restored_wave == 0 and not GameState.daily:
 		MetaProgress.apply_on_run_start(player)
+		# 自定义开局规则：材料掉落倍率注入 harvesting（加成语义，与天赋/道具叠加）。
+		# 难度缩放在 Registry 里由 "custom" 条目承载，这里只补经济维度
+		var mat_bonus := RunRules.materials_bonus()
+		if mat_bonus != 0.0:
+			player.stats.harvesting = float(player.stats.harvesting) + mat_bonus
+			player._sanitize_stats()
 	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.player_died.connect(_on_player_died)
 	EventBus.enemy_killed.connect(_on_enemy_killed)
@@ -536,10 +542,16 @@ func spawn_obstacles(theme_id: String, count: int) -> int:
 				continue
 			entries.append({ "pos": p, "kind": kind, "r": r })
 			break
-	Obstacles.rebuild(entries)
+	# 这里生成的条目必然合法（坐标来自 GameRng、半径来自 Obstacle.radius），
+	# 但仍显式接收被拒数：一旦未来有人往 entries 里塞外部数据，警告会立刻冒出来而不是静默少块
+	var rejected := Obstacles.rebuild(entries)
+	if rejected > 0:
+		push_warning("[main] spawn_obstacles 有 %d 条障碍物条目被拒（请求 %d 块）" % [rejected, count])
 	return Obstacles.count()
 
 ## 换主题氛围粒子：同屏只留一套，切主题时销毁旧的
+## 注意：未知 particle 键不静默失败 —— 与 Registry 对未知武器 fx 的处理口径一致（warn + 回落），
+## 否则 Config.MAP_THEMES 里写错粒子名会表现为「该主题毫无氛围且查不到原因」
 func _rebuild_theme_fx(particle_kind: String) -> void:
 	if _theme_fx != null and is_instance_valid(_theme_fx):
 		_theme_fx.queue_free()
@@ -552,6 +564,10 @@ func _rebuild_theme_fx(particle_kind: String) -> void:
 			_theme_fx = Incense.spawn(self, world)
 		"ghost_fire":
 			_theme_fx = GhostFire.spawn(self, world)
+		_:
+			push_warning("[main] 未知的氛围粒子键 %s，回落到竹叶；请检查 Config.MAP_THEMES 的 particle 字段"
+				% particle_kind)
+			_theme_fx = BambooLeaf.spawn(self, world)
 
 # ------------------------------------------------------------
 # 江湖奇遇事件卡（Phase 4）
@@ -781,6 +797,9 @@ func _on_player_died() -> void:
 	if not GameState.daily:
 		earned = MetaProgress.grant_run_essence(GameState.score,
 			wave_manager.wave, GameState.endless)
+	# 自定义规则局不参与排行榜（is_competitive：参数可任意调低，上榜等于刷榜）。
+	# 精华照给 —— 自定义规则是正当玩法，只是不计名次
+	var ranked := RunRules.is_competitive()
 	# 每日挑战：死亡积分入今日榜（通关在 boss_killed 结算）
 	if GameState.daily:
 		var ch_d: Dictionary = Registry.get_character(GameState.character_id)
@@ -791,7 +810,7 @@ func _on_player_died() -> void:
 		if rank_d > 0:
 			EventBus.banner_requested.emit("今日榜更新",
 				"积分 %d · 今日第 %d 名" % [GameState.score, rank_d], 3.0)
-	elif GameState.endless:
+	elif GameState.endless and ranked:
 		# 无尽：成绩写入排行榜并展示名次
 		var ch: Dictionary = Registry.get_character(GameState.character_id)
 		var rank := Leaderboard.record(GameState.score, wave_manager.wave,
@@ -803,6 +822,11 @@ func _on_player_died() -> void:
 		elif rank > 1:
 			EventBus.banner_requested.emit("挑战结束",
 				"积分 %d · 排行榜第 %d 名 · ✦%d 精华" % [GameState.score, rank, earned], 3.0)
+	elif GameState.endless:
+		# 自定义规则的无尽局：照常给精华，只标注不入榜
+		dead_label.text = "你倒下了 · 积分 %d · 获得 ✦%d 精华" % [GameState.score, earned]
+		EventBus.banner_requested.emit("自定义规则局",
+			"积分 %d · 不入排行榜 · ✦%d 精华" % [GameState.score, earned], 3.0)
 	else:
 		dead_label.text = "你倒下了 · 获得 ✦%d 精华" % earned
 	dead_label.visible = true
@@ -856,7 +880,8 @@ func _on_boss_killed() -> void:
 	_victory_menu.visible = true
 	_victory_continue.grab_focus()   # 继续无尽（默认焦点）
 
-## 通关后继续：保留第 10 波构筑与难度，从第 11 波进入无尽炼狱
+## 通关后继续：保留通关波的构筑与难度，从下一波进入无尽炼狱
+## （自定义规则局的"通关波"不一定是第 10 波，所以用 BOSS 波号 +1，而不是写死 11）
 func _continue_endless() -> void:
 	if GameState.phase != GameState.Phase.VICTORY:
 		return
@@ -865,10 +890,11 @@ func _continue_endless() -> void:
 	victory_label.visible = false
 	_victory_menu.visible = false
 	Haptics.rumble(0.3, 0.0, 0.1)
-	if not SaveRun.save(11, player, SaveRun.CHECKPOINT_WAVE_START):
+	var next_wave := maxi(2, wave_manager.wave + 1)
+	if not SaveRun.save(next_wave, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "无尽进度未写入，仍可继续游玩", 2.0)
-	EventBus.banner_requested.emit("无尽炼狱开启", "从第 11 波继续，挑战没有尽头", 2.6)
-	wave_manager.start_wave(11)
+	EventBus.banner_requested.emit("无尽炼狱开启", "从第 %d 波继续，挑战没有尽头" % next_wave, 2.6)
+	wave_manager.start_wave(next_wave)
 
 ## 通关结算后结束本局（重开/回主菜单前清理存档；继续无尽则保留）
 func _finish_victory_run() -> void:

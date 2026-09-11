@@ -24,6 +24,7 @@ var _aura_t := 0.0              # 光环/战意触发计时
 var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
 var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
 var _flame_jet: Node2D = null   # 枪口喷射锥（火焰喷射器的表现层，见 fx/flame_jet.gd）
+var _aim_target = null          # 本次开火的索敌目标（弹道预判用；不定型引用 Enemy，避免循环依赖）
 # ---- 主动技能（按 F 释放，开局从 Registry 角色定义读取）----
 var skill: Dictionary = {}        # 当前角色主动技能（空 = 无技能）
 var skill_cd := 0.0               # 技能冷却剩余秒
@@ -213,12 +214,23 @@ func try_fire(w: Dictionary) -> void:
 	# 索敌优先选视线未被障碍物挡住的敌人（Phase 5）：障碍物会拦住弹丸，
 	# 若还死盯最近的目标，玩家会被迫对着柱子倾泻全部输出
 	var target := Combat.nearest_enemy_visible(global_position, 4.0)
-	var ang := (target.global_position - global_position).angle() if target else facing
+	_aim_target = target
+	# 运行参数（含弹速 / 射程加成）先算好 —— 提前量要用到「加成后」的弹速
+	var wc := _weapon_runtime_cfg(c)
+	var is_flame := String(c.get("fx", "")) == "flame"
+	var is_melee := String(c.get("attack_type", "projectile")) == "melee"
+	var aim := target.global_position if target else global_position + Vector2.from_angle(facing)
+	# 弹道预判：瞄「弹丸与敌人的交会点」而非敌人当前位置。
+	# 弹速越慢 / 距离越远 / 敌人速度越快，偏差越大 —— 火焰喷射与近战无需预判
+	# （喷射锥与扇形斩覆盖整段，不依赖单点命中）
+	if target and not is_flame and not is_melee:
+		aim = _lead_target(wc, aim)
+	var ang := (aim - global_position).angle()
 	facing = ang
 	queue_redraw()
 	# 火焰喷射器：火焰的主体是枪口喷射锥（FlameJet，不跟弹丸走），
 	# 每次开火刷新它的朝向与喷射长度
-	if String(c.get("fx", "")) == "flame":
+	if is_flame:
 		_ignite_flame_jet(c, ang)
 	var attack_type := String(c.get("attack_type", "projectile"))
 	if attack_type == "melee":
@@ -233,11 +245,63 @@ func try_fire(w: Dictionary) -> void:
 				offset = -arc / 2.0 + arc * float(i) / float(pellets - 1)
 			if spread > 0.0:
 				offset += GameRng.range_f(-spread, spread)
-			_spawn_bullet(c, ang + offset)
+			_spawn_bullet(wc, ang + offset)
 	var shake_amount := float(c.get("shake", 0.0))
 	if shake_amount > 0.0:
 		EventBus.screen_shake.emit(shake_amount)
 	Sfx.play(String(c.get("sfx", "shoot_pistol")))
+
+## 弹道提前量：求解「弹丸与目标同时到达的交点」，即 |aim + V·t − P| = bspeed·t。
+## 展开是一元二次方程 (V·V − b²)t² + 2(D·V)t + D·D = 0（D = aim − P），
+## 解析解一次到位 —— 迭代法在「慢弹丸 + 快目标」时会来回震荡不收敛。
+## 目标比弹丸快（判别式 < 0）时取最近接近时刻；速度为 0 时无需提前量。
+func _lead_target(wc: Dictionary, aim: Vector2) -> Vector2:
+	var bspeed := float(wc.get("bspeed", 0.0))
+	if bspeed <= 1.0:
+		return aim
+	var vel := _enemy_vel()
+	if vel == Vector2.ZERO:
+		return aim
+	var d: Vector2 = aim - global_position
+	var qa := vel.dot(vel) - bspeed * bspeed
+	var qb := 2.0 * d.dot(vel)
+	var qc := d.dot(d)
+	var t := 0.0
+	if absf(qa) < 0.001:
+		# |V| ≈ bspeed：二次项消失，退化为一次方程
+		t = -qc / qb if absf(qb) > 0.001 else 0.0
+	else:
+		var disc: float = qb * qb - 4.0 * qa * qc
+		if disc < 0.0:
+			t = -qb / (2.0 * qa)   # 追不上：取最近接近时刻
+		else:
+			var sq := sqrt(disc)
+			var t1 := (-qb - sq) / (2.0 * qa)
+			var t2 := (-qb + sq) / (2.0 * qa)
+			# 取最小的非负根（未来的首次相遇）
+			if t1 >= 0.0 and (t2 < 0.0 or t1 <= t2):
+				t = t1
+			else:
+				t = maxf(0.0, t2)
+	return aim + vel * t
+
+## 索敌目标的当前速度估算。敌人（enemy.gd）不做物理积分 —— 位置在 _physics_process
+## 里直接累加 mv * delta，因此没有 velocity 字段可读。这里用「朝玩家的方向 × 当前
+## 有效速度」近似：追击型 / BOSS / shooter 的主分量都是朝玩家移动，正是导致空枪的
+## 横向与纵向分量来源，精度足够。
+## 状态减速（冰缓 / 冰冻）已计入 spd，这里保持一致，避免对减速敌人过度预判。
+func _enemy_vel() -> Vector2:
+	var e = _aim_target
+	if e == null or not is_instance_valid(e):
+		return Vector2.ZERO
+	var to_p: Vector2 = global_position - e.global_position
+	var d := to_p.length()
+	if d < 0.001:
+		return Vector2.ZERO
+	var spd := float(e.speed)
+	if not e.statuses.is_empty():
+		spd *= e._status_speed_mult()
+	return (to_p / d) * spd
 
 ## 点燃枪口喷射锥。长度按「实际射程」推算（含角色特性与道具的射程加成）——
 ## 于是「铳匠长管 / 加长枪管」这类道具会让火焰肉眼可见地喷得更远

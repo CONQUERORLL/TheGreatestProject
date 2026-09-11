@@ -48,7 +48,8 @@ func reset_storage_root_after_tests() -> void:
 func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_START) -> bool:
 	if GameState.daily:
 		return true
-	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless else Config.WAVES_TOTAL
+	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless \
+		else RunRules.wave_total(Config.WAVES_TOTAL)
 	if next_wave < 1 or next_wave > wave_max:
 		push_warning("SaveRun: 非法波次 %d，拒绝保存" % next_wave)
 		return false
@@ -78,6 +79,9 @@ func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_STA
 			"loadout_item": GameState.loadout_item,
 			"endless": GameState.endless,
 			"score": GameState.score,
+			# 自定义开局规则：连参数一起存（只存 id 不够 —— 读档时必须先重建
+			# "custom" 难度条目，否则 Registry 会回落到 normal）
+			"run_rules": RunRules.to_save(),
 		},
 		"player": {
 			"hp": player.hp,
@@ -109,6 +113,10 @@ func restore(player: Node) -> int:
 	var character_id := String(run.get("character_id", "potato"))
 	if not Registry.characters.has(character_id):
 		character_id = "potato"
+	# 自定义规则必须先恢复并重新注入难度条目 ——
+	# 存档里 difficulty_id = "custom" 时，Registry 此刻还没有这个条目（它不落盘），
+	# 不先重建就会被下面的校验判为非法而回落 normal，玩家的自定义局被静默改档
+	RunRules.apply_from_save(run.get("run_rules", {}))
 	var difficulty_id := String(run.get("difficulty_id", "normal"))
 	if not Registry.difficulties.has(difficulty_id):
 		difficulty_id = "normal"
@@ -197,6 +205,25 @@ func clear() -> void:
 
 # ---------------- 内部 ----------------
 
+## 存档里这一局的波次总数：自定义规则局取 run_rules.values.waves（已 clamp 到规则区间），
+## 其余情况回落 Config.WAVES_TOTAL。刻意不查 RunRules 当前状态 ——
+## 校验发生在 apply_from_save 之前，那时的 RunRules 还停留在上一局的参数
+func _saved_wave_total(run: Dictionary) -> int:
+	var raw: Variant = run.get("run_rules", {})
+	if typeof(raw) != TYPE_DICTIONARY:
+		return Config.WAVES_TOTAL
+	var rules: Dictionary = raw
+	if not bool(rules.get("active", false)):
+		return Config.WAVES_TOTAL
+	var vals: Variant = rules.get("values", {})
+	if typeof(vals) != TYPE_DICTIONARY:
+		return Config.WAVES_TOTAL
+	var def := RunRules.rule_def("waves")
+	var lo := int(def.get("min", 5))
+	var hi := int(def.get("max", 30))
+	var w := int(round(float((vals as Dictionary).get("waves", Config.WAVES_TOTAL))))
+	return clampi(w, lo, hi)
+
 func _read(slot: int) -> Dictionary:
 	var path := slot_path(slot)
 	if path == "":
@@ -231,7 +258,10 @@ func _read_path(path: String) -> Dictionary:
 	var pl: Dictionary = data.player
 	if run.has("endless") and typeof(run.endless) != TYPE_BOOL:
 		return {}
-	var wave_max := Config.ENDLESS_MAX_WAVE if bool(run.get("endless", false)) else Config.WAVES_TOTAL
+	# 波次上限：无尽 9999；自定义规则局读存档里的波次总数（不读当前 RunRules.state ——
+	# 此刻还没 apply_from_save，读到的是上一局的残留值）；普通局回落 10
+	var wave_max := Config.ENDLESS_MAX_WAVE if bool(run.get("endless", false)) \
+		else _saved_wave_total(run)
 	if not _integer_in_range(run.get("wave"), 1, wave_max) \
 			or not _integer_in_range(run.get("materials"), 0, 2_000_000_000) \
 			or not _integer_in_range(run.get("kills"), 0, 2_000_000_000) \
@@ -244,6 +274,10 @@ func _read_path(path: String) -> Dictionary:
 	for key in ["difficulty_id", "character_id", "loadout_weapon", "loadout_item"]:
 		if run.has(key) and typeof(run[key]) != TYPE_STRING:
 			return {}
+	# 自定义规则字段：旧存档没有这个键（用 .get 默认值放行）；
+	# 出现时必须是字典，否则整档拒绝 —— 半截数据会让读档后难度静默错位
+	if run.has("run_rules") and typeof(run.run_rules) != TYPE_DICTIONARY:
+		return {}
 	if not _is_finite_number(pl.get("hp")) or float(pl.hp) <= 0.0 \
 			or typeof(pl.get("stats")) != TYPE_DICTIONARY \
 			or typeof(pl.get("weapons")) != TYPE_ARRAY \

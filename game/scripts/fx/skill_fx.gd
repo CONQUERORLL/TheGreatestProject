@@ -3,7 +3,11 @@ extends Node2D
 ## ~0.5s 一次性表现，配合 Burst 粒子 / screen_shake / 专属音效组成技能的「释放感」。
 ## 纯视觉，不拦截输入。由 player.gd 通过 preload 引用（不用 class_name，避免 headless 直跑时全局类名缓存不生效）。
 
-const MAX_LIVE := 14
+## 存活上限：真值在 Config.FX_SKILL_MAX_LIVE（与其他性能护栏同一处）。
+## 刻意用函数而非 const —— Config 是 autoload，不能出现在 const 初始化器里
+## （那时 autoload 尚未就绪）。运行时读取，开销可忽略（仅在准入判定时调一次）。
+static func max_live() -> int:
+	return Config.FX_SKILL_MAX_LIVE
 
 var radius := 220.0
 var color := Color.WHITE
@@ -11,16 +15,27 @@ var intensity := 1.0      # 1.0 满强度（伤害/状态类）；越低越柔�
 var life := 0.5
 var max_life := 0.5
 var _seed := 0.0          # 随机相位，让每个冲击波粒子的旋转起点不同
+var _counted := false     # 本实例是否已计入 _live（保证 +1/-1 严格配对）
 
 static var _live := 0
 
 func _ready() -> void:
 	add_to_group("fx")
 	_live += 1
+	_counted = true
 	_seed = randf() * TAU
 
+## 计数兜底：节点若被外部提前销毁（queue_free / 场景切换 / ObjectPool.clear），
+## _process 的到期分支不会执行，_live 会永久偏高。上限仅十几，
+## 泄漏十余次就会让技能冲击波彻底不再生成（表现是「技能没释放感」且无任何报错）。
+## 用 _exit_tree 统一回正，无论从哪条路径离开场景树都能配平。
+func _exit_tree() -> void:
+	if _counted:
+		_counted = false
+		_live -= 1
+
 static func spawn(parent: Node, pos: Vector2, col: Color, rad: float, power: float = 1.0) -> void:
-	if _live >= MAX_LIVE:
+	if _live >= max_live():
 		return   # 特效护栏：海量同帧释放时丢弃多余冲击波，保帧率
 	var script := load("res://scripts/fx/skill_fx.gd") as GDScript
 	var s = script.new()
@@ -34,7 +49,7 @@ static func spawn(parent: Node, pos: Vector2, col: Color, rad: float, power: flo
 func _process(delta: float) -> void:
 	life -= delta
 	if life <= 0.0:
-		_live -= 1
+		# 正常到期：交给 queue_free → _exit_tree 统一回正计数（此处不再手动 -1，避免双减）
 		queue_free()
 		return
 	queue_redraw()

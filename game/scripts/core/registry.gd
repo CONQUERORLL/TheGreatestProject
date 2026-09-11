@@ -1030,8 +1030,8 @@ func _register_builtin() -> void:
 	for id in Config.WEAPONS:
 		var w: Dictionary = Config.WEAPONS[id].duplicate()
 		w["id"] = id
-		w["price"] = int(Config.WEAPON_PRICES[id])
-		w["shop_weight"] = float(Config.WEAPON_SHOP_WEIGHTS[id])
+		# price / shop_weight 已内联在 Config.WEAPONS 里，由 register_weapon 的 _apply_defaults
+		# 兜底（缺省 price 30 / shop_weight 1.0）。这里不再从并行字典注入 —— 加武器只需改一处。
 		w["fx"] = String(WEAPON_FX.get(id, ""))   # 外观族（缺省由弹丸/挥砍按攻击类型兜底）
 		register_weapon(w)
 	items = {}

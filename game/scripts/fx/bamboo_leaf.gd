@@ -18,7 +18,7 @@ static func spawn(parent: Node, world: Vector2) -> Node2D:
 
 func _ready() -> void:
 	# 刻意不进 "fx" 组：那一组是「打击感特效」的预算与统计口径
-	# （Burst.MAX_LIVE 护栏、冒烟测试的 fx 计数），常驻氛围粒子混进去会污染两者
+	# （Burst.max_live() 护栏、冒烟测试的 fx 计数），常驻氛围粒子混进去会污染两者
 	add_to_group("ambient_fx")
 	for _i in COUNT:
 		_leaf.append(_make(Vector2(randf() * area.x, randf() * area.y)))

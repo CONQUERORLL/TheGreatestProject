@@ -179,8 +179,10 @@ func apply_on_run_start(player: Node) -> void:
 	player.queue_redraw()
 
 ## 军火专家：武器槽上限（动态计算，非开局应用）
+## 自定义开局规则可覆盖基础槽位数（RunRules.weapon_slots_total 内部处理 active 判断），
+## 天赋加成仍然叠加 —— 全项目 11 处调用点因此自动感知规则，无需各自改动
 func weapon_slots() -> int:
-	return Config.WEAPON_SLOTS + int(effect_sum("slot"))
+	return RunRules.weapon_slots_total()
 
 # ---------------- 持久化 ----------------
 

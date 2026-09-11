@@ -769,6 +769,7 @@ func _check_items() -> void:
 	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
 	await _check_character_traits()
 	await _check_weapon_fx()
+	await _check_ballistic_lead()
 	_check_affinity()
 	_check_sigils()
 	_check_affinity_floor()
@@ -1612,6 +1613,40 @@ func _check_items() -> void:
 	if avatar_cnt < 7:
 		_fail("角色卡专属头像缺失（%d/7）" % avatar_cnt)
 		return
+	# 向导各步排版：网格必须横向铺满面板（最小分辨率下不留大块空白），
+	# 且卡片尺寸落在合理区间 —— 防「固定列数导致内容少时四周留白」回归
+	for st in range(menu.TOTAL_STEPS):
+		menu._step = st
+		menu._build_step()
+		await get_tree().process_frame
+		var cards: int = menu._options.get_child_count()
+		if cards <= 0:
+			_fail("向导第 %d 步无任何选项卡" % (st + 1))
+			return
+		var card_w: float = menu._options.get_child(0).custom_minimum_size.x
+		var cols: int = menu._options.columns
+		var rows: int = int(ceil(float(cards) / float(cols)))
+		var used_w: float = float(cols) * card_w + float(cols - 1) * 10.0
+		# 允许少许余量（面板内边距 / 滚动条），但填不满 85% 就是明显的横向留白
+		if used_w < menu.WIZARD_W * 0.85:
+			_fail("向导第 %d 步横向留白过大（%d 列 ×%.0f = %.0f / %.0f，共 %d 张）" % [
+				st + 1, cols, card_w, used_w, menu.WIZARD_W, cards])
+			return
+		if card_w < menu.CARD_W_MIN - 0.5 or card_w > menu.CARD_W_MAX + 0.5:
+			_fail("向导第 %d 步卡片宽度越界（%.1f）" % [st + 1, card_w])
+			return
+		var card_h: float = menu._options.get_child(0).custom_minimum_size.y
+		if card_h < menu.CARD_H_MIN - 0.5 or card_h > menu.CARD_H_MAX + 0.5:
+			_fail("向导第 %d 步卡片高度越界（%.1f）" % [st + 1, card_h])
+			return
+		# 每步都应挑到「空槽最少」的列数：末行残缺不得超过一整行
+		if cols * rows - cards >= cols:
+			_fail("向导第 %d 步列数选择不佳（%d 列 %d 行装 %d 张，空 %d 槽）" % [
+				st + 1, cols, rows, cards, cols * rows - cards])
+			return
+	menu._step = 0
+	menu._build_step()
+	await get_tree().process_frame
 	var accept := InputEventAction.new()
 	accept.action = "ui_accept"
 	accept.pressed = true
@@ -1621,12 +1656,276 @@ func _check_items() -> void:
 		return
 	menu.queue_free()
 	print("SMOKE: save isolation + contracts + menu wizard OK")
+	_check_run_rules()
+	# 无论断言是否失败都要还原规则状态：_check_run_rules 会打开自定义规则并把
+	# 波次总数改成 18，留着会污染后续 BOSS 波 / 无尽用例（曾因此出现假失败）
+	_restore_run_rules()
+	if _failed:
+		return
 	await _check_endless()
 	if _failed:
 		return   # 协程内已 _fail（quit(1) 已排队），不再覆盖退出码
 	_cleanup_test_storage(true)
 	print("SMOKE: PASS")
 	get_tree().quit(0)
+
+## 规则用例的现场（active/values 备份），由 _check_run_rules 写入、_restore 读取
+var _rules_ctx: Dictionary = {}
+
+## 还原 RunRules 到用例前的状态，并清掉测试注入的合成难度条目
+func _restore_run_rules() -> void:
+	if _rules_ctx.is_empty():
+		return
+	Registry.difficulties.erase(RunRules.CUSTOM_DIFF_ID)
+	RunRules.active = bool(_rules_ctx.get("active", false))
+	RunRules.values = (_rules_ctx.get("values", {}) as Dictionary).duplicate(true)
+	_rules_ctx = {}
+
+## 自定义开局规则：挑战码往返 / clamp 边界 / 合成难度条目 / 存档往返 / 消费点生效
+func _check_run_rules() -> void:
+	# 现场备份交给调用方（_restore_run_rules）还原 —— 本函数中途 _fail 会 return，
+	# 把还原放在函数末尾会漏执行，从而污染后续用例
+	_rules_ctx = { "active": RunRules.active, "values": RunRules.values.duplicate(true) }
+	# 1) 挑战码往返：改一批参数 → encode → decode 必须回到同一组值
+	RunRules.active = true
+	RunRules.base_difficulty_id = "hard"
+	RunRules.reset_to_defaults()
+	RunRules.set_value("enemy_hp", 1.7)
+	RunRules.set_value("enemy_dmg", 2.2)
+	RunRules.set_value("waves", 16)
+	RunRules.set_value("weapon_slots", 8)
+	RunRules.set_value("no_reroll", 1)
+	var code := RunRules.encode()
+	if not code.begins_with("BTL2-"):
+		_fail("挑战码前缀错误：" + code)
+		return
+	RunRules.reset_to_defaults()
+	RunRules.active = false
+	RunRules.base_difficulty_id = "normal"
+	if not RunRules.decode(code):
+		_fail("挑战码解码失败：" + code)
+		return
+	# 基准难度必须随码往返 —— 否则分享出去会从「困难 + 规则」变成「普通 + 规则」
+	if RunRules.base_difficulty_id != "hard":
+		_fail("挑战码未携带基准难度（期望 hard，实际 %s）" % RunRules.base_difficulty_id)
+		return
+	for key in ["enemy_hp", "enemy_dmg", "waves", "weapon_slots", "no_reroll"]:
+		var want: float = RunRules.clamp_value(key, RunRules.get_value(key))
+		if not is_equal_approx(RunRules.get_value(key), want):
+			_fail("挑战码往返后参数漂移：" + key)
+			return
+	if not is_equal_approx(RunRules.get_value("enemy_hp"), 1.7) \
+			or not is_equal_approx(RunRules.get_value("enemy_dmg"), 2.2) \
+			or RunRules.get_int("waves") != 16 \
+			or RunRules.get_int("weapon_slots") != 8 \
+			or not RunRules.get_bool("no_reroll"):
+		_fail("挑战码往返数值不一致（hp=%.2f dmg=%.2f waves=%d slots=%d）" % [
+			RunRules.get_value("enemy_hp"), RunRules.get_value("enemy_dmg"),
+			RunRules.get_int("waves"), RunRules.get_int("weapon_slots")])
+		return
+	# 2) 非法码永不崩溃、且不改动现有参数
+	var hp_before := RunRules.get_value("enemy_hp")
+	for bad in ["", "BTL1", "BTL2", "BTL1-1|2", "XXXX-1|2|3|4|5|6|7|8|9|10|11",
+			"BTL2-a|b|c", "BTL1-a|b|c"]:
+		if RunRules.decode(String(bad)):
+			_fail("非法挑战码被误判为有效：" + String(bad))
+			return
+	if not is_equal_approx(RunRules.get_value("enemy_hp"), hp_before):
+		_fail("非法挑战码解码后污染了现有参数")
+		return
+	# 2b) v1 旧码仍可解析（基准按 normal），保证已分享出去的码不作废
+	RunRules.base_difficulty_id = "nightmare"
+	if not RunRules.decode("BTL1-0|0|1|0|10|0|6|0|0|0|0"):
+		_fail("v1 旧挑战码不再可解析（向后兼容被破坏）")
+		return
+	if RunRules.base_difficulty_id != "normal":
+		_fail("v1 旧码的基准难度应为 normal（实际 %s）" % RunRules.base_difficulty_id)
+		return
+	# 3) clamp 边界：越界值被夹进区间，且按 step 对齐
+	RunRules.set_value("enemy_hp", 99.0)
+	if not is_equal_approx(RunRules.get_value("enemy_hp"), 3.0):
+		_fail("enemy_hp 未 clamp 到上限 3.0（实际 %.3f）" % RunRules.get_value("enemy_hp"))
+		return
+	RunRules.set_value("enemy_hp", -5.0)
+	if not is_equal_approx(RunRules.get_value("enemy_hp"), 0.5):
+		_fail("enemy_hp 未 clamp 到下限 0.5")
+		return
+	RunRules.set_value("waves", 1.0)
+	if RunRules.get_int("waves") != 5:
+		_fail("waves 未 clamp 到下限 5")
+		return
+	# 4) 合成难度条目：字段完整 + 与规则值一致 + 无浮点尾差
+	# 基准固定为 normal（四维全 1.0 / 精英 0），此时"规则倍率"与"最终值"相等，
+	# 可以直接校验纯倍率；基准继承的正确性在 4b 单独验
+	RunRules.base_difficulty_id = "normal"
+	RunRules.set_value("enemy_hp", 1.8)
+	RunRules.set_value("enemy_dmg", 1.3)
+	RunRules.set_value("spawn_density", 1.6)
+	RunRules.set_value("elite_chance", 0.25)
+	var injected := RunRules.inject_difficulty()
+	for field in ["id", "name", "hp_mult", "dmg_mult", "spawn_mult", "elite_chance"]:
+		if not injected.has(field):
+			_fail("合成难度条目缺字段：" + field)
+			return
+	if String(injected.id) != RunRules.CUSTOM_DIFF_ID \
+			or not is_equal_approx(float(injected.hp_mult), 1.8) \
+			or not is_equal_approx(float(injected.dmg_mult), 1.3) \
+			or not is_equal_approx(float(injected.spawn_mult), 1.6) \
+			or not is_equal_approx(float(injected.elite_chance), 0.25):
+		_fail("合成难度条目数值与规则不一致（基准 normal 时应等于规则值）")
+		return
+	# 4b) **方案 A 核心：基准难度继承 + 倍率叠乘**
+	# 噩梦 hp 2.2 / dmg 1.6 / spawn 1.5 / elite 0.20；规则倍率 1.8 / 1.3 / 1.6 / +0.25
+	# 期望：血 2.2*1.8=3.96 · 伤 1.6*1.3=2.08 · 密度 1.5*1.6=2.4 · 精英 0.20+0.25=0.45
+	RunRules.base_difficulty_id = "nightmare"
+	var nm := RunRules.inject_difficulty()
+	var nm_base := Registry.get_difficulty("nightmare")
+	if not is_equal_approx(float(nm.hp_mult),
+			float(nm_base.hp_mult) * RunRules.get_value("enemy_hp")) \
+			or not is_equal_approx(float(nm.dmg_mult),
+				float(nm_base.dmg_mult) * RunRules.get_value("enemy_dmg")) \
+			or not is_equal_approx(float(nm.spawn_mult),
+				float(nm_base.spawn_mult) * RunRules.get_value("spawn_density")) \
+			or not is_equal_approx(float(nm.elite_chance),
+				clampf(float(nm_base.elite_chance) + RunRules.get_value("elite_chance"), 0.0, 1.0)):
+		_fail("方案 A 基准继承失败（噩梦 hp=%.3f 应=%.3f · dmg=%.3f 应=%.3f）" % [
+			float(nm.hp_mult), float(nm_base.hp_mult) * RunRules.get_value("enemy_hp"),
+			float(nm.dmg_mult), float(nm_base.dmg_mult) * RunRules.get_value("enemy_dmg")])
+		return
+	# 噩梦基准 + 规则全默认 → 必须等于噩梦本身（而不是普通）。这正是修掉的旧缺陷：
+	# 旧实现无论选什么难度都从 1.0 起算，选噩梦却只调了个波次就会被静默降级成普通
+	var backup_waves := RunRules.get_value("waves")
+	RunRules.reset_to_defaults()
+	RunRules.set_value("waves", 12)   # 只动节奏，不碰难度组
+	RunRules.base_difficulty_id = "nightmare"
+	var pure := RunRules.inject_difficulty()
+	if not is_equal_approx(float(pure.hp_mult), float(nm_base.hp_mult)) \
+			or not is_equal_approx(float(pure.dmg_mult), float(nm_base.dmg_mult)) \
+			or not is_equal_approx(float(pure.spawn_mult), float(nm_base.spawn_mult)) \
+			or not is_equal_approx(float(pure.elite_chance), float(nm_base.elite_chance)):
+		_fail("规则只改节奏时未沿用基准难度（噩梦被降级：hp=%.2f 应=%.2f）" % [
+			float(pure.hp_mult), float(nm_base.hp_mult)])
+		return
+	# 非内置基准 id → 安全回落 normal
+	RunRules.base_difficulty_id = "not_a_real_difficulty"
+	if String(RunRules.base_difficulty().get("id", "")) != "normal":
+		_fail("非法基准难度未回落 normal")
+		return
+	RunRules.base_difficulty_id = "normal"
+	RunRules.set_value("waves", backup_waves)
+	RunRules.set_value("enemy_hp", 1.8)
+	RunRules.set_value("enemy_dmg", 1.3)
+	RunRules.set_value("spawn_density", 1.6)
+	RunRules.set_value("elite_chance", 0.25)
+	# 5) Registry 通道生效：enemy/wave_manager 读到的就是这套值
+	# 显式重新注入 —— 上面 4b 最后一次注入用的是噩梦基准，不重注入会读到那次的条目
+	RunRules.inject_difficulty()
+	var via_registry := Registry.get_difficulty(RunRules.CUSTOM_DIFF_ID)
+	if via_registry.is_empty() or not is_equal_approx(float(via_registry.hp_mult), 1.8) \
+			or not is_equal_approx(float(via_registry.dmg_mult), 1.3) \
+			or not is_equal_approx(float(via_registry.spawn_mult), 1.6) \
+			or not is_equal_approx(float(via_registry.elite_chance), 0.25):
+		_fail("Registry 未能读到自定义难度条目（难度系统未接通；hp=%.3f 应=1.8）" % float(via_registry.get("hp_mult", -1.0)))
+		return
+	# 6) apply_to_run：启用 → 返回 "custom" 且记录基准；关闭 → 原样返回内置 id
+	RunRules.active = true   # 步骤 1 的往返测试把 active 关掉了，这里显式恢复
+	if RunRules.apply_to_run("hard") != RunRules.CUSTOM_DIFF_ID:
+		_fail("启用规则时 apply_to_run 未返回 custom")
+		return
+	if RunRules.base_difficulty_id != "hard":
+		_fail("apply_to_run 未记录基准难度（实际 %s）" % RunRules.base_difficulty_id)
+		return
+	RunRules.active = false
+	if RunRules.apply_to_run("hard") != "hard":
+		_fail("未启用规则时 apply_to_run 篡改了难度 id")
+		return
+	# 未启用时也要记录基准：玩家可能在向导里选了噩梦但没开规则，
+	# 若 base 停留旧值，之后开规则会继承到错误难度
+	if RunRules.base_difficulty_id != "hard":
+		_fail("未启用规则时基准难度未同步（实际 %s）" % RunRules.base_difficulty_id)
+		return
+	RunRules.active = true
+	# 7) 消费点：波次总数 / 时长倍率 / 武器槽 / 材料 / 商店价 / 禁用项
+	# no_reroll 显式归零：步骤 1 的挑战码里带着它，不重置会让下面的 reroll_disabled 断言误判
+	RunRules.set_value("waves", 18)
+	RunRules.set_value("wave_time", 1.5)
+	RunRules.set_value("weapon_slots", 7)
+	RunRules.set_value("materials", 2.0)
+	RunRules.set_value("shop_price", 1.5)
+	RunRules.set_value("no_heal", 1)
+	RunRules.set_value("no_reroll", 0)
+	if RunRules.wave_total(Config.WAVES_TOTAL) != 18 \
+			or not is_equal_approx(RunRules.wave_duration_mult(), 1.5) \
+			or RunRules.weapon_slots_total() != 7 + int(MetaProgress.effect_sum("slot")) \
+			or not is_equal_approx(RunRules.materials_bonus(), 1.0) \
+			or not is_equal_approx(RunRules.shop_price_mult(), 1.5) \
+			or not RunRules.heal_disabled() or RunRules.reroll_disabled():
+		_fail("规则消费点返回值不符合预期（waves=%d 时长=%.2f 槽=%d 材料=%.2f 价=%.2f 禁回血=%s 禁刷新=%s）" % [
+			RunRules.wave_total(Config.WAVES_TOTAL), RunRules.wave_duration_mult(),
+			RunRules.weapon_slots_total(), RunRules.materials_bonus(),
+			RunRules.shop_price_mult(), str(RunRules.heal_disabled()),
+			str(RunRules.reroll_disabled())])
+		return
+	# 8) BOSS 波跟随波次总数：18 波局的 BOSS 波 = 18，而非 10
+	if not Config.is_boss_wave(18) or Config.is_boss_wave(10):
+		_fail("自定义波次总数下 BOSS 波判定未跟随（18 波局应在第 18 波出 BOSS）")
+		return
+	# 9) 竞技性闸门：启用规则即失去排行资格
+	if RunRules.is_competitive():
+		_fail("启用自定义规则后仍被判定为可参与竞技")
+		return
+	RunRules.active = false
+	if not RunRules.is_competitive():
+		_fail("未启用规则时被误判为不可竞技")
+		return
+	# 10) 存档往返：to_save → apply_from_save 重建参数 + 基准难度，并重新注入难度条目
+	RunRules.active = true
+	RunRules.base_difficulty_id = "nightmare"
+	RunRules.set_value("enemy_hp", 2.4)
+	RunRules.set_value("waves", 22)
+	var packed := RunRules.to_save()
+	if String(packed.get("base", "")) != "nightmare":
+		_fail("to_save 未把基准难度写进存档（base=%s）" % str(packed.get("base", "<缺失>")))
+		return
+	RunRules.active = false
+	RunRules.reset_to_defaults()
+	RunRules.base_difficulty_id = "normal"
+	Registry.difficulties.erase(RunRules.CUSTOM_DIFF_ID)   # 模拟"新进程里条目不存在"
+	RunRules.apply_from_save(packed)
+	if not RunRules.active or not is_equal_approx(RunRules.get_value("enemy_hp"), 2.4) \
+			or RunRules.get_int("waves") != 22:
+		_fail("读档未能恢复自定义规则参数")
+		return
+	if RunRules.base_difficulty_id != "nightmare":
+		_fail("读档未恢复基准难度（应 nightmare，实为 %s）" % RunRules.base_difficulty_id)
+		return
+	if not Registry.difficulties.has(RunRules.CUSTOM_DIFF_ID):
+		_fail("读档后未重新注入 custom 难度条目（会回落 normal）")
+		return
+	# 方案 A：重新注入的条目必须仍以恢复后的基准打底 —— 噩梦血量 2.2 × 规则 2.4
+	var restored_hp := float(Registry.get_difficulty(RunRules.CUSTOM_DIFF_ID).hp_mult)
+	if not is_equal_approx(restored_hp, 2.2 * 2.4):
+		_fail("读档后合成条目未按恢复的基准叠乘（期望 %.2f，实为 %.2f）" % [2.2 * 2.4, restored_hp])
+		return
+	# 10b) 旧存档无 base 字段 → 基准回落 normal（旧档没有"继承基准"语义）
+	RunRules.apply_from_save({ "active": true, "values": { "enemy_hp": 2.0 } })
+	if RunRules.base_difficulty_id != "normal" or not is_equal_approx(RunRules.get_value("enemy_hp"), 2.0):
+		_fail("旧存档（无 base 字段）未回落 normal 基准（base=%s）" % RunRules.base_difficulty_id)
+		return
+	if not is_equal_approx(float(Registry.get_difficulty(RunRules.CUSTOM_DIFF_ID).hp_mult), 2.0):
+		_fail("旧存档回落 normal 后未按 normal 基准叠乘（期望 2.0）")
+		return
+	# 11) 损坏存档：非字典输入回落默认、不崩溃
+	RunRules.apply_from_save("garbage")
+	if RunRules.active or not RunRules.is_default():
+		_fail("损坏的规则存档未被安全回落")
+		return
+	# 12) 手改越界值：apply_from_save 逐键 clamp
+	RunRules.apply_from_save({ "active": true, "values": { "enemy_hp": 999.0, "waves": -3 } })
+	if not is_equal_approx(RunRules.get_value("enemy_hp"), 3.0) or RunRules.get_int("waves") != 5:
+		_fail("手改越界的规则存档未被 clamp")
+		return
+	print("SMOKE: run rules OK")
 
 ## HUD 状态图例：无来源隐藏 / 同状态武器取最大命中率 / 道具独立概率合并 / 强化加成行
 func _check_status_legend() -> void:
@@ -2883,10 +3182,14 @@ func _check_phase3_content() -> void:
 		_fail("存在拼写错误/未接线的效果键：%s" % ", ".join(bad))
 		return
 	print("SMOKE: effect keys OK (%d valid keys)" % valid.size())
-	# ---- 自洽 3：武器必须有价格与商店权重，否则 Registry 注册时即崩 ----
+	# ---- 自洽 3：武器价格与商店权重已内联进 WEAPONS（单表真值），注册后必须可读 ----
 	for wid2 in Config.WEAPONS:
-		if not Config.WEAPON_PRICES.has(wid2) or not Config.WEAPON_SHOP_WEIGHTS.has(wid2):
-			_fail("武器 %s 缺少价格或商店权重" % String(wid2))
+		var wdata: Dictionary = Registry.weapons.get(String(wid2), {})
+		if not wdata.has("price") or not wdata.has("shop_weight"):
+			_fail("武器 %s 注册后缺少 price 或 shop_weight" % String(wid2))
+			return
+		if float(wdata.get("shop_weight", -1.0)) < 0.0:
+			_fail("武器 %s 的 shop_weight 为负" % String(wid2))
 			return
 	# ---- 自洽 4：每日挑战角色池必须覆盖全部已注册角色（防新增角色漏加，漏了完全静默）----
 	if Config.DAILY_CHARACTERS.size() != Registry.characters.size():
@@ -3114,6 +3417,43 @@ func _check_event_cards() -> void:
 	p_ev.hp = minf(hp_saved, float(p_ev.stats.max_hp))
 	print("SMOKE: event cards OK")
 
+## 线段-圆求交等价性：Combat.segment_circle_entry_t 与 Obstacles._segment_circle_entry_t
+## 是刻意重复的两份实现（为规避 class_name 循环依赖），必须永远返回相同结果。
+## 用随机用例覆盖三类情形：命中（t∈[0,1]）、起点已在圆内（t=0）、完全不相交（INF）。
+## 只要有人只改了其中一份，这里立刻红。
+func _check_segment_math_equivalence() -> void:
+	var hits := 0
+	var misses := 0
+	var inside := 0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20260911   # 固定种子：失败可复现
+	for i in 400:
+		var from := Vector2(rng.randf_range(-400.0, 400.0), rng.randf_range(-400.0, 400.0))
+		var to := Vector2(rng.randf_range(-400.0, 400.0), rng.randf_range(-400.0, 400.0))
+		var center := Vector2(rng.randf_range(-300.0, 300.0), rng.randf_range(-300.0, 300.0))
+		var radius := rng.randf_range(1.0, 80.0)
+		var a: float = Combat.segment_circle_entry_t(from, to, center, radius)
+		var b: float = Obstacles._segment_circle_entry_t(from, to, center, radius)
+		# 两者要么同为 INF，要么数值一致（用 is_equal_approx 容忍浮点误差）
+		var both_inf: bool = not is_finite(a) and not is_finite(b)
+		var both_fin: bool = is_finite(a) and is_finite(b) and is_equal_approx(a, b)
+		if not both_inf and not both_fin:
+			_fail("线段求交两份实现不一致：from=%s to=%s center=%s r=%.3f → Combat=%s / Obstacles=%s"
+				% [str(from), str(to), str(center), radius, str(a), str(b)])
+			return
+		if both_inf:
+			misses += 1
+		else:
+			hits += 1
+			if is_zero_approx(a):
+				inside += 1
+	# 抽样必须真的覆盖到「命中」与「未命中」两类，否则等价性断言形同虚设
+	if hits < 20 or misses < 20:
+		_fail("线段求交等价性抽样未覆盖足够情形（命中 %d / 未命中 %d）" % [hits, misses])
+		return
+	print("SMOKE: segment math equivalent OK (命中 %d / 内含 %d / 未命中 %d / 共 400)"
+		% [hits, inside, misses])
+
 ## 地图主题化（Phase 5）：主题数据 / 波次映射 / 障碍物生成分布 / 推出与遮挡判定 /
 ## 索敌视线 / BOSS 波削减 / 氛围粒子。最后把现场还原成当前波次的主题。
 func _check_map_themes() -> void:
@@ -3203,6 +3543,20 @@ func _check_map_themes() -> void:
 	if Obstacles.count() != 1:
 		_fail("受控障碍物重建失败（%d）" % Obstacles.count())
 		return
+	# ---- 非法条目必须被拒且如实上报数量（否则「要 50 块只来 30 块」会被静默吞掉）----
+	var rejected := Obstacles.rebuild([
+		{ "pos": c0, "kind": "stele", "r": cr },          # 合法
+		{ "pos": Vector2.ZERO, "kind": "stele", "r": 0.0 },   # r<=0 → 拒
+		{ "pos": Vector2(INF, 0.0), "kind": "stele", "r": cr },  # 非有限坐标 → 拒
+		"not a dictionary",                                 # 类型错 → 拒
+	])
+	if rejected != 3:
+		_fail("Obstacles.rebuild 未如实上报被拒条目数（rejected=%d，期望 3）" % rejected)
+		return
+	if Obstacles.count() != 1:
+		_fail("Obstacles.rebuild 保留了本应被拒的条目（count=%d，期望 1）" % Obstacles.count())
+		return
+	Obstacles.rebuild([{ "pos": c0, "kind": "stele", "r": cr }])   # 还原受控场景
 	var pushed := Obstacles.resolve_circle(c0, 16.0)
 	if pushed.distance_to(c0) < cr + 16.0 - 0.01:
 		_fail("与障碍物圆心重合的实体未被推出（%.1f）" % pushed.distance_to(c0))
@@ -3256,6 +3610,13 @@ func _check_map_themes() -> void:
 		_fail("索敌未避开被障碍物遮挡的目标")
 		return
 	print("SMOKE: obstacle line-of-sight targeting OK")
+	# ---- 线段求交等价性：Combat 与 Obstacles 的两份解析解必须永远一致 ----
+	# 背景：Obstacles.has_los ← Combat.nearest_enemy_visible，反向调用会形成 class_name
+	# 循环依赖，因此两份实现只能各自保留（见两处函数的「等价性契约」注释）。
+	# 风险不是重复本身，而是「改了一份忘了另一份」且无人发现。这里用随机用例把契约钉死。
+	_check_segment_math_equivalence()
+	if _failed:
+		return
 	# ---- 弹丸遮挡回归：没有障碍物时弹丸绝不能凭空消失 ----
 	# 踩过的坑：first_block_t 用 INF 表示「没被挡住」，而 INF > 0.0 为真、
 	# INF <= enemy_t（同样为 INF）也为真，于是漏判把「没挡住」当成「挡住」，
@@ -3580,6 +3941,63 @@ func _check_weapon_fx() -> void:
 	sl.queue_free()
 	await get_tree().process_frame
 	print("SMOKE: weapon fx wiring OK")
+
+## 弹道预判（B4）：远程武器必须瞄「交会点」而非敌人当前位置。
+## 用一个真实敌人放在玩家正右侧 300px，敌人速度朝玩家 —— 解析解可手工算出：
+##   交会时刻 t = dist / (bspeed + espeed)，命中点 x = ex − espeed·t
+## 无目标 / 零速度时必须原样返回（不预判）。
+func _check_ballistic_lead() -> void:
+	var player: Node2D = _main.get_node("Player")
+	var old_pos: Vector2 = player.global_position
+	var old_aim = player._aim_target
+	var e := preload("res://scenes/enemies/enemy.tscn").instantiate()
+	e.setup("grunt", 1)
+	_main.add_child(e)
+	e.player = player
+	# 布局：玩家 (600,400)，敌人 (900,400)，敌人朝玩家移动
+	# （不 await 物理帧 —— 敌人一旦跑 _physics_process 就会移动，交会点不再是解析解）
+	player.global_position = Vector2(600.0, 400.0)
+	e.global_position = Vector2(900.0, 400.0)
+	player._aim_target = e
+	var espeed: float = float(e.speed)
+	# ---- 1. 有目标：命中点必须朝玩家方向偏移，且与解析解一致 ----
+	var lead: Vector2 = player._lead_target({ "bspeed": 100.0 }, Vector2(900.0, 400.0))
+	var expect_t := 300.0 / (100.0 + espeed)
+	var expect := Vector2(900.0 - espeed * expect_t, 400.0)
+	if lead.distance_to(expect) > 1.0:
+		_fail("弹道预判交会点不准（%s，期望 %s，敌速 %s）" % [str(lead), str(expect), str(espeed)])
+		player._aim_target = old_aim
+		player.global_position = old_pos
+		e.queue_free()
+		return
+	if lead.x >= 900.0:
+		_fail("弹道预判未朝目标运动方向偏移")
+		player._aim_target = old_aim
+		player.global_position = old_pos
+		e.queue_free()
+		return
+	# ---- 2. 慢弹丸 + 快目标（追不上的极端情形）：不崩、给有限点 ----
+	var lead2: Vector2 = player._lead_target({ "bspeed": 2.0 }, Vector2(900.0, 400.0))
+	if not is_finite(lead2.x) or not is_finite(lead2.y):
+		_fail("弹道预判在追不上时返回了非有限值（%s）" % str(lead2))
+		player._aim_target = old_aim
+		player.global_position = old_pos
+		e.queue_free()
+		return
+	# ---- 3. 无目标：原样返回，不预判 ----
+	player._aim_target = null
+	var lead3: Vector2 = player._lead_target({ "bspeed": 100.0 }, Vector2(900.0, 400.0))
+	if lead3 != Vector2(900.0, 400.0):
+		_fail("无目标时预判修改了瞄准点（%s）" % str(lead3))
+		player._aim_target = old_aim
+		player.global_position = old_pos
+		e.queue_free()
+		return
+	player._aim_target = old_aim
+	player.global_position = old_pos
+	e.queue_free()
+	await get_tree().physics_frame
+	print("SMOKE: ballistic lead OK (espeed=%s, hit x=%.1f)" % [str(espeed), lead.x])
 
 ## 构筑亲和（Config.affinity_tags / entry_tags / affinity_mult）：
 ## 「商店 / 升级 / 法宝抽取向当前角色与武器靠拢」的核心。
