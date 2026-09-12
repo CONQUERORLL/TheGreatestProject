@@ -147,6 +147,11 @@ func apply_all() -> void:
 func apply_display() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
+	# Android/iOS 只有全屏；切换窗口模式/resize 在移动端会崩溃或无效，
+	# 直接强制全屏，不调 window_set_mode(WINDOWED) / window_set_size
+	if OS.has_feature("mobile"):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+		return
 	match mode:
 		MODE_FULLSCREEN:
 			DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, false)
