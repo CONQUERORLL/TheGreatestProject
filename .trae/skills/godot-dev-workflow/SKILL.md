@@ -148,9 +148,11 @@ bash game/tools/push.sh [分支]
 | `Start-Process` **被静默拦掉** | 表现为 exit 0，但日志时间戳不变、也没有进程（最容易被骗） |
 | **新建目录会被回滚** | `mkdir -p` 当场返回 0，下一次调用就消失 |
 | `refs/remotes/**` 写入不持久 | 见 §3 |
+| **GUI 窗口无法长期存活** | 沙箱无持久桌面/显示服务；Godot 引擎能初始化（OpenGL 上下文 + mod 注册都成功）、任务列表里前 20~30 秒能看到进程（~265MB），之后退出 —— 拉起 GUI 给用户看不可行，只能跑 headless 自检 |
+| **环境变量 `$env:APPDATA` 为空** | Godot 的 user://（存档/解锁/成就）找不到落盘点会降级失败；启动前必须 `$env:APPDATA = 'C:\Users\<user>\AppData\Roaming'` |
 | `find` / `grep` 等可用 | Bash 工具本身正常工作 |
 
-推论：**能做 GUI 启动的只剩「Bash 直调 exe + `run_in_background`」这一条路**（见 §2）。
+推论：**能做 GUI 启动的只剩「Bash 直调 exe + `run_in_background`」这一条路**（见 §2）。但窗口会在 ~30 秒后被沙箱回收，所以 agent 内的 GUI 启动只能用来**验引擎能起来**（看 stdout 有没有 SCRIPT ERROR + `tasklist` 早期能不能看到进程），实际游玩必须用户在终端跑 `game/tools/run_game.ps1`。
 
 ## 5. GDScript 语言陷阱（本项目踩过）
 
@@ -208,6 +210,13 @@ bash game/tools/push.sh [分支]
   **Config 声明的内容数必须 ≤ Registry 实注册数**，任何越界都应让测试失败。
 - 注册表关键上限备查：`bspeed ≤ 1200` / `dmg ≤ 500` / `cd 0.05~5` / `price ≤ 300` /
   `shop_weight ≤ 5` / `shake ≤ 10` / 近战 `range ≤ 400` / `swing_arc ≤ TAU` / `splash ≤ 400`。
+- **调试后门绝不要用裸数字/字母键**：调试功能（换武器、刷怪、跳关等）绑定裸数字键
+  会和玩家正常按键习惯冲突，误触即造成不可逆数据破坏（`_debug_set_weapon` 用
+  `player.weapons = [{type,cd}]` 整体覆盖，武器+强化一次性丢失）。调试键必须加修饰键
+  （`event.ctrl_pressed`）或改用 F 区键，且用 `OS.is_debug_build()` 守卫。
+- **选卡/弹窗 UI 的键盘选择必须 `get_viewport().set_input_as_handled()`**：
+  `_unhandled_input` 自底向上派发，子节点（升级卡/事件卡）处理完按键后若不标记已处理，
+  事件继续冒泡到根节点 main 的其它处理器，造成「选完卡又触发别的动作」（本项目踩过两次）。
 
 ## 7. 工具使用禁忌
 

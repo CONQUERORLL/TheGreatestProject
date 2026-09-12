@@ -16,6 +16,7 @@ Godot/
 # 冒烟测试输出（tools/run_smoke.ps1 生成，不入版）
 smoke_out.txt
 smoke_err.txt
+smoke_run.txt
 
 # 游戏运行日志（tools/run_game.ps1 生成，不入版）
 run_game.log

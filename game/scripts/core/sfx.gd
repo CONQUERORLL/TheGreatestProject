@@ -34,6 +34,7 @@ func _ready() -> void:
 	_streams["wave_start"] = _gen_arpeggio([392.0, 523.0], 0.10, 0.25)
 	_streams["game_over"] = _gen_sweep(300.0, 50.0, 0.60, 0.50)
 	_streams["victory"] = _gen_arpeggio([523.0, 659.0, 784.0, 1047.0], 0.12, 0.30)
+	_streams["skill_cast"] = _gen_sweep(200.0, 1500.0, 0.20, 0.42)
 	# 异常状态触发音（每种状态独立音色；由 EventBus.status_applied 驱动）
 	_streams["status_burn"] = _gen_noise(0.16, 0.30, 1400.0)
 	_streams["status_poison"] = _gen_sweep(240.0, 520.0, 0.18, 0.22)

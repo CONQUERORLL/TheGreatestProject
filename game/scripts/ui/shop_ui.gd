@@ -375,12 +375,16 @@ func _ensure_affinity_goods() -> void:
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
 			continue
+		if not Config.entry_weapon_relevant(u, player.weapons):
+			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
 		if m > 1.0:
 			pool.append({ "item": u,
 				"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m })
 	for it in Registry.item_list():
 		if taken.has(String(it.get("id", ""))):
+			continue
+		if not Config.entry_weapon_relevant(it, player.weapons):
 			continue
 		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
 		if m2 > 1.0:
@@ -436,11 +440,14 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 		"sold": false, "locked": false }
 
 ## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
-## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）
+## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）；
+## 同时过滤掉「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 func _rarity_pool(entries: Array) -> Array:
 	var aff := _affinity()
 	var pool: Array = []
 	for e in entries:
+		if not Config.entry_weapon_relevant(e, player.weapons):
+			continue
 		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
 			* Config.affinity_mult(Config.entry_tags(e), aff)
 		pool.append({ "item": e, "w": w })
@@ -467,7 +474,7 @@ func _synergy(e: Dictionary) -> int:
 	return hit
 
 func _price_of(g: Dictionary) -> int:
-	return Config.shop_price(g.base_price, _wave)
+	return int(round(float(Config.shop_price(g.base_price, _wave)) * RunRules.shop_price_mult()))
 
 func _refresh() -> void:
 	# 记录当前焦点所在卡片，重建后优先原位恢复（避免焦点跳回第一张）
@@ -475,11 +482,20 @@ func _refresh() -> void:
 	_mat.text = "◆ %d" % GameState.materials
 	_refresh_left()
 	_refresh_right()
-	_reroll_btn.text = "刷新 (%d ◆)" % _reroll_cost
-	_reroll_btn.disabled = GameState.materials < _reroll_cost
-	_heal_btn.text = "回血 50%% (%d ◆)" % Config.SHOP_HEAL_PRICE
-	_heal_btn.disabled = GameState.materials < Config.SHOP_HEAL_PRICE \
-		or player.hp >= player.stats.max_hp
+	# 自定义规则：禁用刷新 / 禁用回血（按钮保留但灰掉，让玩家看得见"这是规则限制"）
+	if RunRules.reroll_disabled():
+		_reroll_btn.text = "刷新（规则禁用）"
+		_reroll_btn.disabled = true
+	else:
+		_reroll_btn.text = "刷新 (%d ◆)" % _reroll_cost
+		_reroll_btn.disabled = GameState.materials < _reroll_cost
+	if RunRules.heal_disabled():
+		_heal_btn.text = "回血（规则禁用）"
+		_heal_btn.disabled = true
+	else:
+		_heal_btn.text = "回血 50%% (%d ◆)" % Config.SHOP_HEAL_PRICE
+		_heal_btn.disabled = GameState.materials < Config.SHOP_HEAL_PRICE \
+			or player.hp >= player.stats.max_hp
 	_build_goods()
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
 	if visible:
@@ -579,15 +595,16 @@ func _make_good_card(i: int) -> Control:
 				owned += 1
 		if owned > 0:
 			name_l.text = "%s  x%d" % [g.name, owned]
-		# 进化提示：拥有同名武器时显示进度/预告
+		# 进化提示：拥有同名武器时显示进度/预告（多分支时显示下一个未持有的进化方向）
 		var wcfg: Dictionary = Registry.weapons.get(g.wtype, {})
 		var need := int(wcfg.get("evolve_need", 0))
 		if need > 0 and owned > 0:
-			var ex_name: String = Registry.weapons[wcfg.evolve_to].name
-			if owned >= need:
-				g.desc = "★ 波末自动进化 → %s" % ex_name
-			else:
-				g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
+			var ex_name: String = player.next_evolve_name(String(g.wtype))
+			if ex_name != "":
+				if owned >= need:
+					g.desc = "★ 波末自动进化 → %s" % ex_name
+				else:
+					g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
 	# 契合标记：让「这件东西跟你的角色 / 武器是一路的」一眼可见
 	if int(g.get("synergy", 0)) > 0:
@@ -666,6 +683,7 @@ func buy(i: int) -> void:
 	Sfx.play("buy")
 	if g.kind == "weapon":
 		player.weapons.append({ "type": g.wtype, "cd": 0.1 })
+		player.refresh_family_synergy()
 	elif g.kind == "upgrade":
 		player.apply_upgrade(g.id)
 	elif g.kind == "artifact":
@@ -679,6 +697,9 @@ func buy(i: int) -> void:
 
 ## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
 func reroll() -> void:
+	if RunRules.reroll_disabled():
+		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店刷新", 1.6)
+		return
 	if GameState.materials < _reroll_cost:
 		return
 	GameState.add_materials(-_reroll_cost)
@@ -698,6 +719,9 @@ func reroll() -> void:
 
 ## 回血：15 ◆ 回复 50% 最大生命（原型 btnHeal）
 func heal() -> void:
+	if RunRules.heal_disabled():
+		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店回血", 1.6)
+		return
 	if GameState.materials < Config.SHOP_HEAL_PRICE:
 		return
 	GameState.add_materials(-Config.SHOP_HEAL_PRICE)

@@ -57,6 +57,11 @@ var event_card_ui: Control = null
 var _pending_wave_after_event := 0   # 事件选择结束后要启动的波次（0 = 无待处理）
 var event_cards_played := 0          # 测试观测：本局实际弹出的奇遇次数
 
+## 武器进化方向选择弹窗（多分支进化时让玩家挑方向）
+var evolve_choose_ui: Control = null
+var _pending_evolve_choices: Array = []   # 待选择的进化选项队列（逐个弹出）
+var _pending_evolve_wave := 0             # 进化流程结束后要写入存档的波次（0 = 无）
+
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
 	for arg in OS.get_cmdline_user_args():
@@ -71,6 +76,12 @@ func _ready() -> void:
 	# 每日挑战不吃局外天赋（全服同局，天赋会造成个体差异）
 	if restored_wave == 0 and not GameState.daily:
 		MetaProgress.apply_on_run_start(player)
+		# 自定义开局规则：材料掉落倍率注入 harvesting（加成语义，与天赋/道具叠加）。
+		# 难度缩放在 Registry 里由 "custom" 条目承载，这里只补经济维度
+		var mat_bonus := RunRules.materials_bonus()
+		if mat_bonus != 0.0:
+			player.stats.harvesting = float(player.stats.harvesting) + mat_bonus
+			player._sanitize_stats()
 	EventBus.screen_shake.connect(_on_screen_shake)
 	EventBus.player_died.connect(_on_player_died)
 	EventBus.enemy_killed.connect(_on_enemy_killed)
@@ -98,6 +109,10 @@ func _ready() -> void:
 	$UI.add_child(event_card_ui)
 	event_card_ui.player = player
 	event_card_ui.chosen.connect(_on_event_choice)
+	# 武器进化方向选择弹窗（多分支进化时让玩家挑方向）
+	evolve_choose_ui = preload("res://scenes/ui/evolve_choose.tscn").instantiate()
+	$UI.add_child(evolve_choose_ui)
+	evolve_choose_ui.evolved.connect(_on_evolve_choice)
 	# 开发者面板（F1 呼出）
 	var dev := preload("res://scenes/ui/dev_panel.tscn").instantiate()
 	$UI.add_child(dev)
@@ -162,6 +177,13 @@ func _process(delta: float) -> void:
 			_next_toast()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 主动技能：F 键释放（战斗阶段）
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.physical_keycode == KEY_F \
+			and GameState.phase == GameState.Phase.PLAYING:
+		player.cast_skill()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("toggle_mute"):
@@ -200,10 +222,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_1: event_card_ui._choose(0); get_viewport().set_input_as_handled()
 				KEY_2: event_card_ui._choose(1); get_viewport().set_input_as_handled()
 				KEY_3: event_card_ui._choose(2); get_viewport().set_input_as_handled()
-	# ---- 调试构建专属：1-5 换武器 / 6 射手 / 7 BOSS（限定 PLAYING，避免与升级卡 1-3 冲突） ----
+	# ---- 调试构建专属：Ctrl+1~5 换武器 / Ctrl+6 射手 / Ctrl+7 BOSS ----
+	# 必须按住 Ctrl：裸按数字键 1-7 会误触换武器，把 player.weapons 整体替换、武器+强化一次性丢失
 	# OS.is_debug_build() 守卫：发布版玩家不该能凭空换武器 / 刷 BOSS / 快速重开
 	elif event is InputEventKey and event.pressed and not event.echo and OS.is_debug_build():
-		if GameState.phase == GameState.Phase.PLAYING:
+		if GameState.phase == GameState.Phase.PLAYING and event.ctrl_pressed:
 			match event.physical_keycode:
 				KEY_1: _debug_set_weapon("pistol")
 				KEY_2: _debug_set_weapon("smg")
@@ -519,10 +542,16 @@ func spawn_obstacles(theme_id: String, count: int) -> int:
 				continue
 			entries.append({ "pos": p, "kind": kind, "r": r })
 			break
-	Obstacles.rebuild(entries)
+	# 这里生成的条目必然合法（坐标来自 GameRng、半径来自 Obstacle.radius），
+	# 但仍显式接收被拒数：一旦未来有人往 entries 里塞外部数据，警告会立刻冒出来而不是静默少块
+	var rejected := Obstacles.rebuild(entries)
+	if rejected > 0:
+		push_warning("[main] spawn_obstacles 有 %d 条障碍物条目被拒（请求 %d 块）" % [rejected, count])
 	return Obstacles.count()
 
 ## 换主题氛围粒子：同屏只留一套，切主题时销毁旧的
+## 注意：未知 particle 键不静默失败 —— 与 Registry 对未知武器 fx 的处理口径一致（warn + 回落），
+## 否则 Config.MAP_THEMES 里写错粒子名会表现为「该主题毫无氛围且查不到原因」
 func _rebuild_theme_fx(particle_kind: String) -> void:
 	if _theme_fx != null and is_instance_valid(_theme_fx):
 		_theme_fx.queue_free()
@@ -535,6 +564,10 @@ func _rebuild_theme_fx(particle_kind: String) -> void:
 			_theme_fx = Incense.spawn(self, world)
 		"ghost_fire":
 			_theme_fx = GhostFire.spawn(self, world)
+		_:
+			push_warning("[main] 未知的氛围粒子键 %s，回落到竹叶；请检查 Config.MAP_THEMES 的 particle 字段"
+				% particle_kind)
+			_theme_fx = BambooLeaf.spawn(self, world)
 
 # ------------------------------------------------------------
 # 江湖奇遇事件卡（Phase 4）
@@ -636,10 +669,13 @@ func _execute_event_effect(effect: Dictionary) -> void:
 func _grant_random_item(rarity: String) -> void:
 	var pool: Array = []
 	for it in Registry.item_list():
-		if String(it.get("rarity", "common")) == rarity:
+		if String(it.get("rarity", "common")) == rarity \
+				and Config.entry_weapon_relevant(it, player.weapons):
 			pool.append({ "item": it, "w": 1.0 })
 	if pool.is_empty():
 		for it2 in Registry.item_list():
+			if not Config.entry_weapon_relevant(it2, player.weapons):
+				continue
 			pool.append({ "item": it2,
 				"w": Config.rarity_weight(String(it2.get("rarity", "common")), wave_manager.wave) })
 	if pool.is_empty():
@@ -665,6 +701,7 @@ func _grant_random_weapon() -> void:
 	if wid == "":
 		return
 	player.weapons.append({ "type": wid, "cd": 0.1 })
+	player.refresh_family_synergy()
 	var cfg: Dictionary = Registry.weapons.get(wid, {})
 	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
 		"获得 %s %s" % [String(cfg.get("ico", "")), String(cfg.get("name", wid))], Color("ffd24a"))
@@ -702,16 +739,50 @@ func _on_wave_ended(w: int) -> void:
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
 	shop_ui._refresh()   # 回收后刷新材料显示
-	# 武器进化：同名武器达标自动合成（回收后、存档前，进度包含进化结果）
+	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、存档前）
+	_start_evolve_flow(w)
+
+## 波末武器进化流程：先自动进化「单分支」武器，再逐个弹出「多分支」选择；
+## 全部处理完后统一存档（进度包含所有进化结果）
+func _start_evolve_flow(w: int) -> void:
 	var evolved: Array = player.evolve_weapons()
 	if not evolved.is_empty():
 		Haptics.rumble(0.5, 0.2, 0.3)
 		Sfx.play("victory")
-		EventBus.banner_requested.emit("⚔ 武器进化！",
-			" · ".join(evolved), 3.0)
+		EventBus.banner_requested.emit("⚔ 武器进化！", " · ".join(evolved), 3.0)
 		CodexData.add_stat("evolutions", evolved.size())
 		shop_ui._refresh()   # 武器栏已变化
-	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+	_pending_evolve_choices = player.pending_evolve_choices()
+	_pending_evolve_wave = w
+	if _pending_evolve_choices.is_empty():
+		_finish_evolve_flow()
+	else:
+		_show_next_evolve_choice()
+
+## 弹出下一个待选择的进化方向
+func _show_next_evolve_choice() -> void:
+	if _pending_evolve_choices.is_empty():
+		_finish_evolve_flow()
+		return
+	var choice: Dictionary = _pending_evolve_choices.pop_front()
+	evolve_choose_ui.setup(choice)
+
+## 玩家选定进化方向：执行指定进化 → 继续下一个待选
+func _on_evolve_choice(weapon: String, target: String) -> void:
+	var txt: String = player.evolve_weapon_to(weapon, target)
+	if txt != "":
+		Haptics.rumble(0.5, 0.2, 0.3)
+		Sfx.play("victory")
+		EventBus.banner_requested.emit("⚔ 武器进化！", txt, 3.0)
+		CodexData.add_stat("evolutions", 1)
+		shop_ui._refresh()
+	_show_next_evolve_choice()
+
+## 进化流程收尾：所有进化处理完，写入存档
+func _finish_evolve_flow() -> void:
+	var w := _pending_evolve_wave
+	_pending_evolve_wave = 0
+	if w > 0 and not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 
 func _on_player_died() -> void:
@@ -726,6 +797,9 @@ func _on_player_died() -> void:
 	if not GameState.daily:
 		earned = MetaProgress.grant_run_essence(GameState.score,
 			wave_manager.wave, GameState.endless)
+	# 自定义规则局不参与排行榜（is_competitive：参数可任意调低，上榜等于刷榜）。
+	# 精华照给 —— 自定义规则是正当玩法，只是不计名次
+	var ranked := RunRules.is_competitive()
 	# 每日挑战：死亡积分入今日榜（通关在 boss_killed 结算）
 	if GameState.daily:
 		var ch_d: Dictionary = Registry.get_character(GameState.character_id)
@@ -736,7 +810,7 @@ func _on_player_died() -> void:
 		if rank_d > 0:
 			EventBus.banner_requested.emit("今日榜更新",
 				"积分 %d · 今日第 %d 名" % [GameState.score, rank_d], 3.0)
-	elif GameState.endless:
+	elif GameState.endless and ranked:
 		# 无尽：成绩写入排行榜并展示名次
 		var ch: Dictionary = Registry.get_character(GameState.character_id)
 		var rank := Leaderboard.record(GameState.score, wave_manager.wave,
@@ -748,6 +822,11 @@ func _on_player_died() -> void:
 		elif rank > 1:
 			EventBus.banner_requested.emit("挑战结束",
 				"积分 %d · 排行榜第 %d 名 · ✦%d 精华" % [GameState.score, rank, earned], 3.0)
+	elif GameState.endless:
+		# 自定义规则的无尽局：照常给精华，只标注不入榜
+		dead_label.text = "你倒下了 · 积分 %d · 获得 ✦%d 精华" % [GameState.score, earned]
+		EventBus.banner_requested.emit("自定义规则局",
+			"积分 %d · 不入排行榜 · ✦%d 精华" % [GameState.score, earned], 3.0)
 	else:
 		dead_label.text = "你倒下了 · 获得 ✦%d 精华" % earned
 	dead_label.visible = true
@@ -801,7 +880,8 @@ func _on_boss_killed() -> void:
 	_victory_menu.visible = true
 	_victory_continue.grab_focus()   # 继续无尽（默认焦点）
 
-## 通关后继续：保留第 10 波构筑与难度，从第 11 波进入无尽炼狱
+## 通关后继续：保留通关波的构筑与难度，从下一波进入无尽炼狱
+## （自定义规则局的"通关波"不一定是第 10 波，所以用 BOSS 波号 +1，而不是写死 11）
 func _continue_endless() -> void:
 	if GameState.phase != GameState.Phase.VICTORY:
 		return
@@ -810,10 +890,11 @@ func _continue_endless() -> void:
 	victory_label.visible = false
 	_victory_menu.visible = false
 	Haptics.rumble(0.3, 0.0, 0.1)
-	if not SaveRun.save(11, player, SaveRun.CHECKPOINT_WAVE_START):
+	var next_wave := maxi(2, wave_manager.wave + 1)
+	if not SaveRun.save(next_wave, player, SaveRun.CHECKPOINT_WAVE_START):
 		EventBus.banner_requested.emit("存档失败", "无尽进度未写入，仍可继续游玩", 2.0)
-	EventBus.banner_requested.emit("无尽炼狱开启", "从第 11 波继续，挑战没有尽头", 2.6)
-	wave_manager.start_wave(11)
+	EventBus.banner_requested.emit("无尽炼狱开启", "从第 %d 波继续，挑战没有尽头" % next_wave, 2.6)
+	wave_manager.start_wave(next_wave)
 
 ## 通关结算后结束本局（重开/回主菜单前清理存档；继续无尽则保留）
 func _finish_victory_run() -> void:

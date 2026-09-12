@@ -31,17 +31,24 @@ static func clear() -> void:
 	_max_r = 0.0
 
 ## 用一批 { pos, r?, kind } 重建本波障碍物（r 缺省取外观半径）
-static func rebuild(entries: Array) -> void:
+## 返回「被拒条目数」：非法条目（非字典 / r<=0 / 非有限坐标）会被静默跳过，
+## 若不把这个数量暴露出来，调用方会以为「要了 N 块就有 N 块」，
+## 而实际可能更少 —— smoke_test 依赖 count() 断言，那种偏差会变成假通过。
+static func rebuild(entries: Array) -> int:
 	clear()
+	var rejected := 0
 	for e in entries:
 		if typeof(e) != TYPE_DICTIONARY:
+			rejected += 1
 			continue
 		var kind := String(e.get("kind", "bamboo"))
 		var r := float(e.get("r", Obstacle.radius(kind)))
 		if r <= 0.0 or not is_finite(r):
+			rejected += 1
 			continue
 		var pos: Vector2 = e.get("pos", Vector2.ZERO)
 		if not is_finite(pos.x) or not is_finite(pos.y):
+			rejected += 1
 			continue
 		var idx := _list.size()
 		_list.append({ "pos": pos, "r": r, "kind": kind })
@@ -54,6 +61,10 @@ static func rebuild(entries: Array) -> void:
 				if not _grid.has(key):
 					_grid[key] = []
 				_grid[key].append(idx)
+	if rejected > 0:
+		push_warning("[Obstacles] rebuild 拒绝了 %d 条非法障碍物条目（共 %d 条）"
+			% [rejected, entries.size()])
+	return rejected
 
 static func count() -> int:
 	return _list.size()
@@ -150,8 +161,11 @@ static func has_los(from: Vector2, to: Vector2, radius: float = 4.0) -> bool:
 	return not is_finite(first_block_t(from, to, radius))
 
 ## 线段首次进入圆的参数 t（0..1）；不相交返回 INF。
-## 与 Combat.segment_circle_entry_t 同一套解析解，刻意在此本地实现而不是反向调用
-## Combat：Combat 需要调用本文件的 has_los，两边互相引用会形成 class_name 循环依赖。
+##
+## ⚠ 等价性契约：这是 Combat.segment_circle_entry_t 的刻意副本 ——
+## Combat 需要调用本文件的 has_los，两边互相引用会形成 class_name 循环依赖，
+## 因此只能各留一份实现。两者必须永远返回相同结果。
+## 改这里就改那边；smoke_test 的「线段求交等价性」断言会守住这条约束。
 static func _segment_circle_entry_t(from: Vector2, to: Vector2, center: Vector2, radius: float) -> float:
 	var delta := to - from
 	var rel := from - center

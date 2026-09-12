@@ -120,24 +120,34 @@ const TRAIT_WEAPON_KEYS := {
 }
 
 ## 角色特性行：动态特性显示当前数值，静态特性显示最关键的武器向加成 ——
-## 只写特性名玩家仍看不出「它到底加在哪」，写出来才叫「精准」
+## 只写特性名玩家仍看不出「它到底加在哪」，写出来才叫「精准」。
+## 末尾附加主动技能（F 键）的就绪/冷却状态
 func _trait_line() -> String:
 	var t: Dictionary = player.char_trait
-	if t.is_empty():
-		return ""
-	var extra := ""
-	match String(t.get("kind", "")):
-		"momentum":
-			extra = "（+%d%%）" % roundi(float(player.stats.momentum_dmg_bonus) * 100.0)
-		"aura":
-			extra = "（半径 %d）" % roundi(player.aura_radius())
-		"stats":
-			var eff: Dictionary = t.get("effects", {})
-			for k in TRAIT_WEAPON_KEYS:
-				if eff.has(k):
-					extra = "（%s +%d%%）" % [TRAIT_WEAPON_KEYS[k], roundi(float(eff[k]) * 100.0)]
-					break
-	return "\n%s %s%s" % [String(t.get("ico", "⚡")), String(t.get("name", "特性")), extra]
+	var out := ""
+	if not t.is_empty():
+		var extra := ""
+		match String(t.get("kind", "")):
+			"momentum":
+				extra = "（+%d%%）" % roundi(float(player.stats.momentum_dmg_bonus) * 100.0)
+			"aura":
+				extra = "（半径 %d）" % roundi(player.aura_radius())
+			"stats":
+				var eff: Dictionary = t.get("effects", {})
+				for k in TRAIT_WEAPON_KEYS:
+					if eff.has(k):
+						extra = "（%s +%d%%）" % [TRAIT_WEAPON_KEYS[k], roundi(float(eff[k]) * 100.0)]
+						break
+		out = "\n%s %s%s" % [String(t.get("ico", "⚡")), String(t.get("name", "特性")), extra]
+	# 主动技能：就绪 / 冷却状态（0.2s 节流刷新，冷却误差可接受）
+	if not player.skill.is_empty():
+		var sico := String(player.skill.get("ico", "✨"))
+		var sname := String(player.skill.get("name", "技能"))
+		if player.skill_cd > 0.0:
+			out += "\n%s %s [F] 冷却 %.0fs" % [sico, sname, player.skill_cd]
+		else:
+			out += "\n%s %s [F] 就绪" % [sico, sname]
+	return out
 
 func _rebuild_weapons(groups: Dictionary) -> void:
 	for c in _weapons_box.get_children():
