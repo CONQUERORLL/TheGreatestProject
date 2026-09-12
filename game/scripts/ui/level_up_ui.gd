@@ -39,18 +39,31 @@ func open() -> void:
 	var aff := Config.affinity_tags(GameState.character_id, wps, arts)
 	var weighted: Array = []
 	for u in Registry.upgrade_list():
+		if not Config.entry_weapon_relevant(u, wps):
+			continue   # 过滤「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) \
 			* Config.affinity_mult(Config.entry_tags(u), aff)
 		weighted.append({ "item": u, "w": w })
 	for _i in 3:
 		if weighted.is_empty():
 			break
-		var chosen: Dictionary = GameRng.weighted_pick(weighted)
+		var chosen := _pick_card(weighted)
+		if chosen.is_empty():
+			break
 		_choices.append(chosen)
 		for k in range(weighted.size()):
 			if weighted[k].item == chosen:
 				weighted.remove_at(k)
 				break
+	# 终极兜底：加权池被过滤空（mod 构筑极端情况）时均匀补满三张，三选一永远有货
+	if _choices.is_empty():
+		var candidates: Array = Registry.upgrade_list().duplicate()
+		while _choices.size() < 3 and not candidates.is_empty():
+			var idx := GameRng.range_i(0, candidates.size() - 1)
+			var e: Variant = candidates[idx]
+			candidates.remove_at(idx)
+			if typeof(e) == TYPE_DICTIONARY and not _choices.has(e):
+				_choices.append(e)
 	_ensure_affinity_choice(aff)
 	_title.text = "升级！Lv %d" % GameState.level
 	_build_cards()
@@ -60,6 +73,27 @@ func open() -> void:
 	var tw := create_tween()
 	tw.tween_property(self, "modulate:a", 1.0, 0.1)
 	_grab_first_card()   # 旧按钮已 free，直接抓焦第一张
+
+## 抽一张升级卡：优先按权重；若整池权重被品阶门槛清零（如契合升级全是 epic
+## 而等级 <3），退化为均匀抽 —— weighted_pick 在全零池上返回 null，曾导致
+## 空白卡（卡面只剩 [1]/[2]/[3]，按 1/2/3 盲选）。返回值保证非空 Dictionary 或 {}。
+func _pick_card(pool: Array) -> Dictionary:
+	if pool.is_empty():
+		return {}
+	var any_positive := false
+	for e in pool:
+		if float(e.get("w", 0.0)) > 0.0:
+			any_positive = true
+			break
+	var chosen: Variant = null
+	if any_positive:
+		chosen = GameRng.weighted_pick(pool)
+	else:
+		var e2: Variant = GameRng.pick(pool)
+		chosen = e2.get("item") if e2 is Dictionary else null
+	if typeof(chosen) != TYPE_DICTIONARY or chosen.is_empty():
+		return {}
+	return chosen
 
 ## 亲和保底：三张全都不契合构筑时，把最后一张换成契合项。
 ## 单靠加权只能让契合项「更常出现」，玩家仍可能连着几级看不到任何与构筑相关的东西 ——
@@ -75,8 +109,11 @@ func _ensure_affinity_choice(aff: Array) -> void:
 	for c2 in _choices:
 		taken[String(c2.get("id", ""))] = true
 	var pool: Array = []
+	var wps2: Array = player.weapons if player != null and is_instance_valid(player) else []
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
+			continue
+		if not Config.entry_weapon_relevant(u, wps2):
 			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), aff)
 		if m <= 1.0:
@@ -85,7 +122,9 @@ func _ensure_affinity_choice(aff: Array) -> void:
 			"w": Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) * m })
 	if pool.is_empty():
 		return
-	_choices[_choices.size() - 1] = GameRng.weighted_pick(pool)
+	var fallback := _pick_card(pool)
+	if not fallback.is_empty():
+		_choices[_choices.size() - 1] = fallback
 
 func _grab_first_card() -> void:
 	if not visible:
@@ -102,7 +141,7 @@ func _build_cards() -> void:
 		_cards.remove_child(c)
 		c.free()   # 立即删除：不用 queue_free，否则帧末 get_children 返回旧+新混合
 	for i in _choices.size():
-		var u: Dictionary = _choices[i]
+		var u: Dictionary = _choices[i] if typeof(_choices[i]) == TYPE_DICTIONARY else {}
 		var rarity := String(u.get("rarity", "common"))
 		var btn := Button.new()
 		btn.custom_minimum_size = Vector2(200.0, 220.0)
@@ -116,13 +155,13 @@ func _build_cards() -> void:
 		box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		btn.add_child(box)
 		var ico := Label.new()
-		ico.text = u.ico
+		ico.text = String(u.get("ico", "❓"))   # 防御：坏条目渲染成占位卡，不再是空白
 		ico.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		ico.add_theme_font_size_override("font_size", 36)
 		ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(ico)
 		var name_l := Label.new()
-		name_l.text = u.name
+		name_l.text = String(u.get("name", "强化"))
 		name_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_l.add_theme_font_size_override("font_size", 20)
 		name_l.add_theme_color_override("font_color", Config.rarity_color(rarity).lightened(0.1))
@@ -136,7 +175,7 @@ func _build_cards() -> void:
 		key_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		box.add_child(key_l)
 		var desc := Label.new()
-		desc.text = u.desc
+		desc.text = String(u.get("desc", ""))
 		desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		desc.custom_minimum_size = Vector2(180.0, 0.0)
@@ -164,8 +203,11 @@ func _apply_card_style(btn: Button, rarity: String = "common") -> void:
 func _choose(i: int) -> void:
 	if not visible or i < 0 or i >= _choices.size():
 		return
-	if player:
-		player.apply_upgrade(_choices[i].id)
+	var uid := ""
+	if typeof(_choices[i]) == TYPE_DICTIONARY:
+		uid = String(_choices[i].get("id", ""))
+	if player and uid != "":
+		player.apply_upgrade(uid)
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
 	GameState.level_queue = maxi(0, GameState.level_queue - 1)
 	_choices = []

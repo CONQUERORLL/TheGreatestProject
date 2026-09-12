@@ -1,5 +1,6 @@
 extends Control
-## 图鉴：状态 / 五行 / 武器 / 道具 / 升级 / 敌人 六类百科
+## 图鉴：九类百科 —— 状态 / 五行 / 武器 / 道具 / 法宝 / 升级 / 敌人 / 奇遇 / 成就
+## （分类真相以本文件 TABS 常量为准，注释仅作概览；新增分类时务必同步 TABS）
 ## 数据全部来自 Config + Registry（创意工坊内容自动出现）
 ## 支持名称搜索 + 全部/已解锁/未解锁筛选；未解锁条目灰态并显示解锁条件
 ## 打开：open()；Esc / 手柄 B：_close() 并发 closed 信号（由主菜单接回焦点）
@@ -859,12 +860,18 @@ func _detail_weapon(id: String) -> void:
 			"命中 %d%% · %d 层" % [roundi(float(w.get("status_chance", 1.0)) * 100.0),
 				int(w.get("status_stacks", 1))]))
 	var need := int(w.get("evolve_need", 0))
-	if need > 0 and Registry.weapons.has(String(w.get("evolve_to", ""))):
-		var evo: Dictionary = Registry.weapons[String(w.get("evolve_to"))]
+	var branches: Array = w.get("evolve_branches", [])
+	if branches.is_empty() and Registry.weapons.has(String(w.get("evolve_to", ""))):
+		branches = [String(w.get("evolve_to", ""))]
+	if need > 0 and not branches.is_empty():
 		_detail.add_child(_section("进化"))
-		_detail.add_child(_row(String(evo.get("ico", "🔧")), String(evo.get("name", "")),
-			Config.rarity_color(String(evo.get("rarity", "common"))), String(evo.get("desc", "")),
-			"持有 %d 把自动进化" % need))
+		for b in branches:
+			if not Registry.weapons.has(String(b)):
+				continue
+			var evo: Dictionary = Registry.weapons[String(b)]
+			_detail.add_child(_row(String(evo.get("ico", "🔧")), String(evo.get("name", "")),
+				Config.rarity_color(String(evo.get("rarity", "common"))), String(evo.get("desc", "")),
+				"持有 %d 把进化分支" % need))
 
 # ---------------- 道具 / 升级详情 ----------------
 

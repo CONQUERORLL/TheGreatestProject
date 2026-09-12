@@ -39,7 +39,8 @@ func _on_boss_killed() -> void:
 	EventBus.wave_ended.emit(wave)
 
 func start_wave(n: int) -> void:
-	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless else Config.WAVES_TOTAL
+	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless \
+		else RunRules.wave_total(Config.WAVES_TOTAL)
 	wave = clampi(n, 1, wave_max)
 	ending_started = false
 	boss_dead = false
@@ -47,7 +48,7 @@ func start_wave(n: int) -> void:
 	_meteor_t = 0.0
 	_hunt_elites_total = 0
 	spawn_t = 0.6
-	wave_timer = Config.wave_duration(wave)
+	wave_timer = Config.wave_duration(wave) * RunRules.wave_duration_mult()
 	_clear_projectiles()
 	# 地图主题（Phase 5）：由波次推导，波 1-3 竹林 / 4-6 古庙 / 7-10 幽冥，
 	# 无尽按主题表循环。障碍物与氛围粒子由 main 在 wave_started 里按此重建
@@ -74,7 +75,7 @@ func start_wave(n: int) -> void:
 		_roll_event_wave()
 	else:
 		EventBus.banner_requested.emit("第 %d 波%s%s" % [wave,
-				" / 共 %d 波" % Config.WAVES_TOTAL if not GameState.endless else " · 无尽炼狱",
+				" / 共 %d 波" % RunRules.wave_total(Config.WAVES_TOTAL) if not GameState.endless else " · 无尽炼狱",
 				theme_note],
 			"武器会自动攻击，专心走位", 2.2)
 	# 江湖奇遇的风险代价（如「挥手驱赶」「跃龙门」）：上一波约定「下一波多 N 个精英」，
@@ -229,7 +230,8 @@ func _settle_event_wave() -> void:
 			var pool: Array = []
 			for it in Registry.item_list():
 				var r := String(it.get("rarity", "common"))
-				if r in ["epic", "mythic", "legendary"]:
+				if r in ["epic", "mythic", "legendary"] \
+						and Config.entry_weapon_relevant(it, player.weapons):
 					pool.append({ "item": it, "w": Config.rarity_weight(r, wave) * 6.0 })
 			if not pool.is_empty():
 				var loot: Dictionary = GameRng.weighted_pick(pool)

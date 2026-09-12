@@ -35,6 +35,7 @@ SaveRun="*res://scripts/core/save_run.gd"
 Leaderboard="*res://scripts/core/leaderboard.gd"
 MetaProgress="*res://scripts/core/meta_progress.gd"
 Unlocks="*res://scripts/core/unlocks.gd"
+RunRules="*res://scripts/core/run_rules.gd"
 
 [display]
 

@@ -146,6 +146,11 @@ static func first_enemy_on_segment(from: Vector2, to: Vector2, projectile_radius
 	return hit.get("enemy") as Node2D
 
 ## 返回线段首次进入圆的参数 t（0..1）；不相交返回 INF。
+##
+## ⚠ 等价性契约：Obstacles._segment_circle_entry_t 是本函数的刻意副本
+##   （Obstacles.has_los ← 本文件的 nearest_enemy_visible，反向调用会形成
+##   class_name 循环依赖，故只能各留一份）。两者必须永远返回相同结果。
+##   改这里就改那边；smoke_test 的「线段求交等价性」断言会守住这条约束。
 static func segment_circle_entry_t(from: Vector2, to: Vector2, center: Vector2, radius: float) -> float:
 	var delta := to - from
 	var rel := from - center

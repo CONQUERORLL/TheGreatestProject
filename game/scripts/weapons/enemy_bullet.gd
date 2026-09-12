@@ -38,7 +38,7 @@ func _physics_process(delta: float) -> void:
 	var block_t := Obstacles.first_block_t(previous, next, radius)
 	if is_finite(block_t) and block_t > 0.0:
 		# 刻意不播撞击特效：敌弹数量最多，若每颗撞墙都迸发粒子，会吃掉
-		# Burst.MAX_LIVE 的全局预算，把「击杀/受击」这类关键打击感的粒子挤掉
+		# Config.FX_BURST_MAX_LIVE 的全局预算，把「击杀/受击」这类关键打击感的粒子挤掉
 		ObjectPool.release("enemy_bullet", self)
 		return
 	if player != null and is_instance_valid(player) and Combat.segment_hits_circle(

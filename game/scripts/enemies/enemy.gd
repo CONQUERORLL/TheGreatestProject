@@ -41,6 +41,16 @@ var _reaction_active: Dictionary = {}   # 本敌正在执行的反应 id（禁�
 var _status_sig := 0            # 状态签名（层数/集合变化才重绘）
 var _status_flash_t := 0.0      # 状态触发彩色扩散环剩余时间
 var _status_flash_color := Color.WHITE
+# ---- BOSS 技能运行时（cfg.skills 数据驱动；普通敌恒为空，零开销）----
+var _skill_cds: Array = []      # 与 cfg.skills 对齐的冷却计时
+var _cast_t := 0.0              # 施法闪光剩余秒（_draw 外发光环）
+var _charge_state := 0          # 0 无 / 1 蓄力预警 / 2 冲撞中
+var _charge_t := 0.0            # 当前阶段剩余秒
+var _charge_dir := Vector2.ZERO
+var _charge_skill: Dictionary = {}
+var _aimed_left := 0            # 狙射连发剩余发数
+var _aimed_t := 0.0             # 狙射连发间隔计时
+var _aimed_skill: Dictionary = {}
 
 ## 敌间分离查询余量：普通敌最大组合 30+30=60；大体型（BOSS 56+卫兵 30=86）用 90，
 ## 含 BOSS 的配对由 BOSS 自身的大余量查询覆盖，普通敌海保持小余量省开销
@@ -81,6 +91,14 @@ func setup(type_name: String, wave: int = 1) -> void:
 	shoot_cd = GameRng.range_f(1.0, 2.0)   # 原型 rand(1,2)：首发时机错开
 	ring_cd = float(cfg.get("ring_cd", 0.0))
 	status_resist = clampf(float(cfg.get("status_resist", 0.0)), 0.0, 0.95)
+	# BOSS 技能冷却初始化：首发 cd × 0.5 并逐个错开，避免进场瞬间技能齐发
+	_skill_cds = []
+	var sk_list: Array = cfg.get("skills", [])
+	for si in sk_list.size():
+		var first_cd := float(sk_list[si].get("cd", 4.0)) * 0.5
+		_skill_cds.append(first_cd + float(si) * 0.8)
+	_charge_state = 0
+	_aimed_left = 0
 	CodexData.unlock("enemy", type_name)   # 图鉴：遭遇即解锁
 
 ## 是否 BOSS（内置 boss / boss_* 前缀 / 自定义 is_boss=true / ai="boss"）
@@ -446,6 +464,9 @@ func _physics_process(delta: float) -> void:
 	if _status_flash_t > 0.0:
 		_status_flash_t = maxf(0.0, _status_flash_t - delta)
 		queue_redraw()
+	if _cast_t > 0.0:
+		_cast_t = maxf(0.0, _cast_t - delta)
+		queue_redraw()
 	# ---- 退场淡出，期间跳过一切行为 ----
 	if flee > 0.0:
 		flee -= delta
@@ -481,13 +502,36 @@ func _physics_process(delta: float) -> void:
 			shoot_cd = float(cfg.shoot_cd)
 			_fire_shooter(ux.angle())
 	elif is_boss():
-		mv = ux * spd
+		if _charge_state == 1:
+			# 蓄力预警：原地不动，到点后沿锁定方向爆发冲撞
+			_charge_t -= delta
+			queue_redraw()
+			if _charge_t <= 0.0:
+				_charge_state = 2
+				_charge_t = float(_charge_skill.get("duration", 0.45))
+				EventBus.screen_shake.emit(4.0)
+				Sfx.play("shoot_rocket")
+		elif _charge_state == 2:
+			# 冲撞：沿锁定方向高速直线推进（接触伤害由既有 touch 逻辑承担）
+			_charge_t -= delta
+			mv = _charge_dir * spd * float(_charge_skill.get("speed_mult", 6.0))
+			if _charge_t <= 0.0:
+				_charge_state = 0
+		else:
+			mv = ux * spd
+			_tick_boss_skills(delta)
+			_tick_aimed_burst(delta)
 		ring_cd -= delta
 		if not enraged and hp < max_hp * 0.5:
 			enraged = true
 			speed *= 1.35
+			# 狂暴亮相：全屏震动 + 头顶提示，玩家能读懂「阶段变了」
+			EventBus.screen_shake.emit(6.0)
+			FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -radius - 20.0),
+				"狂暴！", Color("ff5e3a"), 22)
+			Burst.spawn(get_parent(), global_position, color, 16, 200.0)
 		# 螺旋织网者：短间隔连续发弹，弹幕角随发射次数旋转形成螺旋
-		if bool(cfg.get("spiral_mode", false)):
+		if _charge_state == 0 and bool(cfg.get("spiral_mode", false)):
 			if ring_cd <= 0.0 and d < 820.0:
 				ring_cd = (1.1 if enraged else float(cfg.ring_cd))
 				_spiral_angle += 0.45
@@ -501,7 +545,8 @@ func _physics_process(delta: float) -> void:
 				_summon_cd = summon_cd * (0.7 if enraged else 1.0)
 				_summon_minions()
 		# 通用环形弹幕（织网者不用，由螺旋弹替代）
-		if ring_cd <= 0.0 and d < 760.0 and not bool(cfg.get("spiral_mode", false)):
+		if _charge_state == 0 and ring_cd <= 0.0 and d < 760.0 \
+				and not bool(cfg.get("spiral_mode", false)):
 			ring_cd = 1.6 if enraged else float(cfg.ring_cd)
 			_fire_ring()
 			EventBus.screen_shake.emit(3.0)
@@ -594,6 +639,96 @@ func _summon_minions() -> void:
 	EventBus.screen_shake.emit(2.0)
 	Sfx.play("shoot_rocket")
 
+## ---- BOSS 技能系统（cfg.skills 数据驱动）----
+## 四个技能形态，全部带可读预警：
+##   fan    扇形弹幕：施法闪光 + 头顶技能名，朝玩家扇形铺开
+##   aimed  锁定连狙：连续数发高速弹咬死玩家当前位置（走位逼停）
+##   nova   地面预警圈：复用流星雨的收缩预警圈，延迟落点 AOE
+##   charge 蓄力冲撞：预警线 → 高速直线冲撞（接触伤害）
+## 狂暴（半血）后冷却 ×0.65，技能明显更密 —— 阶段感来自行为变化而非单纯加血
+
+func _tick_boss_skills(delta: float) -> void:
+	var skills: Array = cfg.get("skills", [])
+	if skills.is_empty():
+		return
+	var cd_rate := 1.0 / 0.65 if enraged else 1.0   # 狂暴：技能冷却转得更快
+	for i in mini(skills.size(), _skill_cds.size()):
+		_skill_cds[i] = float(_skill_cds[i]) - delta * cd_rate
+		if float(_skill_cds[i]) <= 0.0:
+			var sk: Dictionary = skills[i]
+			_skill_cds[i] = float(sk.get("cd", 4.0))
+			_cast_boss_skill(sk)
+
+## 狙射连发队列：一次启动后按 interval 连续出弹，不占技能冷却
+func _tick_aimed_burst(delta: float) -> void:
+	if _aimed_left <= 0:
+		return
+	_aimed_t -= delta
+	if _aimed_t > 0.0:
+		return
+	_aimed_t = float(_aimed_skill.get("interval", 0.15))
+	_aimed_left -= 1
+	if player != null and is_instance_valid(player):
+		var a: float = (player.global_position - global_position).angle()
+		_fire_enemy_bullet(a, float(_aimed_skill.get("bspeed", 420.0)),
+			6.0, 4.0, touch_dmg * float(_aimed_skill.get("dmg_mult", 0.7)))
+
+func _cast_boss_skill(sk: Dictionary) -> void:
+	var stype := String(sk.get("type", ""))
+	_cast_t = 0.3
+	queue_redraw()
+	var label := String(sk.get("name", ""))
+	if label != "":
+		FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -radius - 14.0),
+			label, Color("ff8a5e"), 15)
+	match stype:
+		"fan":
+			_fire_fan(sk)
+		"aimed":
+			_aimed_skill = sk
+			_aimed_left = int(sk.get("count", 3))
+			_aimed_t = 0.0   # 立即出第一发
+		"nova":
+			_cast_nova(sk)
+		"charge":
+			_charge_skill = sk
+			_charge_state = 1
+			_charge_t = float(sk.get("warn", 0.5))
+			if player != null and is_instance_valid(player):
+				_charge_dir = (player.global_position - global_position).normalized()
+			queue_redraw()
+
+## 扇形弹幕：以玩家方向为中心轴，count 发按 arc 弧度铺开
+func _fire_fan(sk: Dictionary) -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	var to_p: float = (player.global_position - global_position).angle()
+	var n := maxi(1, int(sk.get("count", 5)))
+	var arc := float(sk.get("arc", 0.9))
+	var spd2 := float(sk.get("bspeed", cfg.get("bspeed", 260.0)))
+	for i in n:
+		var a: float = to_p
+		if n > 1:
+			a += -arc / 2.0 + arc * float(i) / float(n - 1)
+		_fire_enemy_bullet(a, spd2, 7.0, 4.5, touch_dmg * float(sk.get("dmg_mult", 0.65)))
+	Sfx.play("shoot_smg")
+
+## 地面预警圈 AOE：首圈锁定玩家脚下，后续圈在玩家周围散开（复用流星雨的收缩预警圈）
+func _cast_nova(sk: Dictionary) -> void:
+	if player == null or not is_instance_valid(player):
+		return
+	var count := maxi(1, int(sk.get("count", 1)))
+	var r := float(sk.get("radius", 110.0))
+	var warn := float(sk.get("warn", 0.8))
+	var dmg := touch_dmg * float(sk.get("dmg_mult", 0.9))
+	for i in count:
+		var pos: Vector2 = player.global_position
+		if i > 0:
+			pos += Vector2.from_angle(GameRng.next() * TAU) * GameRng.range_f(70.0, 170.0)
+		pos = pos.clamp(Vector2(40.0, 40.0),
+			Vector2(Config.WORLD.w, Config.WORLD.h) - Vector2(40.0, 40.0))
+		Meteor.spawn(get_parent(), pos, player, dmg, r, warn)
+
 func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg: float) -> void:
 	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
 	if get_tree().get_nodes_in_group("enemy_bullets").size() >= 150:
@@ -608,6 +743,14 @@ func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 	# 刑天斧：低血加成必须在 hp 扣减【之前】按当前血量比例判定，扣完再算就晚了
 	var final_dmg := dmg * ArtifactSystem.execute_damage_mult(player, self) \
 		* _damage_taken_mult()
+	if is_boss():
+		# 巨额抗性：单次伤害不得超过最大生命的一定比例（dmg_cap_pct，默认 0.5%）——
+		# 爆发构筑不能一发跳过阶段，BOSS 战必须有「打阶段」的过程；
+		# 顺带堵死土克水处决路径（take_damage(hp+1) 直接秒 BOSS 的漏洞）。
+		# 高频低伤武器不受影响（单发远低于上限），惩罚的是单发超爆发
+		final_dmg = minf(final_dmg, max_hp * float(cfg.get("dmg_cap_pct", 0.005)))
+		if enraged:
+			final_dmg *= 0.8   # 狂暴阶段再减伤：半血后明显更硬
 	hp -= final_dmg
 	bar_t = 0.9
 	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
@@ -782,6 +925,21 @@ func _draw() -> void:
 		var fk := _status_flash_t / 0.35
 		draw_arc(Vector2.ZERO, rr + (1.0 - fk) * 16.0, 0.0, TAU, 32,
 			Color(_status_flash_color.r, _status_flash_color.g, _status_flash_color.b, fk * 0.85), 2.5, true)
+	# BOSS 施法闪光：技能出手瞬间的外发光环（读技能的视觉锚点）
+	if _cast_t > 0.0:
+		var ck := _cast_t / 0.3
+		draw_arc(Vector2.ZERO, rr + 6.0 + (1.0 - ck) * 10.0, 0.0, TAU, 40,
+			Color(1.0, 0.55, 0.3, ck * 0.9), 4.0, true)
+	# BOSS 冲撞预警线：蓄力期间沿冲撞方向渐亮的粗线，给玩家明确的躲避窗口
+	if _charge_state == 1:
+		var warn_total := maxf(0.2, float(_charge_skill.get("warn", 0.5)))
+		var prog := clampf(1.0 - _charge_t / warn_total, 0.0, 1.0)
+		var blink := 0.35 + 0.45 * prog + 0.15 * sin(Time.get_ticks_msec() * 0.03)
+		var line_len := rr + 240.0
+		draw_line(Vector2.ZERO, _charge_dir * line_len,
+			Color(1.0, 0.4, 0.25, blink), 10.0, true)
+		draw_line(Vector2.ZERO, _charge_dir * line_len,
+			Color(1.0, 0.75, 0.5, blink * 0.6), 3.0, true)
 	# 血条（受击后短暂显示）
 	if bar_t > 0.0 and hp < max_hp:
 		var bw := maxf(26.0, radius * 2.0)
