@@ -12,6 +12,9 @@ var _vignette_a := 0.0
 var _weapons_key := ""
 var _stats_t := 0.0   # 左下属性行刷新节流（0.2s 一次，属性不逐帧变化）
 
+@onready var _top_left: PanelContainer = $TopLeft
+@onready var _top: VBoxContainer = $Top
+@onready var _bottom_left: PanelContainer = $BottomLeft
 @onready var _hp_bar: ProgressBar = $TopLeft/Box/HpRow/HpBar
 @onready var _hp_text: Label = $TopLeft/Box/HpRow/HpText
 @onready var _lv_text: Label = $TopLeft/Box/XpRow/LvText
@@ -32,7 +35,27 @@ var _status_key := ""   # 来源签名：武器/道具/加成变化才重建
 var _reaction_open := false   # 五行反应表折叠状态（默认收起，点标题展开）
 var _bonus_label: Label = null   # 强化加成行（图例末尾又追加了反应节，不再能用“最后一个子节点”定位）
 
+# ------------------------------------------------------------
+# 安全区适配
+# ------------------------------------------------------------
+# HUD 五个区块在 hud.tscn 里是「贴边 + 固定 offset」。桌面没有刘海，原值即可；
+# 移动端横屏的相机打孔/刘海在左右、手势条在底部，会把贴边内容压住（被裁掉看不见）。
+# 做法：_ready 时把 tscn 的原始 offset 采集为基准，之后把「贴着屏幕的那一侧」
+# 换成安全区边距，其余方向保持原尺寸与居中关系。桌面 safe_insets() 退化为最小边距
+# （小于 BASE_PAD），maxf 之后与原值一致 —— 桌面排布一个像素都不变。
+
+## 安全区之外还想留的呼吸距离（dp）
+const SAFE_EXTRA_DP := 3.0
+## 贴边基准（= hud.tscn 原始 offset 的下限，保证不比改动前更靠边）
+const BASE_PAD := 14.0
+## 异常状态图例宽度（原 offset_left -190 → 宽 176）
+const STATUS_W := 176.0
+
+## 节点 → [left, top, right, bottom]：_ready 时采集一次的原始几何
+var _geom := {}
+
 func _ready() -> void:
+	_capture_geometry()
 	_style_bar(_hp_bar, Color("ef6b5e"))
 	_style_bar(_xp_bar, Color("7ec850"))
 	EventBus.player_damaged.connect(_on_player_damaged)
@@ -43,6 +66,55 @@ func _ready() -> void:
 	_score_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_top_right.add_child(_score_text)
 	_build_status_legend()
+	# 旋转 / 分屏后安全区会变，必须重排（否则刘海会重新压住血条）
+	UiMetrics.metrics_changed.connect(_apply_safe_layout)
+	_apply_safe_layout()
+
+## 记录各区块贴边前的原始 offset，作为安全区适配的基准（tscn 仍是几何唯一真值来源）
+func _capture_geometry() -> void:
+	for n in [_top_left, _top, _top_right, _bottom_left, _weapons_box]:
+		_geom[n] = [n.offset_left, n.offset_top, n.offset_right, n.offset_bottom]
+
+## 把区块收进安全区。sides 写它贴着屏幕的哪几侧（"l"/"r"/"t"/"b" 的组合），
+## 未指定的一侧沿用原始 offset —— 只挪位置，不改尺寸，也不破坏原来的居中/铺满。
+func _place(node: Control, sides: String) -> void:
+	var base: Array = _geom.get(node, [])
+	if base.is_empty():
+		return
+	var ins := UiMetrics.safe_insets()
+	var extra := UiMetrics.dp(SAFE_EXTRA_DP)
+	var w := float(base[2]) - float(base[0])
+	var h := float(base[3]) - float(base[1])
+	if sides.contains("l"):
+		var l := maxf(maxf(BASE_PAD, float(ins.left) + extra), float(base[0]))
+		node.offset_left = l
+		node.offset_right = l + w
+	elif sides.contains("r"):
+		var r := -maxf(maxf(BASE_PAD, float(ins.right) + extra), -float(base[2]))
+		node.offset_right = r
+		node.offset_left = r - w
+	if sides.contains("t"):
+		var t := maxf(maxf(BASE_PAD, float(ins.top) + extra), float(base[1]))
+		node.offset_top = t
+		node.offset_bottom = t + h
+	elif sides.contains("b"):
+		var b := -maxf(maxf(BASE_PAD, float(ins.bottom) + extra), -float(base[3]))
+		node.offset_bottom = b
+		node.offset_top = b - h
+
+func _apply_safe_layout() -> void:
+	_place(_top_left, "lt")
+	_place(_top, "t")
+	_place(_top_right, "rt")
+	_place(_bottom_left, "lb")
+	_place(_weapons_box, "b")
+	# 异常状态图例贴在右侧中部，同样要避开右侧打孔/刘海
+	if _status_panel != null:
+		var extra := UiMetrics.dp(SAFE_EXTRA_DP)
+		var sr := -maxf(BASE_PAD, float(UiMetrics.safe_insets().right) + extra)
+		_status_panel.offset_right = sr
+		_status_panel.offset_left = sr - STATUS_W
+
 
 func get_wave_text() -> String:
 	return _wave_text.text

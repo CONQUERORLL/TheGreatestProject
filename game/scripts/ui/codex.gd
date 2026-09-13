@@ -79,6 +79,9 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	visible = false
 	_build()
+	# 返回键路由：图鉴在 Nav 栈里的位置比主菜单高，主菜单检测到图鉴可见会主动让位。
+	# 未打开时 _handle_back 返回 false，Nav 继续往下找，不影响别的界面。
+	Nav.bind(self, _handle_back)
 
 func open() -> void:
 	visible = true
@@ -116,13 +119,28 @@ func _close() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible or not event.is_action_pressed("ui_cancel"):
 		return
-	# 搜索框有内容时，第一次 Esc 先清空搜索，再按才关闭
+	# 移动端返回键由 Nav 路由，这里让位避免一次返回被算成两次
+	if Nav.owns_back():
+		return
+	_handle_back()
+	get_viewport().set_input_as_handled()
+
+## 返回：搜索框有内容时第一次先清空搜索，再按才关闭图鉴。
+## 与 _unhandled_input 共用，Android 返回键（走 Nav）同样落到这里。返回 true = 已消费。
+func _handle_back() -> bool:
+	if not visible:
+		return false
 	if _search_edit != null and _search_edit.has_focus() and _search_edit.text != "":
 		_search_edit.text = ""
 		_on_search_changed("")
 	else:
 		_close()
-	get_viewport().set_input_as_handled()
+	return true
+
+## 详情区文本列的宽度下限：桌面给 560，保证长句不折得太碎；
+## 小屏让位给实际可用宽度（否则 560 会把右侧详情栏顶出面板，横向溢出）
+func _detail_min_w() -> float:
+	return 0.0 if UiMetrics.prefers_full_page() else 560.0
 
 func _build() -> void:
 	var dim := ColorRect.new()
@@ -132,9 +150,18 @@ func _build() -> void:
 	add_child(dim)
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(center)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(1100.0, 660.0)
+	# 桌面：1100×660 居中面板（左分类 + 中列表 + 右详情三栏）
+	# 小屏：面板铺满安全区。旧版一律写死 1100×660 —— 手机横屏可用高度只有约 400 单位，
+	# 面板被裁掉近一半，右侧详情栏整块看不见，且没有滚动可救。
+	# 注意面板必须挂在非 Container 父节点下，锚点才不会被容器覆盖（见 UiMetrics.fill_safe_area）
+	if UiMetrics.prefers_full_page():
+		add_child(panel)
+		UiMetrics.fill_safe_area(panel)
+	else:
+		add_child(center)
+		center.add_child(panel)
+		panel.custom_minimum_size = Vector2(1100.0, 660.0)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color("181c24")
 	sb.border_color = Color("2c3340")
@@ -145,7 +172,6 @@ func _build() -> void:
 	sb.content_margin_top = 14.0
 	sb.content_margin_bottom = 14.0
 	panel.add_theme_stylebox_override("panel", sb)
-	center.add_child(panel)
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 8)
 	panel.add_child(root)
@@ -161,9 +187,25 @@ func _build() -> void:
 	tip.add_theme_color_override("font_color", Color("9aa3b2"))
 	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(tip)
-	# 顶部分类标签
-	var tab_row := HBoxContainer.new()
-	tab_row.add_theme_constant_override("separation", 8)
+	# 顶部分类标签。9 个 × 150 宽 + 间距 ≈ 1350，桌面面板内宽 1064 已接近上限；
+	# 小屏（手机横屏约 900 单位宽）必然溢出，而且原本没有任何滚动兜底 ——
+	# 后几个分类（敌人 / 奇遇 / 成就）会被直接切掉点不到。
+	# 现在小屏改成按可用宽度自适应的网格，自动折成多行。
+	var compact := UiMetrics.prefers_full_page()
+	var tab_w := UiMetrics.dp(92.0)
+	var tab_h := UiMetrics.touch_at_least(UiMetrics.dp(34.0))
+	var tab_row: Container
+	if compact:
+		var g := GridContainer.new()
+		g.columns = UiMetrics.grid_columns(
+			UiMetrics.available().x - UiMetrics.dp(36.0), tab_w, TABS.size(), UiMetrics.dp(6.0))
+		g.add_theme_constant_override("h_separation", int(UiMetrics.dp(6.0)))
+		g.add_theme_constant_override("v_separation", int(UiMetrics.dp(6.0)))
+		tab_row = g
+	else:
+		var hb0 := HBoxContainer.new()
+		hb0.add_theme_constant_override("separation", 8)
+		tab_row = hb0
 	root.add_child(tab_row)
 	for spec in TABS:
 		var tid := String(spec.id)
@@ -171,9 +213,14 @@ func _build() -> void:
 		tb.toggle_mode = true
 		tb.button_group = _tab_group
 		tb.text = "%s %s" % [String(spec.ico), String(spec.name)]
-		tb.custom_minimum_size = Vector2(150.0, 40.0)
+		if compact:
+			tb.custom_minimum_size = Vector2(tab_w, tab_h)
+			tb.add_theme_font_size_override("font_size", int(UiMetrics.dp(11.0)))
+			tb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			tb.custom_minimum_size = Vector2(150.0, 40.0)
+			tb.add_theme_font_size_override("font_size", 15)
 		tb.set_meta("tab", tid)
-		tb.add_theme_font_size_override("font_size", 15)
 		tb.pressed.connect(func() -> void: _select_tab(tid))
 		_wire_hover_sfx(tb)
 		tab_row.add_child(tb)
@@ -582,7 +629,7 @@ func _detail_stats() -> void:
 		var nt := CodexData.achievement_target(next_id)
 		_detail.add_child(_stat_row("%s %s" % [String(na.get("ico", "🏆")),
 			String(na.get("name", next_id))], "还差 %d" % maxi(0, nt - np)))
-		_detail.add_child(_bar(float(np), float(nt), Color("e8b84b"), 560.0, 14.0))
+		_detail.add_child(_bar(float(np), float(nt), Color("e8b84b"), _detail_min_w(), 14.0))
 
 ## 最接近达成的未完成成就（用于"下一目标"图表）
 func _next_achievement_id() -> String:
@@ -611,7 +658,7 @@ func _detail_locked(id: String) -> void:
 	_detail.add_child(_section("解锁条件"))
 	var hint: Label = _empty(String(LOCK_HINTS.get(_tab, "在游戏中首次接触即可解锁")))
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.custom_minimum_size = Vector2(560.0, 0.0)
+	hint.custom_minimum_size = Vector2(_detail_min_w(), 0.0)
 	_detail.add_child(hint)
 	if CodexData.unlock_reward(_tab) > 0:
 		_detail.add_child(_stat_row("解锁奖励",
@@ -1187,7 +1234,7 @@ func _header(ico: String, name: String, accent: Color, subtitle: String) -> HBox
 		var sub := Label.new()
 		sub.text = subtitle
 		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		sub.custom_minimum_size = Vector2(560.0, 0.0)
+		sub.custom_minimum_size = Vector2(_detail_min_w(), 0.0)
 		sub.add_theme_font_size_override("font_size", 12)
 		sub.add_theme_color_override("font_color", Color("9aa3b2"))
 		sub.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1221,12 +1268,13 @@ func _stat_row(name: String, value: String) -> HBoxContainer:
 	row.add_child(v)
 	return row
 
-func _bar(cur: float, maxv: float, color: Color, width := 560.0, height := 18.0) -> ProgressBar:
+## width < 0 表示「按详情列宽度自适应」（小屏不再被 560 撑出横向溢出）
+func _bar(cur: float, maxv: float, color: Color, width := -1.0, height := 18.0) -> ProgressBar:
 	var bar := ProgressBar.new()
 	bar.max_value = float(maxi(1, roundi(maxv)))
 	bar.value = clampf(cur, 0.0, bar.max_value)
 	bar.show_percentage = false
-	bar.custom_minimum_size = Vector2(width, height)
+	bar.custom_minimum_size = Vector2(_detail_min_w() if width < 0.0 else width, height)
 	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var fill := StyleBoxFlat.new()
 	fill.bg_color = color

@@ -32,7 +32,7 @@ const STAT_LIMITS := {
 	"max_hp": Vector2(1.0, 10000.0), "regen": Vector2(0.0, 1000.0),
 	"armor": Vector2(-7.9, 1000.0), "dodge": Vector2(0.0, 0.95),
 	"dmg_mult": Vector2(0.01, 100.0), "as_mult": Vector2(0.01, 100.0),
-	"crit_ch": Vector2(0.0, 1.0), "crit_mult": Vector2(1.0, 100.0),
+	"crit_ch": Vector2(0.0, Config.CRIT_CHANCE_CAP), "crit_mult": Vector2(1.0, 100.0),
 	"speed_mult": Vector2(0.01, 100.0), "base_speed": Vector2(1.0, 2000.0),
 	"pickup_range": Vector2(0.0, 5000.0), "harvesting": Vector2(-0.99, 10.0),
 	"lifesteal": Vector2(0.0, 10000.0),
@@ -48,7 +48,7 @@ const STAT_LIMITS := {
 }
 const EFFECT_LIMITS := {
 	"max_hp": 10000.0, "regen": 1000.0, "armor": 1000.0, "dodge": 0.95,
-	"dmg_mult": 10.0, "as_mult": 10.0, "crit_ch": 1.0, "crit_mult": 10.0,
+	"dmg_mult": 10.0, "as_mult": 10.0, "crit_ch": Config.CRIT_CHANCE_CAP, "crit_mult": 10.0,
 	"speed_mult": 10.0, "base_speed": 2000.0, "pickup_range": 5000.0,
 	"harvesting": 10.0, "lifesteal": 10000.0, "heal_flat": 10000.0, "heal_pct": 1.0,
 	"status_chance": 1.0, "status_dmg_mult": 10.0, "status_dur_mult": 10.0,

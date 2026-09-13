@@ -1,6 +1,7 @@
 extends Control
 ## 商店 UI（波末清场后由 main 打开；节点全部代码构建，见 godot-game-ui 技能）
-## 功能：4 格商品（武器/道具/升级属性，来自 Registry）+ 锁定 + 刷新 + 回血 + 下一波
+## 功能：6 格商品（武器/道具/升级属性，来自 Registry）+ 锁定 + 刷新 + 回血 + 下一波
+##        购买不重掷 —— 已购格留在原位显示「已售出」，只有付刷新费才换新货
 ## 布局：左侧角色属性面板 ｜ 中间商品 ｜ 右侧已购道具（可按 50% 购入价出售）
 ## 卡面按稀有度着色：common 白 / rare 蓝 / epic 紫 / mythic 金 / legendary 红
 ## 输入：鼠标 + 手柄焦点导航（卡片行 ↓ 动作区，动作区 ↑ 第一张可购卡）
@@ -41,14 +42,22 @@ func _build() -> void:
 	add_child(dim)
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 12)
+	# 小屏用安全区边距（避开刘海 / 打孔 / 手势条），桌面沿用 12
+	var sm := UiMetrics.margin() if UiMetrics.prefers_full_page() else Vector2(12.0, 12.0)
+	for m in ["margin_left", "margin_right"]:
+		margin.add_theme_constant_override(m, int(maxf(sm.x, 12.0)))
+	for m in ["margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, int(maxf(sm.y, 12.0)))
 	add_child(margin)
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 14)
 	margin.add_child(hb)
-	# 左侧：角色属性面板
-	hb.add_child(_make_side_panel(_make_left_column()))
+	# 左侧：角色属性面板。小屏放不下「288 宽属性栏 + 最多 5 张 150 宽商品卡」——
+	# 合计超过 1000 单位，而手机横屏只有约 900 宽，商品卡会被顶出屏幕右侧点不到。
+	# 小屏隐藏属性栏（暂停页仍能查全部属性），宽度全让给商品区。
+	var compact := UiMetrics.prefers_full_page()
+	if not compact:
+		hb.add_child(_make_side_panel(_make_left_column()))
 	# 中间：标题 + 商品 + 动作
 	var center := VBoxContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -75,12 +84,13 @@ func _build() -> void:
 	_next_btn.add_theme_font_size_override("font_size", 17)
 	for b: Button in [_reroll_btn, _heal_btn, _next_btn]:
 		actions.add_child(b)
-	# 右侧：已购道具（可出售）
-	hb.add_child(_make_side_panel(_make_right_column()))
+	# 右侧：已购道具（可出售）。小屏保留但收窄 —— 卖东西是这一栏唯一的入口，
+	# 砍掉会让手机上无法出售道具；宽度从 288 压到约 180，把空间让给商品卡
+	hb.add_child(_make_side_panel(_make_right_column(), UiMetrics.dp(180.0) if compact else 288.0))
 
-func _make_side_panel(inner: Control) -> PanelContainer:
+func _make_side_panel(inner: Control, want_w := 288.0) -> PanelContainer:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(288.0, 0.0)
+	panel.custom_minimum_size = Vector2(want_w, 0.0)
 	panel.add_theme_stylebox_override("panel", _side_style())
 	panel.add_child(inner)
 	return panel
@@ -346,13 +356,14 @@ func set_lock(i: int, on: bool) -> void:
 	if i >= 0 and i < goods.size() and not goods[i].sold:
 		goods[i].locked = on
 
-## 4 格商品：42% 武器格（满槽则跳过），29% 升级属性，其余道具
+## 6 格商品：42% 武器格（满槽则跳过），29% 升级属性，其余道具
 ## 升级/道具按稀有度加权抽取（品阶越高越稀有，权重随波次小幅提升）
+## 格数由 Config.SHOP_SLOTS 决定 —— 别在这里再写一次 6
 func _roll_goods() -> void:
 	goods = []
 	_affinity_cache.clear()   # 开店时重算一次构筑亲和（本店期间武器/法宝不会变）
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
-	for _i in 4:
+	for _i in Config.SHOP_SLOTS:
 		goods.append(_roll_one(weapon_full))
 	_ensure_affinity_goods()
 
@@ -561,11 +572,23 @@ func _rarity_style(r: String) -> StyleBoxFlat:
 	sb.set_corner_radius_all(8)
 	return sb
 
+## 商品卡尺寸。桌面固定 150×238；小屏按「可用宽度 − 右侧出售栏 − 间距」除以张数算，
+## 保证无论 4 张还是 6 张都不会顶出屏幕（旧版写死 150 宽，5 张就超出面板）。
+## 高度同时受可用高度约束，避免在矮屏上把「下一波」按钮挤出画面。
+func _good_card_size() -> Vector2:
+	if not UiMetrics.prefers_full_page():
+		return Vector2(150.0, 238.0)
+	var n := maxi(1, goods.size())
+	var usable_w := UiMetrics.available().x - UiMetrics.dp(180.0) - 14.0 - UiMetrics.dp(24.0)
+	var w := clampf((usable_w - 8.0 * float(n - 1)) / float(n), UiMetrics.dp(96.0), UiMetrics.dp(170.0))
+	var h := clampf(UiMetrics.available().y - UiMetrics.dp(130.0), UiMetrics.dp(150.0), UiMetrics.dp(238.0))
+	return Vector2(w, h)
+
 func _make_good_card(i: int) -> Control:
 	var g: Dictionary = goods[i]
 	var price := _price_of(g)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(150.0, 238.0)
+	panel.custom_minimum_size = _good_card_size()
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_theme_stylebox_override("panel", _rarity_style(g.rarity))
 	if g.sold:
@@ -613,7 +636,9 @@ func _make_good_card(i: int) -> Control:
 		desc.text = String(g.desc)
 	desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.custom_minimum_size = Vector2(132.0, 0.0)
+	# 描述列宽跟随卡片宽度（旧版写死 132 = 150 卡宽 − 内边距；
+	# 小屏卡片变窄后 132 的硬下限会把卡重新撑宽，自适应白做）
+	desc.custom_minimum_size = Vector2(maxf(60.0, _good_card_size().x - 18.0), 0.0)
 	desc.add_theme_font_size_override("font_size", 11)
 	desc.add_theme_color_override("font_color", Color("9aa3b2"))
 	desc.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -696,6 +721,8 @@ func buy(i: int) -> void:
 	_save_checkpoint()   # 商店内即时重存，退出不丢购物
 
 ## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
+## 注意：**购买本身不触发重掷** —— 买掉的格子只标「已售出」留在原位（见 buy()），
+## 货架内容只在玩家主动付刷新费时变动，这样「买哪一格」才是真决策。
 func reroll() -> void:
 	if RunRules.reroll_disabled():
 		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店刷新", 1.6)
@@ -709,8 +736,8 @@ func reroll() -> void:
 	var old := goods.duplicate(true)
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	goods = []
-	for i in 4:
-		if old[i].sold or old[i].locked:
+	for i in Config.SHOP_SLOTS:
+		if i < old.size() and (old[i].sold or old[i].locked):
 			goods.append(old[i])   # 原位保留
 		else:
 			goods.append(_roll_one(weapon_full))

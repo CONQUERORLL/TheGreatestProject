@@ -175,13 +175,16 @@ func track_for_wave(w: int) -> String:
 # ---------------- 渲染 ----------------
 
 ## 优先外部素材；文件缺失/格式不支持时回退程序生成
+## Android 上强制 synth：Godot 4.7 在 Android AudioTrack 回调线程对外部加载的
+## AudioStreamWAV 循环播放有 SIGSEGV 崩溃（loop_end 越界），synth 生成的流无此问题
 func _load_track(name: String) -> AudioStreamWAV:
-	var path := String(TRACK_FILES.get(name, ""))
-	if path != "":
-		var ext := _load_wav_file(path)
-		if ext != null:
-			_source[name] = "file"
-			return ext
+	if not OS.has_feature("android"):
+		var path := String(TRACK_FILES.get(name, ""))
+		if path != "":
+			var ext := _load_wav_file(path)
+			if ext != null:
+				_source[name] = "file"
+				return ext
 	_source[name] = "synth"
 	return _gen_track(name)
 
@@ -218,17 +221,21 @@ func _load_wav_file(path: String) -> AudioStreamWAV:
 		pos = body + csize + (csize & 1)
 	if not fmt_ok or data_off < 0 or data_len <= 0 or rate <= 0:
 		return null
-	var frames := data_len / (channels * 2)
-	if frames <= 0:
+	# 数据长度对齐到帧（16-bit 每帧 channels*2 字节），防止尾部不足一帧导致越界
+	var frame_bytes := channels * 2
+	var aligned_len := int(data_len / frame_bytes) * frame_bytes
+	if aligned_len <= 0:
 		return null
+	var frames := aligned_len / frame_bytes
 	var stream := AudioStreamWAV.new()
 	stream.format = AudioStreamWAV.FORMAT_16_BITS
 	stream.mix_rate = rate
 	stream.stereo = channels == 2
-	stream.data = bytes.slice(data_off, data_off + data_len)
+	stream.data = bytes.slice(data_off, data_off + aligned_len)
 	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
 	stream.loop_begin = 0
-	stream.loop_end = frames
+	# loop_end 取实际数据帧数-1，避免某些平台在循环尾部越界访问
+	stream.loop_end = maxi(1, frames - 1)
 	return stream
 
 func _tag(bytes: PackedByteArray, pos: int) -> String:
@@ -272,7 +279,7 @@ func _gen_track(name: String) -> AudioStreamWAV:
 	stream.data = data
 	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
 	stream.loop_begin = 0
-	stream.loop_end = total
+	stream.loop_end = maxi(1, total - 1)
 	return stream
 
 func _freq(semi: int) -> float:

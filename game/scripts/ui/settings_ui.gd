@@ -13,10 +13,14 @@ func _ready() -> void:
 	add_child(bg)
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 48)
-	margin.add_theme_constant_override("margin_right", 48)
-	margin.add_theme_constant_override("margin_top", 20)
-	margin.add_theme_constant_override("margin_bottom", 20)
+	# 小屏用安全区边距（避开刘海 / 打孔 / 手势条），桌面沿用原来的 48 / 20 ——
+	# 手机横屏可用宽度只有约 900 单位，固定 48 会把两侧各切掉 5%
+	var compact := UiMetrics.prefers_full_page()
+	var m := UiMetrics.margin() if compact else Vector2(48.0, 20.0)
+	margin.add_theme_constant_override("margin_left", int(m.x))
+	margin.add_theme_constant_override("margin_right", int(m.x))
+	margin.add_theme_constant_override("margin_top", int(m.y))
+	margin.add_theme_constant_override("margin_bottom", int(m.y))
 	add_child(margin)
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 10)
@@ -54,6 +58,8 @@ func _ready() -> void:
 	_build_binds(box)
 	_build_gamepad_help(box)
 	back.grab_focus()
+	# 返回键路由：Android 返回键走 NOTIFICATION_WM_GO_BACK_REQUEST（不是 ui_cancel）
+	Nav.bind(self, _handle_back)
 
 # ---------------- 画面 ----------------
 
@@ -208,8 +214,10 @@ func _reset_all_binds() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	# 未在捕获按键时：Android 返回键 / Esc / 手柄 B → 回主菜单（并消费事件，杜绝误退出）
 	if _capturing == "":
+		if Nav.owns_back():
+			return   # 移动端返回键由 Nav 路由，避免一次返回被算成两次
 		if event.is_action_pressed("ui_cancel"):
-			get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+			_handle_back()
 			get_viewport().set_input_as_handled()
 		return
 	# Esc 取消捕获（不绑定）
@@ -228,6 +236,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 # ---------------- 手柄说明 ----------------
+
+## 返回：按键捕获中先取消捕获（而不是直接退出去，那会丢掉刚按的键），
+## 其余情况回主菜单。返回 true = 已消费。
+func _handle_back() -> bool:
+	if _capturing != "":
+		_cancel_capture()
+		return true
+	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
+	return true
 
 func _build_gamepad_help(box: VBoxContainer) -> void:
 	box.add_child(_section("手柄按键说明（Xbox 布局）"))

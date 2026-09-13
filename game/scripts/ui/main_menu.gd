@@ -16,12 +16,10 @@ var _sel_item := ""
 var _sel_diff := "normal"
 var _sel_endless := false   # 第 5 步：标准模式 / 无尽炼狱
 
-# 手机紧凑向导：Android/iOS 上 content_scale 1.5x 后逻辑分辨率仅约 853×480，
-# 写死的 1000×620 面板 / 218×244 卡牌会溢出屏幕；手机改用小尺寸 + 自适应面板
+# 紧凑排布开关：跑在「铺满屏幕 + 内部滚动」的页面上（手机 / 小屏窗口）。
+# 判定从「是不是移动平台」改成「实际可用空间够不够」—— 由 UiMetrics 按屏幕物理尺寸算，
+# 于是小屏桌面窗口也能拿到紧凑排布，而不是只有 Android/iOS 才享受到。
 var _mov := false
-const WIZ_PANEL_DESK := Vector2(1000.0, 620.0)
-const CARD_DESK := Vector2(218.0, 244.0)
-const CARD_MOB := Vector2(150.0, 170.0)
 
 var _home: Control
 var _wizard: Control
@@ -89,7 +87,9 @@ const CARD_ASPECT_MAX := 1.9
 
 func _ready() -> void:
 	SaveRun.migrate_legacy_if_needed()
-	_mov = OS.has_feature("mobile")
+	# 倍率必须最先应用：后面所有尺寸换算（UiMetrics.dp）都依赖它
+	UiMetrics.apply()
+	_mov = UiMetrics.prefers_full_page()
 	Music.play_track("menu", 0.5)
 	var bg := ColorRect.new()
 	bg.color = Color("101218")
@@ -104,6 +104,9 @@ func _ready() -> void:
 	_build_daily_panel()
 	_build_codex()
 	_build_rules_panel()
+	# 返回键路由：Android 返回键是 NOTIFICATION_WM_GO_BACK_REQUEST（不是 ui_cancel），
+	# 交给 Nav 统一派发；桌面 Esc / 手柄 B 仍走 _unhandled_input
+	Nav.bind(self, _handle_back)
 
 ## 返回键大提示卡（首页双击回桌面用）：醒目大字号，手机小屏也清晰可见
 func _build_back_hint() -> void:
@@ -273,30 +276,74 @@ func _build_home() -> void:
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(center)
 	_home = center
+	# 首页 = 大标题 + 副标题 + 最多 10 个按钮。桌面 720 单位高放得下；
+	# 手机横屏按物理尺寸推算只有约 400 单位（见 UiMetrics），10×52 必然溢出屏幕 ——
+	# 旧版只是把字号从 46 缩到更小、按钮 52 不变，仍会切掉底部按钮。
+	# 现在小屏改成「安全区内铺满 + 纵向滚动 + 按可用宽度自适应列数」。
+	var full := UiMetrics.prefers_full_page()
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 14)
-	center.add_child(box)
+	box.add_theme_constant_override("separation", int(UiMetrics.dp(5.0)) if full else 14)
+	if full:
+		var m := UiMetrics.margin()
+		var scroll := ScrollContainer.new()
+		scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+		scroll.offset_left = m.x
+		scroll.offset_right = -m.x
+		scroll.offset_top = m.y
+		scroll.offset_bottom = -m.y
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED   # 只纵向滚动，杜绝横向溢出
+		add_child(scroll)
+		# 内容不满一屏时居中（消除底部留白），超出则正常滚动
+		var wrap := CenterContainer.new()
+		wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		scroll.add_child(wrap)
+		wrap.add_child(box)
+	else:
+		center.add_child(box)
 	var title := Label.new()
 	title.text = "🥔 土豆兄弟 LITE"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_font_size_override("font_size", int(UiMetrics.dp(26.0)) if full else 46)
 	title.add_theme_color_override("font_color", Color("e8b84b"))
 	box.add_child(title)
 	var sub := Label.new()
 	sub.text = "俯视角生存射击 Roguelite · PC / 移动端 / 手柄"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.add_theme_font_size_override("font_size", 13)
+	sub.add_theme_font_size_override("font_size", int(UiMetrics.dp(9.0)) if full else 13)
 	sub.add_theme_color_override("font_color", Color("9aa3b2"))
 	box.add_child(sub)
 	box.add_child(Control.new())   # 间隔
+	var specs := _home_specs()
+	# 按钮宿主：桌面单列 VBox（保持原样），小屏按可用宽度自适应多列网格 ——
+	# 单列在 925×400 的单位空间里会拉成又长又窄的一条，双列更接近手机原生观感
+	var host: Container = box
+	var btn_w := 220.0
+	if full:
+		var avail := UiMetrics.available().x
+		var min_w := UiMetrics.dp(140.0)
+		var gap := UiMetrics.dp(8.0)
+		var cols := UiMetrics.grid_columns(avail, min_w, specs.size(), gap)
+		btn_w = (avail - gap * float(cols - 1)) / float(cols)
+		var grid := GridContainer.new()
+		grid.columns = cols
+		grid.add_theme_constant_override("h_separation", int(gap))
+		grid.add_theme_constant_override("v_separation", int(UiMetrics.dp(6.0)))
+		box.add_child(grid)
+		host = grid
 	var start_btn: Button = null
-	for spec in _home_specs():
+	for spec in specs:
 		var b := Button.new()
 		b.text = spec[0]
-		b.custom_minimum_size = Vector2(spec[1], 52.0)
-		b.add_theme_font_size_override("font_size", 19)
+		if full:
+			b.custom_minimum_size = Vector2(btn_w, UiMetrics.touch_at_least(UiMetrics.dp(38.0)))
+			b.add_theme_font_size_override("font_size", int(UiMetrics.dp(13.0)))
+			b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		else:
+			b.custom_minimum_size = Vector2(spec[1], 52.0)
+			b.add_theme_font_size_override("font_size", 19)
 		b.pressed.connect(spec[2])
-		box.add_child(b)
+		host.add_child(b)
 		if spec[0] == "开 始 游 戏":
 			start_btn = b
 	start_btn.grab_focus()   # “开始游戏”默认焦点（手柄直达）
@@ -387,21 +434,12 @@ func _build_wizard() -> void:
 	_next_btn.pressed.connect(_next)
 	hb.add_child(_next_btn)
 
-## 向导面板四周安全边距（手机避开刘海/打孔/手势条；桌面留大边距居中）
+## 向导面板四周安全边距（手机避开刘海/打孔/手势条；桌面留大边距居中）。
+## 安全区算法收敛到 UiMetrics，不再和触摸摇杆各算一遍（两处曾需手动保持一致）。
 func _wizard_margin() -> Vector2:
 	if not _mov:
 		return Vector2.ZERO
-	var scr: Vector2i = DisplayServer.screen_get_size()
-	var safe: Rect2i = DisplayServer.get_display_safe_area()
-	var vw: float = get_viewport_rect().size.x
-	var vh: float = get_viewport_rect().size.y
-	if scr.x <= 0 or scr.y <= 0 or vw <= 0:
-		return Vector2(10.0, 10.0)
-	var ml: float = float(safe.position.x) / float(scr.x) * vw
-	var mr: float = float(scr.x - (safe.position.x + safe.size.x)) / float(scr.x) * vw
-	var mt: float = float(safe.position.y) / float(scr.y) * vh
-	var mb: float = float(scr.y - (safe.position.y + safe.size.y)) / float(scr.y) * vh
-	return Vector2(maxf(ml, mr) + 8.0, maxf(mt, mb) + 8.0)
+	return UiMetrics.margin()
 
 func _open_wizard() -> void:
 	Haptics.rumble(0.2, 0.0, 0.08)
@@ -430,9 +468,10 @@ func _close_wizard() -> void:
 ## 由调用方决定是否因此允许纵向留白（宁可滚动，也不要把文字挤出卡外）。
 func _fit_grid(n: int, min_h: float = CARD_H_MIN) -> Dictionary:
 	if n <= 0:
-		return { "cols": 1, "size": Vector2(CARD_W_MIN, min_h) }
-	# 候选列数上限：卡片不低于 CARD_W_MIN 时可容纳的列数
-	var max_cols := maxi(1, int(floor((GRID_BOX_W + GRID_GAP) / (CARD_W_MIN + GRID_GAP))))
+		return { "cols": 1, "size": Vector2(_card_w_min(), min_h) }
+	var box := _grid_box()
+	# 候选列数上限：卡片不低于最小宽度时可容纳的列数
+	var max_cols := maxi(1, int(floor((box.x + GRID_GAP) / (_card_w_min() + GRID_GAP))))
 	max_cols = mini(max_cols, n)
 	# 两轮筛选：第一轮带全部约束；若一张列数都没通过（典型是 2 张卡 ——
 	# 单列/双列都会超出宽度上限），第二轮放宽宽度上限只保留宽高比护栏，
@@ -446,28 +485,55 @@ func _fit_grid(n: int, min_h: float = CARD_H_MIN) -> Dictionary:
 		picked = { "cols": 1, "rows": n }
 	var best_cols := int(picked.cols)
 	var best_rows := int(picked.rows)
-	var card_w := (GRID_BOX_W - float(best_cols - 1) * GRID_GAP) / float(best_cols)
-	card_w = clampf(card_w, CARD_W_MIN, CARD_W_MAX)
+	var card_w := (box.x - float(best_cols - 1) * GRID_GAP) / float(best_cols)
+	card_w = clampf(card_w, _card_w_min(), CARD_W_MAX)
 	# 纵向：行高撑满可用高度（上限封顶，避免一两行被拉成巨块）
-	var card_h := (GRID_BOX_H - float(best_rows - 1) * GRID_GAP) / float(best_rows)
+	var card_h := (box.y - float(best_rows - 1) * GRID_GAP) / float(best_rows)
 	card_h = clampf(card_h, min_h, CARD_H_MAX)
 	return { "cols": best_cols, "size": Vector2(card_w, card_h) }
+
+## 网格可用尺寸。桌面沿用以向导面板（WIZARD_W/H）推导的写死内宽内高；
+## 紧凑排布上面板是铺满屏幕的，可用宽高必须按**真实视口**算 ——
+## 否则「12 张角色卡 ÷ 4 列」这个 4 是拍脑袋定的：5 寸手机上两张就挤，
+## 8 寸平板上又空得能再塞两列。
+func _grid_box() -> Vector2:
+	if not _mov:
+		return Vector2(GRID_BOX_W, GRID_BOX_H)
+	var m := UiMetrics.margin()
+	var vp := UiMetrics.viewport_units()
+	# 横向：面板内容边距(14) + 网格包壳 margin(8)，左右各一份
+	var pad_x := (UiMetrics.dp(14.0) + UiMetrics.dp(8.0)) * 2.0
+	# 纵向：面板内容边距 + 步骤标题 + 底部按钮行 + VBox 间距
+	var used_y := UiMetrics.dp(12.0) * 2.0 + UiMetrics.dp(20.0) \
+		+ UiMetrics.dp(40.0) + UiMetrics.dp(20.0)
+	return Vector2(maxf(vp.x - m.x * 2.0 - pad_x, 200.0),
+		maxf(vp.y - m.y * 2.0 - used_y, 160.0))
+
+## 卡片最小宽度：桌面 176；紧凑排布按 dp 缩到约 120，让同样的屏幕能多排一列
+func _card_w_min() -> float:
+	return UiMetrics.dp(120.0) if _mov else CARD_W_MIN
+
+## 角色卡的内容高度下限：卡面有两段描述（特性 + 玩法定位），是全向导里最高的。
+## 紧凑排布按 dp 给（约 150：够放图标 + 标题 + 3~4 行小字），桌面沿用 212
+func _char_card_min_h() -> float:
+	return UiMetrics.dp(150.0) if _mov else 212.0
 
 ## 在给定宽度上限 + 宽高比上限下挑最优列数；无可选列数返回空字典。
 ## 判据依次为：空槽最少 → 行数最少 → 卡片最宽。
 ## 只挑列数，不决定最终高度 —— 高度由 _fit_grid 统一 clamp（低于 min_h 会撑高并可滚动）。
 func _pick_grid(n: int, max_cols: int, w_cap: float, aspect_cap: float, min_h: float) -> Dictionary:
+	var box := _grid_box()
 	var best_cols := 0
 	var best_waste := 0x7fffffff
 	var best_rows := n
 	var best_w := 0.0
 	for cols in range(1, max_cols + 1):
 		var rows := int(ceil(float(n) / float(cols)))
-		var w := (GRID_BOX_W - float(cols - 1) * GRID_GAP) / float(cols)
+		var w := (box.x - float(cols - 1) * GRID_GAP) / float(cols)
 		if w > w_cap:
 			continue   # 该列数会把卡片撑得过宽，跳过
 		# 宽高比护栏：卡片按此列数撑开后若过扁（宽 ≫ 高），观感很差，跳过
-		var h_at := clampf((GRID_BOX_H - float(rows - 1) * GRID_GAP) / float(rows),
+		var h_at := clampf((box.y - float(rows - 1) * GRID_GAP) / float(rows),
 			min_h, CARD_H_MAX)
 		if w / h_at > aspect_cap:
 			continue
@@ -499,8 +565,8 @@ func _build_step() -> void:
 		0:
 			# 角色卡描述最长（特性 + 玩法定位两段），给足高度下限；
 			# 12 张 ÷ 4 列 = 3 行若装不下就纵向滚动，绝不把文字挤出卡外
-			var fit0 := _fit_grid(Registry.characters.size(), 212.0)
-			_options.columns = 4 if _mov else int(fit0.cols)
+			var fit0 := _fit_grid(Registry.characters.size(), _char_card_min_h())
+			_options.columns = int(fit0.cols)
 			for c: Dictionary in Registry.characters.values():
 				var locked := not Unlocks.is_unlocked("character", String(c.id))
 				_options.add_child(_make_card(_g_char, c.id,
@@ -613,8 +679,10 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	b.disabled = locked
 	# 卡面高度容纳「特性描述 + 玩法定位」两段文本（角色步），
 	# 其余步骤内容较短，靠 VBox 居中，视觉上仍然平衡
-	b.custom_minimum_size = CARD_MOB if _mov else card_size
-	# 手机固定紧凑卡（CARD_MOB）；桌面用 _fit_grid 动态算出的 card_size
+	# 卡面尺寸一律用 _fit_grid 按真实可用空间算出的 card_size。
+	# 旧版在移动端直接换成写死的 CARD_MOB(150×170)，等于放弃自适应 ——
+	# 每张卡都按最保守的尺寸画，屏幕上留下大片用不到的空隙
+	b.custom_minimum_size = card_size
 	# 卡面样式：accent 色微底 + 描边，hover/focus 金边高亮（手柄导航可见）
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = Color(accent.r, accent.g, accent.b, 0.09)
@@ -640,9 +708,12 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	b.add_child(box)
 	# 卡内元素随卡宽缩放：窄卡（如 4 列的难度/模式步）用小一号图标与文字，
-	# 宽卡（如 2 列的武器步）用大一号，避免小卡拥挤 / 大卡空洞
-	var eff_size := CARD_MOB if _mov else card_size
-	var scale := clampf(eff_size.x / 218.0, 0.82, 1.35)
+	# 宽卡（如 2 列的武器步）用大一号，避免小卡拥挤 / 大卡空洞。
+	# 基准宽度分平台：桌面卡片典型 218 宽；紧凑排布典型 150（≈150dp，手机原生观感）。
+	# 若仍拿 218 当基准，紧凑卡会被判成"很窄"而把字号一路压到下限
+	var eff_size := card_size
+	var base_w := UiMetrics.dp(150.0) if _mov else 218.0
+	var scale := clampf(eff_size.x / base_w, 0.82, 1.35)
 	var icon_px := roundi(36.0 * scale)
 	var name_px := roundi(17.0 * scale)
 	var desc_px := maxi(11, roundi(11.0 * scale))
@@ -714,47 +785,16 @@ func _prev() -> void:
 		_close_wizard()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# 图鉴自行处理返回键，避免重复消费
 	if _codex != null and _codex.visible:
-		return   # 图鉴自行处理返回键，避免重复消费
-	# 自定义规则面板：Esc / 手柄 B 关闭（输入框获得焦点时让 LineEdit 先处理，
-	# 否则玩家按 Esc 想撤销输入会直接把整个面板关掉）
-	if _rules_panel.visible and event.is_action_pressed("ui_cancel"):
-		var focus_r := get_viewport().gui_get_focus_owner()
-		if focus_r is LineEdit:
-			focus_r.release_focus()
+		return
+	# 移动端：返回键统一由 Nav 路由（它同时接管 GO_BACK 通知与 ui_cancel 两条来路，
+	# 两条路可能撞车，只能由一方处理）。这里主动让位，否则一次返回会被算成两次。
+	if Nav.owns_back() and event.is_action_pressed("ui_cancel"):
+		return
+	if event.is_action_pressed("ui_cancel"):
+		if _handle_back():
 			get_viewport().set_input_as_handled()
-			return
-		_close_rules()
-		get_viewport().set_input_as_handled()
-		return
-	# 每日挑战弹窗：Esc / 手柄 B 关闭
-	if _daily_panel.visible and event.is_action_pressed("ui_cancel"):
-		_close_daily()
-		get_viewport().set_input_as_handled()
-		return
-	# 天赋树弹窗：Esc / 手柄 B 关闭
-	if _talent_panel.visible and event.is_action_pressed("ui_cancel"):
-		_close_talents()
-		get_viewport().set_input_as_handled()
-		return
-	# 排行榜弹窗：Esc / 手柄 B 关闭
-	if _lb_panel.visible and event.is_action_pressed("ui_cancel"):
-		_close_leaderboard()
-		get_viewport().set_input_as_handled()
-		return
-	# 选槽弹窗：返回键退出覆盖确认态，再按关闭弹窗
-	if _slots_panel.visible and event.is_action_pressed("ui_cancel"):
-		if _confirm_slot != 0:
-			_confirm_slot = 0
-			_refresh_slots()
-		else:
-			_close_slots()
-		get_viewport().set_input_as_handled()
-		return
-	# Esc / 手柄 B：向导内回上一步
-	if _wizard.visible and event.is_action_pressed("ui_cancel"):
-		_prev()
-		get_viewport().set_input_as_handled()
 		return
 	# 手柄 A / Enter：确认选中焦点卡片
 	if _wizard.visible and event.is_action_pressed("ui_accept"):
@@ -763,20 +803,62 @@ func _unhandled_input(event: InputEvent) -> void:
 			focus.pressed.emit()
 			get_viewport().set_input_as_handled()
 		return
-	# 首页：返回键 2 秒内按两次 → 回到桌面（Android 退到后台不杀进程，PC 退出）
-	# 首次只弹醒目大提示，绝不一次滑动就误杀游戏
-	if not _wizard.visible and event.is_action_pressed("ui_cancel"):
-		var now := Time.get_ticks_msec()
-		if now - _back_press_ms < 2000:
-			_back_hint.visible = false
-			get_viewport().set_input_as_handled()
-			Settings.go_background()
-			return
-		_back_press_ms = now
-		_back_hint.visible = true
-		var t := get_tree().create_timer(2.0)
-		t.timeout.connect(func() -> void: _back_hint.visible = false)
-		get_viewport().set_input_as_handled()
+
+## 返回键语义（Android 返回 / Windows 鼠标侧键 / 手柄 B / 桌面 Esc 全部汇到这里）。
+## 顺序即优先级：图鉴 → 弹窗 → 向导 → 首页双击回桌面。返回 true = 已消费。
+func _handle_back() -> bool:
+	# 图鉴是独立覆盖层：返回应先关图鉴，而不是动主菜单。
+	# 返回 false 让 Nav 继续往下找图鉴自己的处理器（移动端）；桌面由上面 early-return 兜住
+	if _codex != null and _codex.visible:
+		return false
+	# 自定义规则面板：输入框获得焦点时让 LineEdit 先处理，
+	# 否则玩家按返回想撤销输入会直接把整个面板关掉
+	if _rules_panel.visible:
+		var focus_r := get_viewport().gui_get_focus_owner()
+		if focus_r is LineEdit:
+			focus_r.release_focus()
+			return true
+		_close_rules()
+		return true
+	# 每日挑战弹窗
+	if _daily_panel.visible:
+		_close_daily()
+		return true
+	# 天赋树弹窗
+	if _talent_panel.visible:
+		_close_talents()
+		return true
+	# 排行榜弹窗
+	if _lb_panel.visible:
+		_close_leaderboard()
+		return true
+	# 选槽弹窗：先退出覆盖确认态，再按才关弹窗
+	if _slots_panel.visible:
+		if _confirm_slot != 0:
+			_confirm_slot = 0
+			_refresh_slots()
+		else:
+			_close_slots()
+		return true
+	# 向导：回上一步（第 1 步再按 = 关向导回首页）
+	if _wizard.visible:
+		_prev()
+		return true
+	_try_exit_home()
+	return true
+
+## 首页返回：2 秒内按两次 → 回桌面 / 退出（Android 退到后台不杀进程，PC 退出）。
+## 首次只弹醒目大提示，绝不一次误触就杀掉游戏。
+func _try_exit_home() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _back_press_ms < 2000:
+		_back_hint.visible = false
+		Settings.go_background()
+		return
+	_back_press_ms = now
+	_back_hint.visible = true
+	var t := get_tree().create_timer(2.0)
+	t.timeout.connect(func() -> void: _back_hint.visible = false)
 
 func _start() -> void:
 	GameState.difficulty_id = _sel_diff

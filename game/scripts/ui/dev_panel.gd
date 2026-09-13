@@ -15,7 +15,7 @@ const STAT_FIELDS := [
 	{ "k": "dmg_mult", "n": "伤害倍率", "min": 0.1, "max": 100.0, "step": 0.1 },
 	{ "k": "as_mult", "n": "攻速倍率", "min": 0.1, "max": 100.0, "step": 0.1 },
 	{ "k": "speed_mult", "n": "移速倍率", "min": 0.1, "max": 10.0, "step": 0.1 },
-	{ "k": "crit_ch", "n": "暴击率", "min": 0.0, "max": 1.0, "step": 0.05 },
+	{ "k": "crit_ch", "n": "暴击率", "min": 0.0, "max": Config.CRIT_CHANCE_CAP, "step": 0.05 },
 	{ "k": "crit_mult", "n": "暴击倍率", "min": 1.0, "max": 100.0, "step": 0.1 },
 	{ "k": "armor", "n": "护甲", "min": 0.0, "max": 999.0, "step": 1.0 },
 	{ "k": "dodge", "n": "闪避率", "min": 0.0, "max": 0.95, "step": 0.05 },

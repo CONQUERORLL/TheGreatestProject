@@ -498,7 +498,7 @@ func _check_shop() -> void:
 	var player: Node2D = _main.get_node("Player")
 	print("SMOKE: shop phase=%d goods=%d mats=%d" %
 		[GameState.phase, shop.goods_count(), GameState.materials])
-	if GameState.phase != GameState.Phase.SHOP or shop.goods_count() != 4:
+	if GameState.phase != GameState.Phase.SHOP or shop.goods_count() != Config.SHOP_SLOTS:
 		_fail("商店未打开或商品数不对（phase=%d goods=%d）"
 			% [GameState.phase, shop.goods_count()])
 		return
@@ -519,7 +519,7 @@ func _check_shop() -> void:
 	shop.reroll()
 	print("SMOKE: reroll cost %d -> %d goods=%d" %
 		[cost0, shop.get_reroll_cost(), shop.goods_count()])
-	if shop.get_reroll_cost() <= cost0 or shop.goods_count() != 4:
+	if shop.get_reroll_cost() <= cost0 or shop.goods_count() != Config.SHOP_SLOTS:
 		_fail("刷新未生效")
 		return
 	# 回血
@@ -555,6 +555,7 @@ func _check_shop() -> void:
 	if shop.get_viewport().gui_get_focus_owner() == null:
 		_fail("刷新后商店焦点丢失（手柄断导航）")
 		return
+	_check_shop_rules()
 	# 下一波
 	_suppress_event_cards()
 	shop.next_wave()
@@ -566,6 +567,83 @@ func _check_shop() -> void:
 		return
 	# ---- HUD 验证 ----
 	get_tree().create_timer(0.5).timeout.connect(_check_hud)
+
+## 商店规则验证：① 货架格数 = Config.SHOP_SLOTS；② 购买后**不自动重掷**
+## （已售格原位保留、其余格内容 id 不变）；③ 售价随波次上浮。
+func _check_shop_rules() -> void:
+	var shop: Control = _main.get_node("UI/Shop")
+	# ① 格数
+	if shop.goods_count() != Config.SHOP_SLOTS:
+		_fail("货架格数不是 %d（实际 %d）" % [Config.SHOP_SLOTS, shop.goods_count()])
+		return
+	# ② 购买不重掷：先记录全店 id，买第一个未售格，再比对每个格子的 id
+	var ids_before: Array = []
+	for i in shop.goods.size():
+		ids_before.append(_good_key(shop.goods[i]))
+	var bi := -1
+	for i in shop.goods.size():
+		if not shop.goods[i].sold and not shop.goods[i].locked:
+			bi = i
+			break
+	if bi < 0:
+		_fail("无未售格可测「购买不重掷」")
+		return
+	GameState.materials += 999
+	shop.buy(bi)
+	if not shop.goods[bi].sold:
+		_fail("购买未生效（购买不重掷用例前置失败）")
+		return
+	for i in shop.goods.size():
+		var now_key := _good_key(shop.goods[i])
+		if i == bi:
+			# 被买走的那格：内容 id 不变，只是 sold 置位
+			if now_key != ids_before[i]:
+				_fail("购买后已售格内容被改写（%s -> %s）" % [ids_before[i], now_key])
+				return
+		elif now_key != ids_before[i]:
+			_fail("购买后第 %d 格被自动重掷了（%s -> %s）" % [i, ids_before[i], now_key])
+			return
+	print("SMOKE: shop buy-no-reroll OK slots=%d bought=%d" % [shop.goods_count(), bi])
+	# ③ 售价随波次上浮：同一 base_price 在 wave 1 / wave 10 的报价必须严格更大
+	var p1 := Config.shop_price(100, 1)
+	var p10 := Config.shop_price(100, 10)
+	print("SMOKE: shop price w1=%d w10=%d" % [p1, p10])
+	if p1 != 100 or p10 <= p1:
+		_fail("商店售价未随波次上浮（w1=%d w10=%d）" % [p1, p10])
+		return
+	# ④ 暴击率硬上限：把 crit_ch 灌到 5.0 后跑 sanitize，必须被夹到 Config.CRIT_CHANCE_CAP
+	var pl: Node2D = _main.get_node("Player")
+	var saved_crit := float(pl.stats.crit_ch)
+	pl.stats.crit_ch = 5.0
+	pl._sanitize_stats()
+	var capped := float(pl.stats.crit_ch)
+	print("SMOKE: crit cap %.2f -> %.2f (cap=%.2f)" % [5.0, capped, Config.CRIT_CHANCE_CAP])
+	if not is_equal_approx(capped, Config.CRIT_CHANCE_CAP):
+		_fail("暴击率未被夹到上限 %.2f（实际 %.3f）" % [Config.CRIT_CHANCE_CAP, capped])
+		pl.stats.crit_ch = saved_crit
+		return
+	if float(Registry.STAT_LIMITS["crit_ch"].y) > Config.CRIT_CHANCE_CAP \
+			or float(Registry.EFFECT_LIMITS["crit_ch"]) > Config.CRIT_CHANCE_CAP:
+		_fail("Registry limits 未同步收紧到 %.2f" % Config.CRIT_CHANCE_CAP)
+		pl.stats.crit_ch = saved_crit
+		return
+	pl.stats.crit_ch = saved_crit
+	# ⑤ 怪物掉落材料 -10%：系数必须是 Config.MATERIAL_DROP_MULT，且敌表 mat 均为正
+	print("SMOKE: material drop mult=%.2f" % Config.MATERIAL_DROP_MULT)
+	if not is_equal_approx(Config.MATERIAL_DROP_MULT, 0.9):
+		_fail("怪物掉落材料系数不是 0.9（%.3f）" % Config.MATERIAL_DROP_MULT)
+		return
+	for eid in Registry.enemies:
+		var m := float(Registry.enemies[eid].get("mat", 0))
+		if m <= 0.0:
+			_fail("敌人 %s 的 mat 非正（%.2f）—— 掉落系数乘后会归零" % [eid, m])
+			return
+
+## 商品身份键：武器用 wtype（无 id），其余用 id —— 比对用，别用于展示
+func _good_key(g: Dictionary) -> String:
+	if g.has("wtype"):
+		return "w:" + String(g.wtype)
+	return "%s:%s" % [String(g.get("kind", "")), String(g.get("id", ""))]
 
 func _check_hud() -> void:
 	var hud: Control = _main.get_node("UI/HUD")

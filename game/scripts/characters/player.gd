@@ -590,7 +590,7 @@ func _sanitize_stats() -> void:
 	stats.dmg_mult = maxf(0.01, float(stats.dmg_mult))
 	stats.as_mult = maxf(0.01, float(stats.as_mult))
 	stats.speed_mult = maxf(0.01, float(stats.speed_mult))
-	stats.crit_ch = clampf(float(stats.crit_ch), 0.0, 1.0)
+	stats.crit_ch = clampf(float(stats.crit_ch), 0.0, Config.CRIT_CHANCE_CAP)
 	stats.crit_mult = maxf(1.0, float(stats.crit_mult))
 	stats.armor = maxf(-7.9, float(stats.armor))
 	stats.dodge = clampf(float(stats.dodge), 0.0, 0.95)

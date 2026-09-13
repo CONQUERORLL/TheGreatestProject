@@ -70,10 +70,42 @@ cd "/c/<仓库>/game" && APPDATA='C:\Users\<用户>\AppData\Roaming' \
 
 ## 3. git 提交与推送
 
+### 分支拓扑（4 条长期分支，无 feature 分支）
+
+`main`（稳定主线）| `pc-dev`（PC 开发主力）| `pc`（PC 发布档）| `mobile`（移动端，当前工作分支）。
+远程 `origin` = `git@github.com:CONQUERORLL/TheGreatestProject.git`。
+
+⚠️ 规划文档早期写的 `dev` / `feature/xxx` **从未使用过**，别照那套操作。
+三条分支互相领先（实测 `mobile` 领先 `main` 14 个提交、`pc` 与 `pc-dev` 差 34 个），
+所以分支同步是**真需求**，不是走形式。
+
+### 开发结束自动同步（沧溟 2026-09-13 定的规矩）
+
+**触发**：每轮开发收尾时由灵**主动执行**，不等用户开口。
+**方向**：**双向同步** —— 四条分支互相同步。
+
+**执行顺序（不可颠倒，每步都可能是止损点）**
+
+1. **先落盘**：当前分支改动必须先进一次提交。工作区脏就同步 = 同步空气。
+2. **跑冒烟**：`SMOKE: PASS` 是同步的**前置门槛**。没 PASS 不许同步 ——
+   把红的代码散播到三条分支，比不同步坏得多。
+3. `git fetch --all --prune`，看有没有人在别处推过。
+4. **逐对合并**：按「落后方 ← 领先方」方向合，**一次一对**，每合完立刻复查冲突。
+5. **冲突即停**：任何一对冲突 → **立刻停止全部同步**，把冲突文件列给沧溟。
+   **绝不自动 `-X ours` / `-X theirs`** —— 双向同步下自动选边会静默丢掉另一侧成果。
+6. **推之前先报**：列出「哪条 → 哪条、几个提交、有无冲突」再推。
+
+**安全护栏**
+
+- 同步前用 `git branch -vv` 记下各分支 tip SHA，出事可 `git branch -f` 回退。
+- **不用 `git push --force`**。远程拒绝（non-fast-forward）= 有人在别处推过，
+  先 `fetch` 再合，不要强推覆盖别人的提交。
+- 同步 `mobile`（当前工作分支）时先确认工作区干净。
+
 ### 提交
 
 - 历史风格：`feat: <中文短标题>` / `fix: …` / `chore: …` / `docs: …`，正文用中文分条。
-- 分支按平台划分：`main` / `pc` / `mobile`，日常开发在 `pc-dev`。
+  （规划 §8.3 规范写的是 `[模块] 简要描述`，新提交按这个走，历史混用不必回改。）
 - 提交信息里若出现被安全策略拦截的关键词，Bash 工具会直接拒绝执行 —— 换个说法即可。
 - **换行符**：仓库根有 `.gitattributes`，`*.sh text eol=lf`。
   新增 shell 脚本务必确认它不被 `core.autocrlf` 转成 CRLF，否则 bash 报 `$'\r': command not found`。
@@ -138,6 +170,43 @@ bash game/tools/push.sh [分支]
 3. 绝不用 `git rebase` / `git merge` 去整合（merge 也尽量别在沙箱做，用 clone 重建最稳）
 
 工作区文件（代码改动）是灾难里唯一可靠的东西；提交对象可能被回滚，但文件内容不丢。
+
+### ✅ 灾难后的修复：先诊断「引用丢」还是「对象丢」（2026-09-13 实操成功）
+
+上面那种灾难的**实际表现**是 `refs/heads/*` 全空 + 松散对象大面积丢失，
+症状极像「仓库彻底坏了」，但**只要远端还在，工作区文件还在，就能完整救回来**。
+`git fetch --all` **不需要本地有完好引用就能重建**（它会重新协商对象），
+所以别急着重 clone —— 重 clone 会丢掉工作区里那些**尚未提交的改动**（那是唯一真值）。
+
+**诊断三步**（先分清是哪种丢失，别凭 `git status` 的 `No commits yet` 就下结论）：
+
+```powershell
+Get-Content .git\HEAD                                  # 当前在哪条分支
+Get-ChildItem .git\refs\heads -Recurse                 # 空 = 本地分支引用全丢
+Test-Path .git\packed-refs                             # False = 引用没被打包留存
+git ls-remote --heads origin                           # 远端分支清单（这才是真值）
+git cat-file -t <远端 tip SHA>                         # 能否读到对象
+```
+
+**修复流程**（顺序不可乱，每步都要落盘验证）：
+
+1. **先备份工作区**（`Copy-Item` 到带时间戳的目录，排除 `.git`/`.godot`），
+   记下文件数。工作区是唯一可靠的东西，动 git 之前必须先兜住它。
+2. `git fetch --all --prune` —— 把 4 条分支的对象全部拉回本地。
+3. **重建本地引用**：`git branch -f <b> origin/<b>` 逐条执行（对 4 条分支各来一次）。
+   这一步之后 `git branch -vv` 应有输出且带 `[origin/xxx]` 上游标记。
+4. **清理失效 reflog**：`git reflog expire --expire=now --all`。
+   `git fsck` 会先报一堆 `invalid reflog entry <sha>` —— 那**只是历史 ref 移动的日志**
+   指向已丢失的对象，不影响仓库可用性，但清掉才能让 `fsck` 干净通过。
+5. 复检：`git fsck --no-progress --connectivity-only`，`EXIT=0` 且无输出 = 对象库健康。
+6. 确认 `git diff` / `git stash` 恢复可用 —— 这是「真的修好了」的最终判据。
+
+**关键判据**：`git ls-tree -r --name-only origin/<branch> | Measure-Object` 的文件数
+应与 `git ls-files | Measure-Object`（index 文件数）一致。本仓库两边都是 **174**，
+说明 index 完整、工作区与远程同源，`git diff origin/mobile` 出的 26 个文件就是
+**尚未提交的真实改动**（不是脏数据）。
+
+**清理用过的临时诊断文件**（`tmp_gitinfo.txt` / `tmp_check.txt` 等），别留在仓库里。
 
 ## 4. 受限环境的工具限制（本项目沙箱）
 

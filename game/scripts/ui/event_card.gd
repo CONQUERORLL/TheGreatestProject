@@ -8,6 +8,14 @@ extends Control
 
 signal chosen(card_id: String, choice_index: int)
 
+## 卡阵参数（桌面设计尺寸；小屏由 UiMetrics.card_grid 压缩/换行，见 _build_choices）
+const CARD_WANT := Vector2(200.0, 208.0)
+const CARD_MIN_W := 140.0
+const CARD_MIN_H := 140.0
+const CARD_GAP := 14.0
+## 卡阵上方「标题 + 说明 + 事件描述 + 段间距」占掉的高度（dp）
+const BOX_RESERVE_H := 170.0
+
 var player  # characters/player.gd 引用，由 main 注入
 
 var _card: Dictionary = {}
@@ -17,10 +25,13 @@ var _key_labels: Array = []
 @onready var _title: Label = $Center/Box/Title
 @onready var _sub: Label = $Center/Box/Sub
 @onready var _desc: Label = $Center/Box/Desc
-@onready var _cards: HBoxContainer = $Center/Box/Cards
+@onready var _cards: GridContainer = $Center/Box/Cards
 
 func _ready() -> void:
 	visible = false
+	# 触屏没有数字键，提示换成点按（奇遇是强制选择，必须让玩家看得懂怎么继续）
+	if UiMetrics.is_touch:
+		_sub.text = "三选一 · 点按卡片选择"
 
 ## 当前展示的卡 id（测试/调试观测用）
 func card_id() -> String:
@@ -41,6 +52,9 @@ func open(card: Dictionary) -> void:
 	_key_labels = []
 	_title.text = "%s %s" % [String(card.get("ico", "❓")), String(card.get("title", "奇遇"))]
 	_desc.text = String(card.get("desc", ""))
+	# 事件描述在桌面写死 520 宽；小屏收进可用宽度，避免横向溢出屏幕
+	if UiMetrics.prefers_full_page():
+		_desc.custom_minimum_size = Vector2(minf(520.0, UiMetrics.available().x), UiMetrics.dp(48.0))
 	_build_choices()
 	visible = true
 	modulate.a = 0.0
@@ -62,12 +76,18 @@ func _build_choices() -> void:
 		_cards.remove_child(c)
 		c.free()   # 立即删除：queue_free 会让本帧 get_children 返回旧+新混合
 	var choices: Array = _card.get("choices", [])
+	# 卡阵按可用区域自适应：桌面恒为一行 200×208，小屏自动收窄/换行（详见 UiMetrics.card_grid）
+	var grid := UiMetrics.card_grid(choices.size(), CARD_WANT,
+		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),
+		UiMetrics.dp(BOX_RESERVE_H))
+	var card_size: Vector2 = grid.card_size
+	_cards.columns = int(grid.cols)
 	for i in choices.size():
 		var ch: Dictionary = choices[i]
 		var effect: Dictionary = ch.get("effect", {})
 		var afford := _affordable(effect)
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(200.0, 208.0)
+		btn.custom_minimum_size = card_size
 		btn.disabled = not bool(afford.get("ok", true))
 		btn.pressed.connect(_choose.bind(i))
 		_apply_card_style(btn, String(_card.get("rarity", "common")), btn.disabled)
@@ -99,7 +119,8 @@ func _build_choices() -> void:
 		hint_l.text = String(ch.get("hint", ""))
 		hint_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		hint_l.custom_minimum_size = Vector2(180.0, 0.0)
+		# 自动换行宽度跟着卡片实际宽度走，卡被压窄时文字才不会横向溢出卡面
+		hint_l.custom_minimum_size = Vector2(maxf(card_size.x - 20.0, 60.0), 0.0)
 		hint_l.add_theme_font_size_override("font_size", 12)
 		hint_l.add_theme_color_override("font_color", Color("9aa3b2"))
 		hint_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -110,7 +131,7 @@ func _build_choices() -> void:
 			why.text = String(afford.get("reason", "资源不足"))
 			why.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			why.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			why.custom_minimum_size = Vector2(180.0, 0.0)
+			why.custom_minimum_size = Vector2(maxf(card_size.x - 20.0, 60.0), 0.0)
 			why.add_theme_font_size_override("font_size", 11)
 			why.add_theme_color_override("font_color", Color("e0564f"))
 			why.mouse_filter = Control.MOUSE_FILTER_IGNORE

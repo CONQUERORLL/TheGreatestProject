@@ -6,11 +6,19 @@ extends Control
 
 signal evolved(weapon: String, target: String)
 
+## 卡阵参数（桌面设计尺寸；小屏由 UiMetrics.card_grid 压缩/换行，见 setup）
+const CARD_WANT := Vector2(200.0, 220.0)
+const CARD_MIN_W := 140.0
+const CARD_MIN_H := 150.0
+const CARD_GAP := 14.0
+## 卡阵上方「标题 + 说明 + 段间距」占掉的高度（dp）
+const BOX_RESERVE_H := 100.0
+
 var _choice: Dictionary = {}
 
 @onready var _title: Label = $Center/Box/Title
 @onready var _sub: Label = $Center/Box/Sub
-@onready var _cards: HBoxContainer = $Center/Box/Cards
+@onready var _cards: GridContainer = $Center/Box/Cards
 
 func _ready() -> void:
 	visible = false
@@ -20,10 +28,18 @@ func setup(choice: Dictionary) -> void:
 	var cfg: Dictionary = Registry.weapons.get(String(choice.get("weapon", "")), {})
 	var branches: Array = choice.get("branches", [])
 	_title.text = "⚔ %s 进化方向" % String(cfg.get("name", "武器"))
-	_sub.text = "持有 %d 把 %s · 选择进化分支" % [int(choice.get("need", 0)), String(cfg.get("name", ""))]
+	# 触屏没有数字键/方向键，提示换成点按
+	var how := "点按选择分支" if UiMetrics.is_touch else "按 1~N · 手柄方向键 + A · 鼠标点击"
+	_sub.text = "持有 %d 把 %s · %s" % [int(choice.get("need", 0)), String(cfg.get("name", "")), how]
 	for c in _cards.get_children():
 		_cards.remove_child(c)
 		c.free()
+	# 进化分支可能多达 4 条：窄屏横排放不下时自动落成 2×2，而不是被 CenterContainer 裁掉
+	var grid := UiMetrics.card_grid(branches.size(), CARD_WANT,
+		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),
+		UiMetrics.dp(BOX_RESERVE_H))
+	var card_size: Vector2 = grid.card_size
+	_cards.columns = int(grid.cols)
 	var idx := 0
 	for bid in branches:
 		if not Registry.weapons.has(String(bid)):
@@ -31,7 +47,7 @@ func setup(choice: Dictionary) -> void:
 		idx += 1
 		var bcfg: Dictionary = Registry.weapons[String(bid)]
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(200.0, 220.0)
+		btn.custom_minimum_size = card_size
 		btn.pressed.connect(_choose.bind(String(bid)))
 		_apply_style(btn, String(bcfg.get("rarity", "common")))
 		_cards.add_child(btn)
@@ -66,7 +82,7 @@ func setup(choice: Dictionary) -> void:
 		desc.text = String(bcfg.get("desc", ""))
 		desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc.custom_minimum_size = Vector2(180.0, 0.0)
+		desc.custom_minimum_size = Vector2(maxf(card_size.x - 20.0, 60.0), 0.0)
 		desc.add_theme_font_size_override("font_size", 12)
 		desc.add_theme_color_override("font_color", Color("9aa3b2"))
 		desc.mouse_filter = Control.MOUSE_FILTER_IGNORE

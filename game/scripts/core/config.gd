@@ -16,6 +16,16 @@ const PLAYER := {
 	"iframes": 0.45, "touch_tick": 0.6,
 }
 
+## 暴击率硬上限：堆再多暴击道具 / 升级也只能到 90%，永远保留 10% 不暴击的运气空间。
+## 这是**唯一真值** —— Registry.STAT_LIMITS / EFFECT_LIMITS、SaveRun 读档校验、
+## Player._sanitize_stats、DevPanel 滑块全部引用它，改这里等于全局生效。
+## （对比：闪避上限 0.95 是各文件里写死的，历史遗留；新增的数值上限都收敛到常量。）
+const CRIT_CHANCE_CAP := 0.9
+
+## 怪物击杀掉落材料系数：全局下调 10%，直接乘在敌人 cfg.mat 上（先于收获加成生效）。
+## 用系数而非改 NPC_ENEMIES 里 40+ 条 mat 字段：一处可见、一处可回滚。
+const MATERIAL_DROP_MULT := 0.9
+
 ## ============================================================
 ## 状态效果（异常状态）—— 数据驱动，武器/道具/升级只引用状态 id
 ## 字段说明：
@@ -251,28 +261,28 @@ const WEAPONS := {
 	"pistol": { "name": "手枪", "ico": "🔫", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.55, "dmg": 12.0, "bspeed": 540.0, "rarity": "common", "family": "gun", "evolve_need": 3, "evolve_branches": ["smg", "shotgun", "pistol_ex"], "desc": "稳定单体远程，可进化多分支", "price": 25, "shop_weight": 3 },
 	"smg": { "name": "冲锋枪", "ico": "💢", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.16, "dmg": 5.0, "bspeed": 600.0, "spread": 0.13, "rarity": "rare", "family": "gun", "evolve_need": 3, "evolve_branches": ["smg_ex", "gatling"], "desc": "极快射速，轻微散射，可进化分支", "price": 35, "shop_weight": 2.4 },
 	"shotgun": { "name": "霰弹枪", "ico": "💥", "attack_type": "projectile", "sfx": "shoot_shotgun", "cd": 0.90, "dmg": 7.0, "bspeed": 480.0, "pellets": 5, "arc": 0.7, "bullet_life": 0.55, "shake": 2.0, "rarity": "rare", "family": "gun", "evolve_need": 3, "evolve_branches": ["shotgun_ex", "grenade"], "desc": "一次射出5发扇形弹丸，可进化分支", "price": 42, "shop_weight": 1.6 },
-	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 16.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "family": "blade", "evolve_need": 3, "evolve_branches": ["blade", "venom_dagger", "tar_whip", "blade_ex"], "desc": "近战弧形挥砍，概率造成流血，可进化多分支", "price": 28, "shop_weight": 2.4 },
+	"knife": { "name": "砍刀", "ico": "🔪", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.38, "dmg": 12.0, "range": 82.0, "swing_arc": 1.5, "status": "bleed", "status_chance": 0.30, "rarity": "common", "family": "blade", "evolve_need": 3, "evolve_branches": ["blade", "venom_dagger", "tar_whip", "blade_ex"], "desc": "近战弧形挥砍，概率造成流血，可进化多分支", "price": 28, "shop_weight": 2.4 },
 	"rocket": { "name": "火箭筒", "ico": "🚀", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 34.0, "bspeed": 380.0, "splash": 88.0, "shake": 2.5, "status": "burn", "status_chance": 0.45, "rarity": "epic", "family": "heavy", "desc": "命中范围爆炸 AOE，概率点燃", "price": 60, "shop_weight": 0.8 },
 	"sniper": { "name": "狙击枪", "ico": "🎯", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 1.55, "dmg": 58.0, "bspeed": 920.0, "bullet_life": 1.4, "shake": 1.5, "status": "bleed", "status_chance": 0.35, "rarity": "epic", "family": "heavy", "desc": "一发入魂的超远距重击，概率造成流血", "price": 75, "shop_weight": 0.7 },
 	"blade": { "name": "太刀", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.50, "dmg": 30.0, "range": 120.0, "swing_arc": 1.9, "status": "bleed", "status_chance": 0.45, "rarity": "epic", "family": "blade", "evolve_need": 3, "evolve_branches": ["blade_ex", "flame_jian"], "desc": "刀身更长的大开大合宽弧重斩，高概率造成流血，可进化分支", "price": 68, "shop_weight": 1 },
 	# ---- 状态效果武器（数据驱动：status = Config.STATUS 键） ----
 	"flamethrower": { "name": "火焰喷射器", "ico": "🔥", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 4.0, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.34, "status": "burn", "status_chance": 0.85, "rarity": "rare", "family": "element", "desc": "短程火舌，高频叠加燃烧", "price": 52, "shop_weight": 1.5 },
-	"frost_staff": { "name": "霜冻法杖", "ico": "❄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.80, "dmg": 9.0, "bspeed": 420.0, "splash": 58.0, "status": "freeze", "status_chance": 0.55, "rarity": "epic", "family": "element", "desc": "范围冰冻定身，冻结目标受到额外伤害", "price": 72, "shop_weight": 0.9 },
+	"frost_staff": { "name": "霜冻法杖", "ico": "❄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.80, "dmg": 14.0, "bspeed": 420.0, "splash": 58.0, "status": "freeze", "status_chance": 0.55, "rarity": "epic", "family": "element", "desc": "范围冰冻定身，冻结目标受到额外伤害", "price": 72, "shop_weight": 0.9 },
 	"venom_dagger": { "name": "毒牙匕首", "ico": "🐍", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.42, "dmg": 12.0, "range": 88.0, "swing_arc": 1.6, "status": "poison", "status_chance": 0.70, "rarity": "rare", "family": "blade", "desc": "淬毒近战，按最大生命持续掉血", "price": 48, "shop_weight": 1.4 },
 	# ---- Phase 2 主题包新增（8 把，补齐五行状态覆盖） ----
-	"thunder_gong": { "name": "震雷法锣", "ico": "🔔", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 22.0, "bspeed": 340.0, "splash": 90.0, "status": "stun", "status_chance": 0.45, "status_stacks": 1, "shake": 2.5, "rarity": "epic", "family": "element", "desc": "锣声震荡，范围眩晕，控场利器", "price": 72, "shop_weight": 0.9 },
+	"thunder_gong": { "name": "震雷法锣", "ico": "🔔", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 22.0, "bspeed": 340.0, "splash": 90.0, "status": "stun", "status_chance": 0.45, "status_stacks": 1, "shake": 2.5, "rarity": "epic", "family": "element", "desc": "锣声震荡，范围眩晕，控场利器", "price": 54, "shop_weight": 0.9 },
 	"tar_whip": { "name": "沥青长鞭", "ico": "🕸", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.55, "dmg": 14.0, "range": 110.0, "swing_arc": 2.0, "status": "slow", "status_chance": 0.65, "status_stacks": 1, "rarity": "rare", "family": "blade", "desc": "长鞭横扫，高频减速，牵制群敌", "price": 42, "shop_weight": 1.5 },
 	"ember_fan": { "name": "赤焰折扇", "ico": "🪭", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.70, "dmg": 10.0, "bspeed": 460.0, "pellets": 3, "arc": 0.55, "status": "burn", "status_chance": 0.50, "status_stacks": 1, "rarity": "rare", "family": "element", "desc": "扇形三射火舌，快速铺设燃烧", "price": 46, "shop_weight": 1.3 },
-	"vine_lash": { "name": "青藤缠索", "ico": "🌱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.90, "dmg": 13.0, "bspeed": 380.0, "splash": 60.0, "status": "poison", "status_chance": 0.55, "status_stacks": 2, "rarity": "rare", "family": "element", "desc": "藤蔓爆裂散毒，双层中毒叠加", "price": 48, "shop_weight": 1.2 },
+	"vine_lash": { "name": "青藤缠索", "ico": "🌱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.90, "dmg": 13.0, "bspeed": 380.0, "splash": 60.0, "status": "poison", "status_chance": 0.55, "status_stacks": 2, "rarity": "rare", "family": "element", "desc": "藤蔓爆裂散毒，双层中毒叠加", "price": 36, "shop_weight": 1.2 },
 	"gold_bell": { "name": "金铃破空", "ico": "🛎", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.85, "dmg": 26.0, "bspeed": 720.0, "bullet_life": 1.2, "status": "bleed", "status_chance": 0.55, "status_stacks": 2, "rarity": "epic", "family": "element", "desc": "金铃高速激射，双层流血叠加", "price": 74, "shop_weight": 1 },
-	"frost_nova": { "name": "玄冰新星", "ico": "🧊", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 18.0, "bspeed": 320.0, "splash": 110.0, "status": "freeze", "status_chance": 0.40, "status_stacks": 1, "shake": 1.5, "rarity": "epic", "family": "element", "desc": "寒冰爆发大范围冰冻，冻结目标易伤", "price": 78, "shop_weight": 0.9 },
-	"flame_jian": { "name": "火焰长剑", "ico": "🌋", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.48, "dmg": 24.0, "range": 118.0, "swing_arc": 2.2, "status": "burn", "status_chance": 0.75, "status_stacks": 3, "shake": 1.5, "rarity": "legendary", "family": "blade", "desc": "剑身缠火，横扫三层燃烧，火系构筑顶点", "price": 145, "shop_weight": 1.2 },
+	"frost_nova": { "name": "玄冰新星", "ico": "🧊", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.30, "dmg": 26.0, "bspeed": 320.0, "splash": 110.0, "status": "freeze", "status_chance": 0.40, "status_stacks": 1, "shake": 1.5, "rarity": "epic", "family": "element", "desc": "寒冰爆发大范围冰冻，冻结目标易伤", "price": 78, "shop_weight": 0.9 },
+	"flame_jian": { "name": "火焰长剑", "ico": "🌋", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.48, "dmg": 24.0, "range": 118.0, "swing_arc": 2.2, "status": "burn", "status_chance": 0.75, "status_stacks": 3, "shake": 1.5, "rarity": "legendary", "family": "blade", "desc": "剑身缠火，横扫三层燃烧，火系构筑顶点", "price": 145, "shop_weight": 0.8 },
 	"chaos_hammer": { "name": "混沌重锤", "ico": "🔨", "attack_type": "melee", "sfx": "shoot_knife", "cd": 1.20, "dmg": 45.0, "range": 130.0, "swing_arc": 2.4, "status": "stun", "status_chance": 0.60, "status_stacks": 1, "shake": 4.0, "rarity": "mythic", "family": "blade", "desc": "开天一锤，眩晕 + 高爆发伤害", "price": 105, "shop_weight": 1 },
 	# ---- Phase 3 内容扩充（4 把：超重单发 / 双发连弩 / 冰系近战 / 佛门爆发） ----
 	"railgun": { "name": "磁轨炮", "ico": "🛰", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 2.40, "dmg": 120.0, "bspeed": 1200.0, "bullet_life": 1.8, "shake": 4.0, "status": "bleed", "status_chance": 0.40, "status_stacks": 2, "rarity": "legendary", "family": "heavy", "desc": "蓄力后的一发贯穿重击，弹速拉满，命中附带双层流血", "price": 250, "shop_weight": 0.55 },
 	"blight_bow": { "name": "疫病连弩", "ico": "🏹", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.70, "dmg": 9.0, "bspeed": 560.0, "pellets": 2, "arc": 0.18, "status": "poison", "status_chance": 0.50, "status_stacks": 1, "rarity": "rare", "family": "element", "desc": "每次双发，高频铺毒，按最大生命持续掉血", "price": 52, "shop_weight": 1.3 },
 	"frost_hammer": { "name": "霜牙重锤", "ico": "🔨", "attack_type": "melee", "sfx": "shoot_knife", "cd": 1.30, "dmg": 48.0, "range": 122.0, "swing_arc": 2.6, "status": "freeze", "status_chance": 0.35, "status_stacks": 1, "shake": 3.0, "rarity": "epic", "family": "blade", "desc": "范围重砸，概率冻结，冻结目标受到额外伤害", "price": 92, "shop_weight": 0.85 },
-	"gold_scepter": { "name": "鎏金权杖", "ico": "🪄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 28.0, "bspeed": 380.0, "splash": 105.0, "status": "stun", "status_chance": 0.30, "status_stacks": 1, "shake": 2.5, "rarity": "legendary", "family": "element", "desc": "范围震荡，伤害更高但眩晕概率低于震雷法锣", "price": 235, "shop_weight": 0.6 },
+	"gold_scepter": { "name": "鎏金权杖", "ico": "🪄", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 1.10, "dmg": 40.0, "bspeed": 380.0, "splash": 105.0, "status": "stun", "status_chance": 0.30, "status_stacks": 1, "shake": 2.5, "rarity": "legendary", "family": "element", "desc": "范围震荡，伤害更高但眩晕概率低于震雷法锣", "price": 150, "shop_weight": 0.6 },
 	# ---- 进化形态（不进商店池：shop_weight = 0 被 shop_weapon_pool 过滤；波末合成获得） ----
 	"pistol_ex": { "name": "双管神射", "ico": "🔱", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.32, "dmg": 20.0, "bspeed": 680.0, "pellets": 2, "arc": 0.12, "rarity": "mythic", "family": "gun", "desc": "进化：双联齐射，单发伤害 +67%", "price": 30, "shop_weight": 0 },
 	"smg_ex": { "name": "蜂巢风暴", "ico": "🌪", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 7.0, "bspeed": 640.0, "spread": 0.20, "pellets": 3, "arc": 0.5, "rarity": "mythic", "family": "gun", "desc": "进化：三管齐喷的弹幕风暴", "price": 30, "shop_weight": 0 },
@@ -894,6 +904,10 @@ const HEAL_DROP_CHANCE := 0.05
 const SHOP_HEAL_PRICE := 15
 const SHOP_UPGRADE_CHANCE := 0.29   # 商店刷出升级属性的概率（武器 42% 之外再分摊）
 
+## 商店货架格数。6 格 = 选择面足够宽，又不至于让单波收入能全清货架。
+## ShopUI 构建 / 重掷 / 冒烟断言都读这里，加货架只改这一个数。
+const SHOP_SLOTS := 6
+
 ## 是否 BOSS 波：标准模式 = 最后一波；无尽炼狱 = 每 10 波一轮。
 ## 自定义规则下"最后一波"由 RunRules 的波次总数决定（默认 10 → 与 BOSS_WAVE 一致）。
 static func is_boss_wave(w: int) -> bool:
@@ -1312,5 +1326,10 @@ static func wave_composition(w: int) -> Array:
 static func shop_reroll_cost(wave: int) -> int:
 	return 8 + wave * 3
 
+## 商店售价随波次上浮：第 1 波原价，之后每波 +11%（第 10 波约 ×1.99）。
+## 系数从 0.08 上调到 0.11 是配合「货架扩到 6 格」——商品多了选择面变宽，
+## 靠价格上浮压住「后期一波收入清空半店」的滚雪球，让买哪几件重新变成取舍。
+## 注意：只作用于商店**售价**；出售返还按 base_price × 0.5 计算，不含这个上浮
+## （见 shop_ui._sell，所以后期「买了又卖」会亏差价，这是刻意设计）。
 static func shop_price(base_price: int, wave: int) -> int:
-	return int(round(float(base_price) * (1.0 + 0.08 * (wave - 1))))
+	return int(round(float(base_price) * (1.0 + 0.11 * (wave - 1))))

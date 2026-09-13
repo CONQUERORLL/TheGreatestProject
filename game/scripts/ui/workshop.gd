@@ -163,16 +163,20 @@ func _ready() -> void:
 	add_child(bg)
 	_build_browser()
 	_build_editor()
+	# 返回键路由：Android 返回键走 NOTIFICATION_WM_GO_BACK_REQUEST（不是 ui_cancel）
+	Nav.bind(self, _handle_back)
 
 # ================= 浏览面板 =================
 
 func _build_browser() -> void:
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# 小屏用安全区边距（避开刘海 / 打孔 / 手势条），桌面沿用原来的 40 / 24
+	var wm := UiMetrics.margin() if UiMetrics.prefers_full_page() else Vector2(40.0, 24.0)
 	for side in ["margin_left", "margin_right"]:
-		margin.add_theme_constant_override(side, 40)
-	margin.add_theme_constant_override("margin_top", 24)
-	margin.add_theme_constant_override("margin_bottom", 24)
+		margin.add_theme_constant_override(side, int(wm.x))
+	margin.add_theme_constant_override("margin_top", int(wm.y))
+	margin.add_theme_constant_override("margin_bottom", int(wm.y))
 	add_child(margin)
 	_browser = margin
 	var box := VBoxContainer.new()
@@ -397,14 +401,21 @@ func _close_editor() -> void:
 	_rebuild_list()
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Android 返回键 / Esc / 手柄 B：编辑器内先返回列表，列表页回主菜单（消费事件杜绝误退出）
 	if not event.is_action_pressed("ui_cancel"):
 		return
+	if Nav.owns_back():
+		return   # 移动端返回键由 Nav 路由，避免一次返回被算成两次
+	_handle_back()
+	get_viewport().set_input_as_handled()
+
+## 返回：编辑器内先返回列表，列表页回主菜单（杜绝一次误触直接退出去）。
+## 与 _unhandled_input 共用，Android 返回键（走 Nav）同样落到这里。
+func _handle_back() -> bool:
 	if _editor.visible:
 		_close_editor()
 	else:
 		get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")
-	get_viewport().set_input_as_handled()
+	return true
 
 func _on_editor_cat(on: bool, cat: String) -> void:
 	if not on:

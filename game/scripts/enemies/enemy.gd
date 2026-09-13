@@ -847,7 +847,9 @@ func _drop_loot() -> void:
 		harvest = player.stats.harvesting
 	_spawn_loot("xp", int(cfg.xp),
 		Vector2(GameRng.range_f(-40.0, 40.0), GameRng.range_f(-40.0, 40.0)))
-	_spawn_loot("mat", maxi(1, roundi(float(cfg.mat) * (1.0 + harvest))),
+	# 材料掉落先乘全局系数（Config.MATERIAL_DROP_MULT = 0.9，怪物掉落整体 -10%），
+	# 再叠玩家收获加成。系数只作用于**怪物掉落**，不动波次结算 / 事件卡 / 法宝补偿
+	_spawn_loot("mat", maxi(1, roundi(float(cfg.mat) * Config.MATERIAL_DROP_MULT * (1.0 + harvest))),
 		Vector2(GameRng.range_f(-50.0, 50.0), GameRng.range_f(-50.0, 50.0)))
 	var heart_ch: float = float(cfg.get("heart_chance", Config.HEAL_DROP_CHANCE))
 	if heart_ch > 0.0 and GameRng.chance(heart_ch):

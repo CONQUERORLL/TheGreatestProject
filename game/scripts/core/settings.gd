@@ -4,9 +4,6 @@ extends Node
 
 const CFG_PATH := "user://settings.cfg"
 
-## 手机端 UI 整体放大倍率：canvas_items 拉伸下 content_scale_factor
-## 对全部控件/字体/虚拟摇杆等比生效；PC 端保持 1.0 完全不变
-const MOBILE_UI_SCALE := 1.5
 const BUS_SFX := "SFX"
 const BUS_MUSIC := "Music"
 
@@ -74,8 +71,9 @@ var _binds := {}   # action -> Array[描述符 Dictionary]
 
 func _ready() -> void:
 	_apply_mobile_scale()
-	# 运行时再次强制关闭"按返回键即退出"（project.godot 已配 quit_on_go_back=false，
-	# 这里兜底，保证任何场景下 Android 返回都作为 ui_cancel 事件交给游戏自行处理，绝不直接杀进程）
+	# 运行时再次强制关闭「按返回键即退出」。注意：关掉它只是让 Android 返回键不再杀进程，
+	# 真正的返回逻辑在 Nav autoload（Godot 4 的返回键是 NOTIFICATION_WM_GO_BACK_REQUEST
+	# 通知，不是 ui_cancel 动作，各界面必须通过 Nav 注册处理器）
 	get_tree().set_quit_on_go_back(false)
 	ensure_audio_buses()
 	load_config()
@@ -92,11 +90,10 @@ func go_background() -> void:
 				return
 	get_tree().quit()
 
-## 手机端 UI 全局放大（Android/iOS 导出模板自带 "mobile" feature 标签，
-## 桌面触屏笔记本不会误触发；须在 autoload 阶段设置以覆盖所有场景）
+## 手机端 UI 全局倍率交由 UiMetrics 统一决定（按屏幕物理尺寸推算，而不是写死一个常数）。
+## 桌面端倍率恒为 1.0，排布与数值完全不变。
 func _apply_mobile_scale() -> void:
-	if OS.has_feature("mobile"):
-		get_tree().root.content_scale_factor = MOBILE_UI_SCALE
+	UiMetrics.apply()
 
 # ---------------- 持久化 ----------------
 

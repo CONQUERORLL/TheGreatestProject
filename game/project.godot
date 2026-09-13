@@ -21,6 +21,9 @@ config/quit_on_go_back=false
 [autoload]
 
 Config="*res://scripts/core/config.gd"
+; UiMetrics 必须在 Settings 之前：Settings._ready 要靠它决定移动端全局倍率
+UiMetrics="*res://scripts/core/ui_metrics.gd"
+Nav="*res://scripts/core/nav.gd"
 GameRng="*res://scripts/core/rng.gd"
 EventBus="*res://scripts/core/event_bus.gd"
 GameState="*res://scripts/core/game_state.gd"

@@ -291,7 +291,7 @@ func _read_path(path: String) -> Dictionary:
 		"max_hp": Vector2(1.0, 10_000_000.0), "regen": Vector2(0.0, 1_000_000.0),
 		"armor": Vector2(-7.9, 1_000_000.0), "dodge": Vector2(0.0, 0.95),
 		"dmg_mult": Vector2(0.01, 10_000.0), "as_mult": Vector2(0.01, 10_000.0),
-		"crit_ch": Vector2(0.0, 1.0), "crit_mult": Vector2(1.0, 10_000.0),
+		"crit_ch": Vector2(0.0, Config.CRIT_CHANCE_CAP), "crit_mult": Vector2(1.0, 10_000.0),
 		"speed_mult": Vector2(0.01, 10_000.0), "base_speed": Vector2(1.0, 100_000.0),
 		"pickup_range": Vector2(0.0, 1_000_000.0), "harvesting": Vector2(-0.99, 1_000.0),
 		"lifesteal": Vector2(0.0, 1_000_000.0),
@@ -338,7 +338,7 @@ func _sanitize_stats(stats: Dictionary) -> void:
 	stats.dmg_mult = maxf(0.01, float(stats.dmg_mult))
 	stats.as_mult = maxf(0.01, float(stats.as_mult))
 	stats.speed_mult = maxf(0.01, float(stats.speed_mult))
-	stats.crit_ch = clampf(float(stats.crit_ch), 0.0, 1.0)
+	stats.crit_ch = clampf(float(stats.crit_ch), 0.0, Config.CRIT_CHANCE_CAP)
 	stats.crit_mult = maxf(1.0, float(stats.crit_mult))
 	stats.armor = maxf(-7.9, float(stats.armor))
 	stats.dodge = clampf(float(stats.dodge), 0.0, 0.95)

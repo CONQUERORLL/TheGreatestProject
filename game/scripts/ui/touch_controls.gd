@@ -7,8 +7,8 @@ signal pause_requested
 
 const RADIUS := 72.0     # 摇杆基座半径（拖满 = 全速）
 const KNOB := 30.0       # 摇杆头半径
-const PAUSE_BTN := 76.0  # 暂停按钮设计尺寸（1.5x 缩放下物理约 114dp）
-const SAFE_MIN := 14.0   # 安全区最薄边距兜底
+const PAUSE_BTN := 76.0  # 暂停按钮尺寸（≈76dp，手指点得准）
+const SAFE_MIN := 14.0   # 安全区最薄边距兜底（UiMetrics 取不到时使用）
 
 var _touch_idx := -1        # 占用的触点 index（-1 = 空闲；多点触控时摇杆独占一个手指）
 var _base := Vector2.ZERO   # 基座屏幕坐标（按下的位置）
@@ -22,24 +22,24 @@ func _ready() -> void:
 	visible = false
 	GameState.phase_changed.connect(_on_phase_changed)
 	_build_pause_btn()
+	# 布局/旋转变化后重新摆位（原来只监听自身 RESIZED，
+	# 但安全区变化不一定伴随本控件的 resize）
+	UiMetrics.metrics_changed.connect(_apply_safe_layout)
 	call_deferred("_apply_safe_layout")
 
 func _notification(what: int) -> void:
 	if what == Control.NOTIFICATION_RESIZED:
 		_apply_safe_layout()
 
-## 安全区（避开横屏左右相机打孔/刘海、底部手势条）→ 换算成设计像素边距
+## 安全区（避开横屏左右相机打孔/刘海、底部手势条）→ 换算成 UI 单位边距。
+## 换算收敛到 UiMetrics —— 之前主菜单和这里各算一遍，两处必须手动保持一致。
 func _recompute_safe() -> void:
-	var scr: Vector2i = DisplayServer.screen_get_size()
-	var safe: Rect2i = DisplayServer.get_display_safe_area()
-	var cv := size
-	if scr.x <= 0 or scr.y <= 0 or cv.x <= 0:
-		_safe = {"left": SAFE_MIN, "right": SAFE_MIN, "top": SAFE_MIN}
-		return
-	var ml := float(safe.position.x) / float(scr.x) * cv.x
-	var mr := float(scr.x - (safe.position.x + safe.size.x)) / float(scr.x) * cv.x
-	var mt := float(safe.position.y) / float(scr.y) * cv.y
-	_safe = {"left": maxf(ml, SAFE_MIN), "right": maxf(mr, SAFE_MIN), "top": maxf(mt, SAFE_MIN)}
+	var s := UiMetrics.safe_insets()
+	_safe = {
+		"left": maxf(float(s.left), SAFE_MIN),
+		"right": maxf(float(s.right), SAFE_MIN),
+		"top": maxf(float(s.top), SAFE_MIN),
+	}
 
 ## 把暂停按钮放进右上角安全区内（不压相机打孔/刘海）
 func _apply_safe_layout() -> void:

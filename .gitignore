@@ -4,3 +4,7 @@ export/
 
 # 本地 agent 工作区数据（记忆 / 技能快照），不进版本库
 .workbuddy/
+
+# git 灾难抢救时的临时备份目录 + 诊断输出（事后清理，绝不入版）
+_backup_before_git_repair_*/
+tmp_*.txt

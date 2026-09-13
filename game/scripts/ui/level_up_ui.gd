@@ -7,11 +7,23 @@ extends Control
 var player  # characters/player.gd 引用，由 main 注入
 var _choices: Array = []   # 当前三张升级卡（Registry.upgrades 元素）
 
+## 卡阵参数（桌面设计尺寸；小屏由 UiMetrics.card_grid 压缩/换行，见 _build_cards）
+const CARD_WANT := Vector2(200.0, 220.0)
+const CARD_MIN_W := 140.0
+const CARD_MIN_H := 150.0
+const CARD_GAP := 14.0
+## 卡阵上方「标题 + 说明 + 段间距」占掉的高度（dp），用于给卡片算剩余高度
+const BOX_RESERVE_H := 110.0
+
 @onready var _title: Label = $Center/Box/Title
-@onready var _cards: HBoxContainer = $Center/Box/Cards
+@onready var _sub: Label = $Center/Box/Sub
+@onready var _cards: GridContainer = $Center/Box/Cards
 
 func _ready() -> void:
 	visible = false
+	# 触屏设备没有 1/2/3 键，提示必须换成点按，否则玩家会去找键盘
+	_sub.text = "点按卡片选择强化" if UiMetrics.is_touch \
+		else "选择一项强化 · 按 1 / 2 / 3 · 手柄方向键 + A · 鼠标点击"
 	EventBus.leveled_up.connect(_on_leveled_up)
 	# 波末掉落自动回收等场景会在非 PLAYING 阶段积压 level_queue，
 	# 回到战斗阶段时补弹升级卡，确保不吞升级选择
@@ -140,11 +152,17 @@ func _build_cards() -> void:
 	for c in _cards.get_children():
 		_cards.remove_child(c)
 		c.free()   # 立即删除：不用 queue_free，否则帧末 get_children 返回旧+新混合
+	# 卡阵按可用区域自适应：桌面恒为一行 200×220，小屏自动收窄/换行（详见 UiMetrics.card_grid）
+	var grid := UiMetrics.card_grid(_choices.size(), CARD_WANT,
+		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),
+		UiMetrics.dp(BOX_RESERVE_H))
+	var card_size: Vector2 = grid.card_size
+	_cards.columns = int(grid.cols)
 	for i in _choices.size():
 		var u: Dictionary = _choices[i] if typeof(_choices[i]) == TYPE_DICTIONARY else {}
 		var rarity := String(u.get("rarity", "common"))
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(200.0, 220.0)
+		btn.custom_minimum_size = card_size
 		btn.pressed.connect(_choose.bind(i))
 		_apply_card_style(btn, rarity)
 		_cards.add_child(btn)
@@ -178,7 +196,8 @@ func _build_cards() -> void:
 		desc.text = String(u.get("desc", ""))
 		desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc.custom_minimum_size = Vector2(180.0, 0.0)
+		# 自动换行宽度跟着卡片实际宽度走，卡被压窄时文字才不会横向溢出卡面
+		desc.custom_minimum_size = Vector2(maxf(card_size.x - 20.0, 60.0), 0.0)
 		desc.add_theme_font_size_override("font_size", 12)
 		desc.add_theme_color_override("font_color", Color("9aa3b2"))
 		desc.mouse_filter = Control.MOUSE_FILTER_IGNORE

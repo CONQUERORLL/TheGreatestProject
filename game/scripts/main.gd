@@ -151,6 +151,9 @@ func _ready() -> void:
 	_build_end_menus()
 	_build_toast()
 	_build_reaction_popup()
+	# 返回键路由：Android 返回键走 NOTIFICATION_WM_GO_BACK_REQUEST（不是 ui_cancel），
+	# 之前的版本没有任何地方接这个通知，导致移动端按返回键毫无反应。交给 Nav 统一派发。
+	Nav.bind(self, _handle_back)
 	queue_redraw()
 
 func _process(delta: float) -> void:
@@ -187,8 +190,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("pause"):
 		toggle_pause()
 	elif event.is_action_pressed("ui_cancel"):
-		# Android 返回键（Godot 4 默认映射 ui_cancel）/ 手柄 B：战斗中暂停、暂停中恢复
-		# PC 的 Esc 同时命中 pause 与 ui_cancel，只走上面的 pause 分支不会重复触发
+		# 移动端：返回键由 Nav 统一路由（它同时接管 GO_BACK 通知与 ui_cancel 两条来路，
+		# 两条路可能撞车，只能由一方处理）。这里主动让位，否则一次返回会被算成两次。
+		if Nav.owns_back():
+			return
+		# 桌面：Esc 与 pause 同键已在上面的分支消费，能走到这里的只有手柄 B
+		# → 战斗中暂停 / 暂停中恢复
 		toggle_pause()
 	elif event.is_action_pressed("toggle_mute"):
 		Settings.toggle_mute()
@@ -931,6 +938,39 @@ func _hide_banner() -> void:
 		banner_title.visible = false
 		banner_sub.visible = false)
 
+## 返回键语义（Android 返回 / Windows 鼠标侧键 / 移动端的 ui_cancel 都汇到这里）。
+## 与 _unhandled_input 的 ui_cancel 分支共用同一套相位判断，避免写两遍走偏。
+## 返回 true = 已消费（Nav 不再往上找）。
+func _handle_back() -> bool:
+	# 强制选择态：升级 / 进化 / 奇遇卡都必须选完才能继续。
+	# 允许返回会留下「没选强化就进了下一波」的中间态，宁可让返回键短暂失效。
+	if GameState.phase == GameState.Phase.LEVEL_UP:
+		return true
+	if evolve_choose_ui != null and evolve_choose_ui.visible:
+		return true
+	if event_card_ui != null and event_card_ui.visible:
+		return true
+	# 战斗中 / 开场 / 已暂停：一律映射成暂停开关（与 Esc、摇杆暂停按钮同语义）
+	if GameState.phase == GameState.Phase.PLAYING \
+			or GameState.phase == GameState.Phase.INTRO \
+			or GameState.phase == GameState.Phase.PAUSED:
+		toggle_pause()
+		return true
+	# 商店：安全暂停态，返回 = 跳过商店进入下一波（与「下一波」按钮同语义）
+	if GameState.phase == GameState.Phase.SHOP:
+		shop_ui.next_wave()
+		return true
+	# 结算界面：与「返回主菜单」按钮完全同路径 ——
+	# 通关必须先 _finish_victory_run() 清档，否则会留下一个「已通关但还能继续读」的档
+	if GameState.phase == GameState.Phase.VICTORY:
+		_finish_victory_run()
+		_goto_main_menu()
+		return true
+	if GameState.phase == GameState.Phase.GAME_OVER:
+		_goto_main_menu()
+		return true
+	return false
+
 func toggle_pause() -> void:
 	if GameState.phase == GameState.Phase.PLAYING or GameState.phase == GameState.Phase.INTRO:
 		_phase_before_pause = GameState.phase
@@ -982,16 +1022,28 @@ func _build_pause_menu() -> void:
 	_pause_overlay.add_child(dim)
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 20)
+	# 小屏用安全区边距（避开刘海 / 打孔 / 手势条），桌面沿用 20
+	var pm := UiMetrics.margin() if UiMetrics.prefers_full_page() else Vector2(20.0, 20.0)
+	for m in ["margin_left", "margin_right"]:
+		margin.add_theme_constant_override(m, int(pm.x))
+	for m in ["margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, int(pm.y))
 	_pause_overlay.add_child(margin)
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 14)
 	margin.add_child(hb)
+	# 三栏宽度：小屏收窄（288/300 → 约 190/170），把中间按钮区让出来。
+	# 旧版固定 288 + 300，在手机横屏（约 900 单位宽）会把中间挤到只剩 250，
+	# 「继续游戏 / 返回主菜单」两个按钮几乎贴在一起
+	var compact_pause := UiMetrics.prefers_full_page()
+	var side_l := UiMetrics.dp(190.0) if compact_pause else 288.0
+	var side_r := UiMetrics.dp(170.0) if compact_pause else 300.0
+	var act_w := UiMetrics.dp(180.0) if compact_pause else 220.0
+	var act_h := UiMetrics.touch_at_least(UiMetrics.dp(38.0)) if compact_pause else 44.0
 	# 左：角色属性面板
 	_pause_left = VBoxContainer.new()
 	_pause_left.add_theme_constant_override("separation", 4)
-	hb.add_child(_mk_side_panel(288.0, _pause_left))
+	hb.add_child(_mk_side_panel(side_l, _pause_left))
 	# 中：标题 + 按钮
 	var center := VBoxContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1005,7 +1057,8 @@ func _build_pause_menu() -> void:
 	title.add_theme_color_override("font_color", Color("f2e7c7"))
 	center.add_child(title)
 	var tip := Label.new()
-	tip.text = "Esc / Start 继续"
+	# 移动端没有 Esc：提示改成返回键（Android 返回键现在由 Nav 路由到 pause 开关）
+	tip.text = "返回键 / Start 继续" if compact_pause else "Esc / Start 继续"
 	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tip.add_theme_font_size_override("font_size", 13)
 	tip.add_theme_color_override("font_color", Color("9aa3b2"))
@@ -1015,18 +1068,18 @@ func _build_pause_menu() -> void:
 	center.add_child(spacer)
 	_pause_resume = Button.new()
 	_pause_resume.text = "继续游戏"
-	_pause_resume.custom_minimum_size = Vector2(220.0, 44.0)
+	_pause_resume.custom_minimum_size = Vector2(act_w, act_h)
 	_pause_resume.pressed.connect(toggle_pause)
 	center.add_child(_pause_resume)
 	var menu_btn := Button.new()
 	menu_btn.text = "返回主菜单"
-	menu_btn.custom_minimum_size = Vector2(220.0, 44.0)
+	menu_btn.custom_minimum_size = Vector2(act_w, act_h)
 	menu_btn.pressed.connect(_goto_main_menu)
 	center.add_child(menu_btn)
 	# 右：已购道具（只展示，不出售）
 	var rbox := VBoxContainer.new()
 	rbox.add_theme_constant_override("separation", 6)
-	var side := _mk_side_panel(300.0, rbox)
+	var side := _mk_side_panel(side_r, rbox)
 	hb.add_child(side)
 	var head := Label.new()
 	head.text = "已购道具"

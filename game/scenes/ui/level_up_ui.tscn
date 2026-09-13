@@ -46,6 +46,7 @@ theme_override_font_sizes/font_size = 13
 text = "选择一项强化 · 按 1 / 2 / 3 · 手柄方向键 + A · 鼠标点击"
 horizontal_alignment = 1
 
-[node name="Cards" type="HBoxContainer" parent="Center/Box"]
+[node name="Cards" type="GridContainer" parent="Center/Box"]
 layout_mode = 2
-theme_override_constants/separation = 14
+theme_override_constants/h_separation = 14
+theme_override_constants/v_separation = 14
