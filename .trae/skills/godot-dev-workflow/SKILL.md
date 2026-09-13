@@ -20,6 +20,13 @@ cd game && timeout 240 "<godot console exe>" --headless --path . res://tests/smo
 - **新增 `class_name` 脚本后必须先 `--import` 重建类缓存**，否则 headless 报 "Identifier not found"：
   `<godot> --headless --path . --import`（日志里出现 `update_scripts_classes | <新类名>`）。
   验证：`.godot/global_script_class_cache.cfg` 里能搜到新类名。
+  **大跨度 `merge --ff-only` / checkout 到含大量新 `class_name` 的分支后同理**
+  （2026-09-13 pc 跨 52 提交后踩过：缓存是旧分支的，headless 连报
+  `Identifier "Burst"/"Obstacles"/"BambooLeaf" not declared`，`main.gd` Parse Error →
+  smoke 场景空跑且**永久挂住**）。凡切分支/合并后第一次跑 smoke 前先 `--import`。
+- **跑 smoke 前先清残留 Godot 进程**：多个 headless/GUI 实例并发会争抢 `user://` 与
+  `.godot` 锁，表现为所有实例一起永久挂起、stdout 全空（本环境一次连开 3 个全挂）。
+  `Get-Process | ? { $_.ProcessName -like "*Godot*" } | Stop-Process -Force` 清干净再单跑。
 - `--check-only --script res://xx.gd` **不能当语法检查用**：该模式不加载 autoload，
   凡引用 `Config` / `GameState` / `Registry` / `Haptics` 的脚本必然报
   "Identifier not found: Config"，全是假阳性。唯一可靠的检查是把 `.tscn` 跑起来。
@@ -146,6 +153,15 @@ bash game/tools/push.sh [分支]
 - **A**：一轮仍失败就**停止重试**，直接把「待推送的提交 + 本地 push 命令」交给用户，
   他在自己的终端执行（不经沙箱代理层，也无工具审批）。
 
+**本机 bash 路径与 `cd` 截断坑（2026-09-13）**：Git 自带 bash 在
+`D:\stable-diffusion\Git\bin\bash.exe`（不在 PATH）。该 bash 里 `cd` 进本仓库目录会
+**输出异常截断、命令静默失败**（`echo` / `ls /d/...` 正常，唯独进仓库不行）。绕法：
+
+- bash 里不 `cd`，全部用 `git -C /d/code/firstProject-ai/TheGreatestProject <args>`；
+- 或直接用 PowerShell 复刻 push.sh 的循环：`Start-Process git push` + `Wait-Process -Timeout 75`
+  强杀 + 每轮 `git ls-remote` 比对本地 SHA。本次三条分支均「push 进程 75s 超时被杀，
+  但 ls-remote 已读到新 SHA」——再次印证判据只认 ls-remote。
+
 ### 沙箱特性：本地远程跟踪 ref 会被回滚
 
 `git push` / `git fetch` 之后，`.git/refs/remotes/**` 的写入**不持久**
@@ -154,6 +170,28 @@ bash game/tools/push.sh [分支]
 
 绕法：直接编辑 `.git/packed-refs`，把对应 `refs/remotes/origin/*` 行改成 `git ls-remote` 拿到的真实 SHA。
 这是本机环境特性，不是仓库问题 —— 用户在普通终端里一切正常。
+
+### ff/checkout 偶发「半更新工作区」：Windows 文件占用 unlink 失败（2026-09-13 实操）
+
+大跨度 `merge --ff-only` / `git checkout` 时，个别已存在文件（本项目踩中两个 `.gitignore`）
+报 `error: unable to unlink old '<file>': Invalid argument`（被杀软/索引器/编辑器瞬时占用）。
+Git 的行为很有迷惑性：
+
+- **已存在的文件**大部分已更新为目标 tree 内容；
+- **目标端新增的文件没创建**（unlink 失败后后续 checkout 中断）；
+- **分支 ref 不移动**（合并整体 abort），`git status` 显示一片 ` M`。
+
+此时**不要 reset --hard 乱砸**。修复三步（实测有效，零丢失）：
+
+```powershell
+git checkout -f <目标tree/分支> -- .   # 强制把 index+工作区补齐到目标内容（会创建缺失文件）
+git diff --stat <目标tree>             # 必须为空：工作区已与目标 tree 完全一致
+git merge --ff-only <来源分支>          # 此时只剩分支指针移动，不再碰文件
+```
+
+判据：ff 完成后 `git rev-parse <分支>` = 目标 SHA，且 `git status` 无已跟踪文件改动。
+（本次工作区还残留早期 git 灾难抢救留下的 `tmp_*.txt` / `_backup_*/`，均被新版
+`.gitignore` 忽略、不影响合并；事后顺手清掉即可。）
 
 ### ⚠️ 禁止 `git rebase`（会触发对象库回滚灾难）
 
@@ -265,6 +303,14 @@ git cat-file -t <远端 tip SHA>                         # 能否读到对象
   会被推断成 `Node`，再调子类方法 `x.setup()` 直接报 `Nonexistent function 'setup' in base 'Node2D'`。
   正确写法：**工厂函数不标返回类型（返回 Variant）**，内部 `var node: Node = null` +
   `node = stack.pop_back() as Node`（显式 cast），调用方用 `var x = ...`（`=` 而非 `:=`）接收。
+- **`AudioStreamWAV.loop_end` 是最后一帧的索引，最大值 `frames - 1`，不是帧数**：
+  设成 `frames`（= sample 数）时循环播放读到尾部就越界。桌面通常无感，
+  **Android 上直接在 AudioTrack 回调线程 SIGSEGV**：启动几秒后闪退，
+  `adb logcat -b crash` 见 `signal 11 (SEGV_ACCERR)` + `libwilhelm.so AudioTrackCallback::onMoreData`。
+  本项目 music.gd 的 wav 加载与 synth 生成**两条路径都要写**
+  `stream.loop_end = maxi(1, frames - 1)`（2026-09-13 只改 wav 路径白修一轮）；
+  wav 数据还要按帧对齐 `aligned = int(data_len / (channels*2)) * (channels*2)`。
+  排 native 崩溃必须 `adb logcat -b crash`（主 buffer 只看得到 `signal 9`）。
 
 ## 6. 架构约定
 
