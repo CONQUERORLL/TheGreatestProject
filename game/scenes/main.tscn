@@ -34,12 +34,14 @@ anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 14.0
-offset_top = -44.0
+offset_top = -122.0
 offset_right = -14.0
-offset_bottom = -12.0
+offset_bottom = -96.0
 theme_override_colors/font_color = Color(0.42, 0.455, 0.517, 1)
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 12
 text = "WASD / 方向键 / 左摇杆 / 鼠标点击·拖动 移动　·　Esc / P / Start 暂停　·　1-5 换武器 / 6 射手 / 7 BOSS（测试）"
+horizontal_alignment = 1
+vertical_alignment = 1
 
 [node name="DeadLabel" type="Label" parent="UI" unique_id=1481434088]
 visible = false

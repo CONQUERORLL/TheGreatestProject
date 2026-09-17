@@ -187,6 +187,7 @@ func _process(delta: float) -> void:
 ## 其余（经济 / 回复 / 护甲等）走左下属性行，避免 HUD 单行过长
 const TRAIT_WEAPON_KEYS := {
 	"bullet_speed_bonus": "弹速", "bullet_range_bonus": "射程",
+	"throw_speed_bonus": "投掷速度", "throw_range_bonus": "投掷距离",
 	"melee_range_bonus": "斩击范围", "aoe_radius_bonus": "爆炸范围",
 	"low_hp_dmg_bonus": "残血增伤",
 }

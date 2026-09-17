@@ -1,9 +1,13 @@
 class_name CharacterAvatar
 extends Control
 ## 角色专属头像：程序化绘制每个角色的像素风人物形象（无贴图资源）。
-## 内置 7 角色：土豆勇者/狂战士/游侠/赌徒/收获者/血族/铁卫；
+##
+## 当前内置 6 角色（五行体系 §3.2.5）：土豆勇者 + 金/木/水/火/土 五修士。
+## 另外保留了 5 个旧角色（狂战士/游侠/收获者/血族/铁卫）的绘制分支 ——
+## 它们已迁入工坊包 `brotato_lite_core`，装上后仍能拿到对应形象；
+## `gambler` 是更早的历史分支，一并留着不吃亏（未知 id 会走兜底，不会报错）。
 ## 未知角色（mod 自定义）回退为角色主题色的通用土豆头。
-## 用法：var av := CharacterAvatar.new(); av.setup("berserker", 72.0)
+## 用法：var av := CharacterAvatar.new(); av.setup("metal_adept", 72.0)
 
 var char_id := "potato"
 var avatar_size := 72.0
@@ -25,6 +29,13 @@ func _draw() -> void:
 	# 底座阴影（所有角色统一的落地面）
 	draw_circle(Vector2(c.x, c.y + r + 6.0), r * 0.85, Color(0.0, 0.0, 0.0, 0.18))
 	match char_id:
+		# ---- 内置：五元素修士（§3.2.5）----
+		"metal_adept": _draw_metal_adept(c, r)
+		"wood_adept": _draw_wood_adept(c, r)
+		"water_adept": _draw_water_adept(c, r)
+		"fire_adept": _draw_fire_adept(c, r)
+		"earth_adept": _draw_earth_adept(c, r)
+		# ---- 工坊包 brotato_lite_core：旧角色形象 ----
 		"berserker": _draw_berserker(c, r)
 		"ranger": _draw_ranger(c, r)
 		"gambler": _draw_gambler(c, r)
@@ -46,9 +57,118 @@ func _eyes(c: Vector2, r: float, eye_col := Color("2b2110"), dx := 7.5, dy := -2
 func _smile(c: Vector2, r: float, col := Color("6b4d1f")) -> void:
 	draw_arc(c + Vector2(0.0, 4.0), r * 0.42, 0.35, PI - 0.35, 12, col, 2.0, true)
 
-# ---------------- 各角色形象 ----------------
+## 眉头（斜线）：angle > 0 = 怒眉（外高内低），< 0 = 忧眉
+func _brows(c: Vector2, col: Color, tilt := 3.0, dy := -8.0, dx := 7.5) -> void:
+	draw_line(c + Vector2(-dx - 3.0, dy - tilt), c + Vector2(-dx + 4.0, dy + tilt), col, 2.5)
+	draw_line(c + Vector2(dx + 3.0, dy - tilt), c + Vector2(dx - 4.0, dy + tilt), col, 2.5)
 
-## 土豆勇者：金棕土豆 + 顶部嫩芽（经典原型造型）
+## 头顶竖立的元素记号：一根杆 + 顶端一个形状（kanji 风格的抽象符）
+func _crest(c: Vector2, r: float, col: Color, glow: Color, ring := false) -> void:
+	var base := c + Vector2(0.0, -r)
+	draw_line(base, base + Vector2(0.0, -8.0), col, 3.0)
+	if ring:
+		draw_arc(base + Vector2(0.0, -12.0), 5.0, 0.0, TAU, 20, glow, 2.5, true)
+	else:
+		draw_colored_polygon(PackedVector2Array([
+			base + Vector2(0.0, -17.0), base + Vector2(-5.5, -10.0), base + Vector2(5.5, -10.0)]),
+			glow)
+
+# ---------------- 内置角色：五元素修士 ----------------
+
+## 鎏金修士（金）：银白金属头 + 锐利单目护额 + 金环冠
+func _draw_metal_adept(c: Vector2, r: float) -> void:
+	_head(Color("dfe6f0"), c, r, Color("8d97a8"))
+	_brows(c, Color("6b7484"), 2.0)
+	_eyes(c, r, Color("2b3440"), 7.5, -2.0, 2.4)
+	_smile(c, r, Color("7a8496"))
+	# 护额横带 + 中心锐角（金系「锋锐」意象）
+	draw_line(c + Vector2(-r * 0.9, -r * 0.42), c + Vector2(r * 0.9, -r * 0.42),
+		Color("9aa6b8"), 3.0)
+	draw_colored_polygon(PackedVector2Array([
+		c + Vector2(0.0, -r * 0.86), c + Vector2(-5.0, -r * 0.44), c + Vector2(5.0, -r * 0.44)]),
+		Color("ffd76a"))
+	# 金环冠
+	_crest(c, r, Color("9aa6b8"), Color("ffd76a"), true)
+
+## 青囊修士（木）：翠绿头 + 药囊 + 双叶
+func _draw_wood_adept(c: Vector2, r: float) -> void:
+	_head(Color("7ec850"), c, r, Color("3f6b28"))
+	_brows(c, Color("33551d"), 1.0)
+	_eyes(c, r, Color("1f3310"))
+	_smile(c, r, Color("3a5c22"))
+	# 两片叶（复用土豆的嫩芽画法，加倍 → 木系「生发」）
+	var stem := c + Vector2(0.0, -r)
+	draw_line(stem, stem + Vector2(0.0, -7.0), Color("2f5c1a"), 3.0)
+	draw_colored_polygon(PackedVector2Array([
+		stem + Vector2(0.0, -6.0), stem + Vector2(-9.0, -12.0), stem + Vector2(-2.0, -3.0)]),
+		Color("96d960"))
+	draw_colored_polygon(PackedVector2Array([
+		stem + Vector2(0.0, -6.0), stem + Vector2(9.0, -12.0), stem + Vector2(2.0, -3.0)]),
+		Color("96d960"))
+	# 药囊（左颊一个小圆）
+	draw_circle(c + Vector2(-13.0, 6.0), 5.0, Color("d8e8b0"))
+	draw_arc(c + Vector2(-13.0, 6.0), 5.0, 0.0, TAU, 16, Color("5e7a34"), 1.6, true)
+
+## 玄水修士（水）：湖蓝头 + 水滴冠 + 波纹颊
+func _draw_water_adept(c: Vector2, r: float) -> void:
+	_head(Color("8fd8ff"), c, r, Color("3d7fa8"))
+	_brows(c, Color("2f6a8c"), 1.0)
+	_eyes(c, r, Color("123044"))
+	_smile(c, r, Color("2f6a8c"))
+	# 颊侧波纹（两道弧）
+	for i in 2:
+		draw_arc(c + Vector2(-13.0 + float(i) * 0.0, 2.0 + float(i) * 4.0), 3.5 + float(i),
+			0.2, PI - 0.2, 10, Color("bfeaff"), 1.6, true)
+	# 水滴冠
+	var base := c + Vector2(0.0, -r)
+	draw_colored_polygon(PackedVector2Array([
+		base + Vector2(0.0, -18.0), base + Vector2(-6.0, -6.0), base + Vector2(6.0, -6.0)]),
+		Color("5ec8f5"))
+	draw_circle(base + Vector2(0.0, -12.0), 4.0, Color("e8f8ff"))
+
+## 赤焰修士（火）：橙红头 + 怒眉 + 三簇火苗
+func _draw_fire_adept(c: Vector2, r: float) -> void:
+	_head(Color("ff7a3c"), c, r, Color("a83c12"))
+	_brows(c, Color("8c2f0c"), 3.5, -8.0, 7.5)   # 怒眉：斗气外露
+	_eyes(c, r, Color("3a1404"), 7.5, -2.0, 2.4)
+	# 张嘴（换成小三角，比笑弧更有攻击性）
+	draw_colored_polygon(PackedVector2Array([
+		c + Vector2(-4.0, 6.0), c + Vector2(4.0, 6.0), c + Vector2(0.0, 11.0)]),
+		Color("7a2408"))
+	# 三簇火苗
+	var base := c + Vector2(0.0, -r)
+	var flame := Color("ffd24a")
+	for i in 3:
+		var ox := (float(i) - 1.0) * 8.0
+		var h := 13.0 if i == 1 else 9.0
+		draw_colored_polygon(PackedVector2Array([
+			base + Vector2(ox, -h - 4.0),
+			base + Vector2(ox - 4.5, -1.0),
+			base + Vector2(ox + 4.5, -1.0)]),
+			flame if i == 1 else Color("ff9a3c"))
+
+## 厚土修士（土）：土黄头 + 岩甲纹 + 方冠
+func _draw_earth_adept(c: Vector2, r: float) -> void:
+	_head(Color("ffd24a"), c, r, Color("a8801c"))
+	_brows(c, Color("8a6810"), 0.5, -7.0, 7.5)
+	_eyes(c, r, Color("3a2c08"))
+	_smile(c, r, Color("7a5c10"))
+	# 岩甲纹：脸颊两道折线
+	draw_polyline(PackedVector2Array([
+		c + Vector2(-15.0, 2.0), c + Vector2(-11.0, 6.0), c + Vector2(-14.0, 10.0)]),
+		Color("8a6810"), 2.0)
+	draw_polyline(PackedVector2Array([
+		c + Vector2(15.0, 2.0), c + Vector2(11.0, 6.0), c + Vector2(14.0, 10.0)]),
+		Color("8a6810"), 2.0)
+	# 方冠（厚土 = 稳重，用方不用三角）
+	var base := c + Vector2(0.0, -r)
+	draw_rect(Rect2(base + Vector2(-8.0, -11.0), Vector2(16.0, 10.0)), Color("b8860b"))
+	draw_rect(Rect2(base + Vector2(-8.0, -11.0), Vector2(16.0, 10.0)),
+		Color("6b4d08"), false, 2.0)
+
+# ---------------- 内置角色：土豆勇者 ----------------
+
+## 土豆勇者：金棕土豆 + 顶部嫩芽（经典原型造型，也是所有未知 id 的兜底）
 func _draw_potato(c: Vector2, r: float, col: Color) -> void:
 	_head(col, c, r, Color("8a6420"))
 	_eyes(c, r)
@@ -62,6 +182,8 @@ func _draw_potato(c: Vector2, r: float, col: Color) -> void:
 	draw_colored_polygon(PackedVector2Array([
 		stem + Vector2(0.0, -6.0), stem + Vector2(8.0, -11.0), stem + Vector2(2.0, -3.0)]),
 		Color("6aa93e"))
+
+# ---------------- 工坊包角色形象（brotato_lite_core） ----------------
 
 ## 狂战士：赤红 + 怒眉 + 双角 + 战斧
 func _draw_berserker(c: Vector2, r: float) -> void:

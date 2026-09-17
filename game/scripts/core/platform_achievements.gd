@@ -14,6 +14,7 @@ const STEAM_IDS := {
 	"slayer_1000": "ACH_SLAYER_1000",
 	"survivor_5": "ACH_SURVIVOR_5",
 	"clear_10": "ACH_CLEAR_10",
+	"clear_20": "ACH_CLEAR_20",
 	"boss_hunter": "ACH_BOSS_HUNTER",
 	"boss_10": "ACH_BOSS_10",
 	"evolver": "ACH_EVOLVER",

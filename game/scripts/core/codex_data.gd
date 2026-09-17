@@ -34,8 +34,15 @@ const ACHIEVEMENTS := {
 		"stat": "kills", "target": 1000, "reward": 90 },
 	"survivor_5": { "name": "站稳脚跟", "ico": "🛡", "desc": "单局推进到第 5 波",
 		"stat": "best_wave", "target": 5, "reward": 12 },
-	"clear_10": { "name": "通关达人", "ico": "👑", "desc": "推进到第 10 波（标准通关线）",
+	"clear_10": { "name": "通关达人", "ico": "👑", "desc": "推进到第 10 波（第 3 区块）",
 		"stat": "best_wave", "target": 10, "reward": 36 },
+	## ⚠️ clear_20 必须用 victories（通关次数），不能用 best_wave 20：
+	## 标准局的 best_wave 最高只到 19 —— BOSS 波不派发 wave_ended
+	## （`wave_manager._on_boss_killed` 首行 `if not GameState.endless: return`），
+	## W20 击杀 BOSS 直接走通关分支。若图省事写 best_wave 20，
+	## 就会与无尽成就 endless_20 **撞同一条件**，两个成就永远同时解锁。
+	"clear_20": { "name": "通关大师", "ico": "🏆", "desc": "通关标准模式（20 波）",
+		"stat": "victories", "target": 1, "reward": 80 },
 	"boss_hunter": { "name": "BOSS 猎手", "ico": "🎯", "desc": "击破 1 个 BOSS",
 		"stat": "boss_kills", "target": 1, "reward": 16 },
 	"boss_10": { "name": "BOSS 克星", "ico": "💥", "desc": "累计击破 10 个 BOSS",

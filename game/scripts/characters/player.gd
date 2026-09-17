@@ -11,6 +11,10 @@ var stats: Dictionary = {}
 var weapons: Array = []   # [{ "type": String, "cd": float }]，上限 Config.WEAPON_SLOTS
 var _family_synergy_bonus: Dictionary = {}   # 已应用到 stats 的同族共鸣加成（key = stats 键）
 var items_owned: Dictionary = {}   # 已购道具 id -> 数量（暂停/商店展示与出售用）
+## 本局已获得过的升级 id -> 次数。**升级过去完全没有记账**（apply_upgrade 只改 stats），
+## 是第 7 轮为「金/红升级唯一」新加的。⚠️ 必须进存档 —— 否则续档后本表归空，
+## 同一张金升级能再刷一遍，唯一性**静默**失效（不报错，只是不唯一了）。
+var upgrades_owned: Dictionary = {}
 var artifacts_owned: Dictionary = {}   # 已持有法宝 id -> 1（每种限 1 件，值仅为与存档格式对齐）
 var artifact_stacks: Dictionary = {}   # 叠层法宝 id -> 当前层数（断刃锋/玄武核）
 var facing := 0.0
@@ -20,6 +24,11 @@ var iframes := 0.0
 # `var trait := ...` 会直接 Parse Error（"Expected variable name after var"）
 var char_trait: Dictionary = {}      # 当前角色特性（开局从 Registry 读取，空 = 无特性）
 var sigil := ""                      # 角色印记 id（元素 / 风格痕迹，空串 = 无印记）；开局算一次
+## 玩家所属五行（五行体系 §12-S1）。空串 = 无属性（不吃元素修正，也不修正敌人）。
+## 推导顺序：角色显式 element → 角色印记 → 主动技能状态 → 特性光环状态 → ""。
+## ⚠️ 这是「玩家受击侧的 target 元素」与「打出伤害的 attacker 元素」的**同一个**来源。
+##    设计上刻意不做成两套 —— 玩家只有一个五行归属，攻守同源，规则才对玩家可解释。
+var element := ""
 var _aura_t := 0.0              # 光环/战意触发计时
 var _trait_pulse := 1.0         # 光环视觉脉冲（每次触发重置为 1，随时间衰减）
 var _momentum_base_kills := 0   # 本波开始时的累计击杀数（战意按"本波击杀"计算）
@@ -30,6 +39,10 @@ var skill: Dictionary = {}        # 当前角色主动技能（空 = 无技能�
 var skill_cd := 0.0               # 技能冷却剩余秒
 var _skill_buff_t := 0.0          # 技能临时增益剩余秒
 var _skill_buff_effects: Dictionary = {}   # 技能临时增益的效果（结束后撤销）
+# ---- 地形区域临时同化度（第 9 轮 · 用户需求 4）----
+# 记的是「**实际写进 stats 的量**」，而不是「想要写的量」—— 见 set_zone_assim 的长注释。
+var _zone_assim_element := ""
+var _zone_assim_applied := 0.0
 
 @onready var camera: Camera2D = $Camera
 
@@ -45,8 +58,15 @@ func _ready() -> void:
 		"on_hit_burn": 0.0, "on_hit_poison": 0.0, "on_hit_freeze": 0.0,
 		"on_hit_slow": 0.0, "on_hit_stun": 0.0, "on_hit_bleed": 0.0,
 		# 角色特性 / 道具 / 升级共用的武器行为加成（加成语义：0 = 无加成）
-		"bullet_speed_bonus": 0.0,   # 弹丸飞行速度
-		"bullet_range_bonus": 0.0,   # 弹丸存活时长（射程）
+		"bullet_speed_bonus": 0.0,   # 弹丸飞行速度（仅**弹幕**：不包括投掷物）
+		"bullet_range_bonus": 0.0,   # 弹丸存活时长（弹幕射程）
+		# ╭─ 2026-09-17（第 8 轮）新增的投掷类通道 ─╮
+		# 用户反馈「土质炸弹吃弹速类加成太高」：它本是投掷爆炸物，
+		# 却一直按普通弹幕公式（reach = bspeed × bullet_life + 26）被放大。
+		# 现在两族各走各的表（见 `_weapon_runtime_cfg` 的 `proj_kind` 分流）。
+		"throw_speed_bonus": 0.0,    # 投掷物飞行速度
+		"throw_range_bonus": 0.0,    # 投掷物飞行距离
+		# ╰────────────────────────────────────────╯
 		"melee_range_bonus": 0.0,    # 近战斩击半径
 		"aoe_radius_bonus": 0.0,     # 爆炸 / 溅射半径
 		"low_hp_dmg_bonus": 0.0,     # 残血增伤上限（按缺失生命比例发挥）
@@ -61,6 +81,14 @@ func _ready() -> void:
 	char_trait = ch.get("trait", {})
 	skill = ch.get("skill", {})   # 主动技能（按 F 释放）
 	sigil = Config.sigil_for(GameState.character_id)
+	element = Config.element_for_character(GameState.character_id)
+	# §7.4 角色特性：元素角色在**本元素**上开局自带 +25% 同化度（白板角色 element=="" 不吃）。
+	# ⚠️ 与元素亲和 ±10% 不是一回事：亲和改伤害倍率，同化度改「减伤/增伤额度」。
+	# ⚠️ 读档局不会重复加 —— player 是子节点 `_ready()` 更早，main._ready() 里
+	#    `SaveRun.restore()` 会整体覆盖 stats（与 MetaProgress 天赋同一防重模式）。
+	if element != "":
+		var start_assim_key := "assim_" + element
+		stats[start_assim_key] = float(stats.get(start_assim_key, 0.0)) + Config.CHAR_START_ASSIM
 	if String(char_trait.get("kind", "")) == "stats":
 		for tk in char_trait.get("effects", {}):
 			var tv: Variant = char_trait.effects[tk]
@@ -72,7 +100,9 @@ func _ready() -> void:
 	# 否则玩家在第 2 步改选武器时角色设定会被覆盖，绑定本身也就失去意义
 	var wt: String = GameState.loadout_weapon
 	if wt == "" or not Registry.weapons.has(wt):
-		wt = "pistol"
+		# 回退到开局池第一把（Config.FALLBACK_WEAPON），**不是** 旧的 "pistol" ——
+		# pistol 已迁入工坊包，若那个包被停用就成了死引用，玩家会开局空手且无报错。
+		wt = Config.FALLBACK_WEAPON
 	weapons = [{ "type": wt, "cd": 0.3 }]
 	_momentum_base_kills = GameState.kills
 	queue_redraw()
@@ -95,15 +125,12 @@ func _physics_process(delta: float) -> void:
 	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
 	var r: float = c.radius
 	global_position = (global_position + velocity * delta).clamp(Vector2(r, r), world - Vector2(r, r))
-	# 障碍物推出（Phase 5）：本项目没有走 Godot 物理（移动是直接写 global_position），
-	# 障碍物用同一套手写判定把玩家挡在外面；推出后再钳一次边界防止被挤出世界
-	global_position = Obstacles.resolve_circle(global_position, r) \
-		.clamp(Vector2(r, r), world - Vector2(r, r))
 	if input_dir != Vector2.ZERO:
 		facing = input_dir.angle()
 	# ---- 回复 / 无敌帧 ----
 	hp = minf(stats.max_hp, hp + stats.regen * delta)
 	iframes = maxf(0.0, iframes - delta)
+	BalanceLog.note_hp(hp)   # 逐波平衡日志：本波最低血量（生存压力的直接读数）
 	# ---- 角色特性（光环 / 战意） ----
 	_trait_tick(delta)
 	# ---- 主动技能冷却 / 临时增益计时 ----
@@ -172,7 +199,7 @@ func _apply_aura() -> void:
 		if global_position.distance_to(e.global_position) > radius + e.radius:
 			continue
 		if dmg > 0.0:
-			e.take_damage(dmg, false, true)   # dot 通道：不触发常规打击感反馈
+			e.take_damage(dmg, false, true, _trait_element(), "trait")   # dot 通道：不触发常规打击感反馈
 		if sid != "" and GameRng.chance(chance):
 			e.apply_status(sid, int(char_trait.get("stacks", 1)),
 				float(char_trait.get("duration", 0.0)), power, dur_mult)
@@ -199,9 +226,18 @@ func _trait_on_hurt() -> void:
 		if e.flee > 0.0:
 			continue
 		if global_position.distance_to(e.global_position) <= radius + e.radius:
-			e.take_damage(dmg, false, true)
+			e.take_damage(dmg, false, true, _trait_element(), "trait")
 	Burst.spawn(get_parent(), global_position, Color("ffd24a"), 10, 180.0)
 	queue_redraw()
+
+## 特性伤害（光环 / 荆棘）的元素：优先走特性自己声明的 element，
+## 否则落到角色归属五行。荆棘是「被打了反伤」，用角色属性解释得通；
+## 光环则应当能与角色元素不一致（例：土角色带火环），故留出 trait.element 口子。
+func _trait_element() -> String:
+	var te := String(char_trait.get("element", ""))
+	if te != "" and Config.ELEMENTS.has(te):
+		return te
+	return element
 
 
 func _process(_delta: float) -> void:
@@ -211,9 +247,7 @@ func _process(_delta: float) -> void:
 func try_fire(w: Dictionary) -> void:
 	var c: Dictionary = Registry.weapons[w.type]
 	w.cd = float(c.cd) / maxf(0.01, float(stats.as_mult))
-	# 索敌优先选视线未被障碍物挡住的敌人（Phase 5）：障碍物会拦住弹丸，
-	# 若还死盯最近的目标，玩家会被迫对着柱子倾泻全部输出
-	var target := Combat.nearest_enemy_visible(global_position, 4.0)
+	var target := Combat.nearest_enemy(global_position)
 	_aim_target = target
 	# 运行参数（含弹速 / 射程加成）先算好 —— 提前量要用到「加成后」的弹速
 	var wc := _weapon_runtime_cfg(c)
@@ -308,7 +342,14 @@ func _enemy_vel() -> Vector2:
 func _ignite_flame_jet(c: Dictionary, ang: float) -> void:
 	var wc := _weapon_runtime_cfg(c)
 	var reach := float(wc.get("bspeed", 300.0)) * float(wc.get("bullet_life", 0.3)) + 26.0
-	_ensure_flame_jet().ignite(ang, reach, 26.0)
+	# ⚠️ 2026-09-17（第 8 轮）：火焰改画到「**有效**射程」（弹体射程 + 溅射半径）。
+	#   旧版只画弹体射程（110px），而实际能打到 110 + splash（旧 75 → 185px），
+	#   玩家看到的比打到的近 75px —— 就是用户反馈的「喷火器范围好像有问题」。
+	#   现在「看到的 = 打到的」。
+	#   减 18 是抵消 `flame_jet.gd` 把锥体起点画在枪口 `d * 18` 处的偏移，
+	#   否则火焰尖端会多出 18px（那样又变成「看到的比打到的远」）。
+	var eff := reach + float(wc.get("splash", 0.0))
+	_ensure_flame_jet().ignite(ang, maxf(20.0, eff - 18.0), 26.0)
 
 ## 惰性创建喷射锥并挂在自身（成为子节点后位置自动跟随玩家，无需每帧同步）
 func _ensure_flame_jet() -> Node2D:
@@ -341,7 +382,11 @@ func _trait_tint_for(wcfg: Dictionary) -> Color:
 		return Color(0, 0, 0, 0)
 	if String(wcfg.get("attack_type", "projectile")) == "melee":
 		return trait_color() if float(stats.melee_range_bonus) > 0.0 else Color(0, 0, 0, 0)
-	if float(stats.bullet_speed_bonus) > 0.0 or float(stats.bullet_range_bonus) > 0.0:
+	# 第 8 轮：投掷物只认投掷类加成，弹幕只认弹速/射程类 —— 否则土炸弹会被弹速道具点亮（它根本不吃）
+	if String(wcfg.get("proj_kind", "bullet")) == "thrown":
+		if float(stats.throw_speed_bonus) > 0.0 or float(stats.throw_range_bonus) > 0.0:
+			return trait_color()
+	elif float(stats.bullet_speed_bonus) > 0.0 or float(stats.bullet_range_bonus) > 0.0:
 		return trait_color()
 	if float(stats.aoe_radius_bonus) > 0.0 and float(wcfg.get("splash", 0.0)) > 0.0:
 		return trait_color()
@@ -349,9 +394,17 @@ func _trait_tint_for(wcfg: Dictionary) -> Color:
 
 ## 武器运行参数：叠加角色的弹道类特性（弹速 / 射程 / 爆炸半径）。
 ## 无加成时直接复用原字典 —— 高攻速武器每秒开火十余次，没必要每次都 duplicate
+##
+## ⚠️ 2026-09-17（第 8 轮）**按 `proj_kind` 分流**：
+##   `bullet`（默认）→ 吃 `bullet_speed_bonus` / `bullet_range_bonus`（行为与改动前一致）
+##   `thrown`（土质炸弹 / 厚土雷）→ 改吃 `throw_speed_bonus` / `throw_range_bonus`
+##   两者**都吃** `aoe_radius_bonus`（它管「爆多大」，与「飞多远」正交）
+## 动机：土炸弹原本没写 `bullet_life`，跟普通弹幕吃同一套公式，一个弹速 +38%
+## 就能把它的大范围 AOE 射程从 400 拉到 542（再叠射程道具到 731）。
 func _weapon_runtime_cfg(c: Dictionary) -> Dictionary:
-	var sb := float(stats.bullet_speed_bonus)
-	var rb := float(stats.bullet_range_bonus)
+	var thrown := String(c.get("proj_kind", "bullet")) == "thrown"
+	var sb := float(stats.throw_speed_bonus) if thrown else float(stats.bullet_speed_bonus)
+	var rb := float(stats.throw_range_bonus) if thrown else float(stats.bullet_range_bonus)
 	var ab := float(stats.aoe_radius_bonus)
 	if sb <= 0.0 and rb <= 0.0 and ab <= 0.0:
 		return c
@@ -381,7 +434,8 @@ func _melee_slash(c: Dictionary, ang: float) -> void:
 			var da := wrapf((e.global_position - global_position).angle() - ang, -PI, PI)
 			if absf(da) < c.swing_arc / 2.0:
 				var roll := _roll_damage(c.dmg, c)
-				e.take_damage(roll.dmg, roll.crit)
+				e.take_damage(roll.dmg, roll.crit, false, String(roll.element),
+					String(roll.get("wtype", "")))
 				e.apply_hit_roll(roll)
 
 func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
@@ -397,6 +451,57 @@ func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 	var crit := GameRng.chance(stats.crit_ch)
 	if crit:
 		dmg *= stats.crit_mult
+	# ---- 五行：输出侧属性判定（五行体系 §2.3-A / §12-S1）----
+	# 元素来源优先级：武器自带元素 > 玩家归属五行。
+	# 武器自带元素让"火法杖给土角色"这种构筑能打出武器自己的元素，
+	# 而不是被角色归属一笔抹平 —— 输出侧本就该允许"器物决定属性"。
+	var atk_element := String(wcfg.get("element", ""))
+	if atk_element == "" or not Config.ELEMENTS.has(atk_element):
+		atk_element = element
+	# 输出侧修正按 §2.3-A 解算：关系基础值 + 同化度 + 道具，**无上限**。
+	#
+	# ⚠️⚠️ 关系两端是「**角色元素(本角色固定的先天五行) vs 武器最终元素(本轮打出的)**」，
+	#      **与对手无关** —— 木角色抡土武器打谁都是 +25%，打谁都是同一个数字。
+	#      正因如此，这里能当场把它乘进 dmg，不必等命中：
+	#      受击侧那条通道（Enemy.take_damage 用「来袭元素 vs 自身元素」算 hit_mult）
+	#      是**另一个独立乘区**，两区在同一发伤害上相乘，互不干扰。
+	#
+	# ⚠️⚠️ **两个 "element" 绝不能混用**，这是本段最容易写错的地方：
+	#
+	#     · char_element —— 我在 **`_ready` 里快照下来的 `element` 成员变量**，
+	#       只在角色重新加载时才变，一局之内恒定。作为关系**左端**。
+	#     · atk_element  —— 本发伤害实际打出的元素（武器自带 element 覆盖角色归属）。
+	#       作为关系**右端**，同时也是随 roll 下发的「受击侧来袭元素」。
+	#
+	#     早期实现拿 atk_element 去覆盖成员变量 element，导致「角色归属」被第一发武器
+	#     永久改写：木角色装上土武器之后，**连受击侧的减伤都跟着变成土** ——
+	#     输出侧和受击侧同时错，且完全静默（数字变了但没有报错）。
+	#     故此处只读快照，绝不回写。
+	#
+	#     同理，也**不要**把 atk_element 当成输出侧关系的输入塞回受击侧去算 out_mult：
+	#     "器物决定属性"决定了 atk_element 可能压根不等于角色元素，再算一遍就是重复计算。
+	#
+	# 道具层（element_dmg_bonus）留待后续步骤接入，加在这里即可覆盖全部武器通道。
+	var char_element := element
+	# ---- 同化度：两侧各读「对应属性」的那一列（S8 拍板 · 体检表 §4 决策 B）----
+	#   · 输出侧（本函数）：读 `assim_<**武器**元素>` → **增加**该属性伤害
+	#   · 受击侧（`_take_damage`）：读 `assim_<**来袭**元素>` → **降低**该属性伤害
+	# 一句话：同化度 = 你跟这个元素的亲和度 —— 用它打人更痛，挨它打更抗。
+	# 两处都是**加算**（直接进 `1 + out + assim` 这个和式），不是乘法。
+	#
+	# ⚠️⚠️ 2026-09-16 之前这里读的是 `assim_<角色元素>`（角色先天五行那一列），
+	#    后果是「木角色堆满 assim_earth 再拿土武器」输出**一点不涨**（实测 24.07→24.07）。
+	#    已改为键武器元素 —— **25 个格子的数值随之全部变化**，见 docs/武器DPS体检表.md。
+	#
+	# ⚠️ 无元素武器会回退成角色元素（`atk_element` 的兜底），此时行为与旧版一致；
+	#    白板角色（`element == ""`）仍不参与任何五行修正（下方 `char_element != ""` 守卫）。
+	var assim := 0.0
+	if atk_element != "":
+		assim = float(stats.get("assim_" + atk_element, 0.0))
+	var out_mult_v := 0.0
+	if char_element != "" and atk_element != "":
+		out_mult_v = Config.out_mult(char_element, atk_element) + assim
+		dmg *= 1.0 + out_mult_v
 	var global_ch := float(stats.status_chance)
 	var on_hit := {}
 	for sid in Config.STATUS:
@@ -405,6 +510,16 @@ func _roll_damage(base: float, wcfg: Dictionary = {}) -> Dictionary:
 			on_hit[String(sid)] = clampf(base_ch + global_ch, 0.0, 1.0)
 	return {
 		"dmg": dmg, "crit": crit,
+		# 打出这一发的**武器 id**（第 8 轮平衡日志）：下游原样透传给 `enemy.take_damage`
+		# 的第 5 参 → 逐波日志能拆出「这一波谁在输出」。空串 = 不是武器打的（特性 / 技能 / 状态）。
+		"wtype": String(wcfg.get("id", "")),
+		"element": atk_element,       # 打出的是什么元素（武器最终元素 = 受击侧的「来袭元素」）
+		"assim": assim,               # 出手方对**武器元素**的同化度（S8：输出侧键武器元素，加算）
+		# ⚠️ out_mult 单独出一个字段，**不要顺延复用 element**：
+		#    下游（bullet / explosion / _melee_slash）会把 element 当作"来袭元素"
+		#    交给 Enemy.take_damage 走受击侧；那里若再解一次输出关系就是重复计算。
+		#    这个字段只给 UI / 冒烟断言看，结算早已在函数体内完成。
+		"out_mult": out_mult_v,
 		"status": String(wcfg.get("status", "")),
 		"fx": String(wcfg.get("fx", "")),   # 外观族：弹丸命中后的爆炸也按武器区分形态
 		"sigil": sigil,                     # 角色印记：弹丸 / 刀光 / 爆炸按「谁在用」叠加痕迹
@@ -443,12 +558,23 @@ func status_sources() -> Dictionary:
 	return out
 
 ## 应用升级效果（数据驱动：effects 键 = stats 键，创意工坊自定义升级直接生效）
-func apply_upgrade(id: String) -> void:
+## ⚠️ 金/红升级 = 「唯一件」（Config.is_unique_rarity）：已获得过则**直接拒绝**。
+##    池子侧（level_up_ui / shop_ui）只负责「让玩家看不到」，这里才是不可绕过的硬闸门
+##    —— mod / 调试面板等旁路也会经过它。返回 true = 本次生效。
+func apply_upgrade(id: String) -> bool:
 	var u: Dictionary = Registry.upgrades.get(id, {})
 	if u.is_empty():
-		return
+		return false
+	if Config.is_unique_rarity(String(u.get("rarity", "common"))) and upgrades_owned.has(id):
+		var pu := get_parent()
+		if pu != null:
+			FloatingText.spawn(pu, global_position + Vector2(0.0, -28.0),
+				"%s 已获得过 · 本局唯一" % String(u.get("name", id)), Color("ffd24a"))
+		return false
 	CodexData.unlock("upgrade", id)
+	upgrades_owned[id] = int(upgrades_owned.get(id, 0)) + 1
 	apply_effects(u.get("effects", {}))
+	return true
 
 ## 应用一组属性效果（数据驱动：键 = stats 键）
 ## 特例：heal_flat = 最大生命 + 立即回复同值；heal_pct = 立即回复最大生命百分比
@@ -473,16 +599,25 @@ func apply_effects(effects: Dictionary) -> void:
 	queue_redraw()   # 拾取范围圈等自绘跟随刷新
 
 ## 应用商店道具被动效果（数据驱动：effects 键 = stats 键，可叠加；i-hp 只加上限不回血，与原型一致）
-func apply_item(id: String) -> void:
+## ⚠️ 金/红道具 = 「唯一件」（Config.is_unique_rarity）：已持有则**拒绝第二次**，
+##    与法宝 apply_artifact 的重复分支同款。返回 true = 本次生效。
+func apply_item(id: String) -> bool:
 	if not Registry.items.has(id):
-		return
+		return false
+	var it: Dictionary = Registry.items[id]
+	if Config.is_unique_rarity(String(it.get("rarity", "common"))) and items_owned.has(id):
+		var pi := get_parent()
+		if pi != null:
+			FloatingText.spawn(pi, global_position + Vector2(0.0, -28.0),
+				"%s 已持有 · 本局唯一" % String(it.get("name", id)), Color("ffd24a"))
+		return false
 	CodexData.unlock("item", id)
 	items_owned[id] = int(items_owned.get(id, 0)) + 1
-	var it: Dictionary = Registry.items[id]
 	for k in it.get("effects", {}):
 		stats[k] = stats.get(k, 0.0) + float(it.effects[k])
 	_sanitize_stats()
 	queue_redraw()
+	return true
 
 ## 出售道具：返还 50% 购入价并移除效果（heal_flat/heal_pct 为一次性效果，不可逆）
 func sell_item(id: String) -> int:
@@ -579,10 +714,39 @@ func heal(amount: float) -> float:
 	var before := hp
 	hp = minf(float(stats.max_hp), hp + amount)
 	var gained := hp - before
+	BalanceLog.add_heal(gained)   # 逐波平衡日志：仅即时治疗（不含被动回血 / 吸血）
 	if gained > 0.5:
 		FloatingText.spawn(get_parent(), global_position + Vector2(0.0, -24.0),
 			"+" + str(roundi(gained)), Color("7ec850"))
 	return gained
+
+## 地形区域：站在区内时对 `elem` 临时 +`v` 同化度；离开时传 `("", 0.0)` 撤销。
+## 由 `fx/terrain_zone.gd` 每 0.35s 扫描写入（波次切换会换元素，所以**每次扫描都写一遍**，
+## 由本函数自己判断"要不要撤销上一次"）。
+##
+## ⚠️⚠️ 这里必须记「**实际生效量**」而不是「想要写的量」：
+##     `_sanitize_stats()` 会把 assim clamp 到 2.0。若玩家本来已经 1.95，
+##     写入 0.20 实际只生效 0.05；撤销时按 0.20 减就会**把玩家自己的同化度吃掉 0.15**——
+##     不报错、只是数值悄悄变少（正是本项目最怕的那类静默算错）。
+##     `after - before` 天然免疫这个上限，也免疫「同帧多来源同时写入」的重叠。
+##
+## ⚠️ 撤销走 `maxf(0.0, ...)`：读档会把 stats 整体覆盖（SaveRun.restore），
+##     此时残留的"已应用量"若照减可能变负 —— 宁可少减，也不许把同化度压成负数。
+func set_zone_assim(elem: String, v: float) -> void:
+	if _zone_assim_element != "" and _zone_assim_applied != 0.0:
+		var old_key := "assim_" + _zone_assim_element
+		stats[old_key] = maxf(0.0, float(stats.get(old_key, 0.0)) - _zone_assim_applied)
+	_zone_assim_element = ""
+	_zone_assim_applied = 0.0
+	if elem == "" or v <= 0.0:
+		return
+	var key := "assim_" + elem
+	var before := float(stats.get(key, 0.0))
+	stats[key] = before + v
+	_sanitize_stats()
+	var after := float(stats.get(key, 0.0))
+	_zone_assim_element = elem
+	_zone_assim_applied = after - before
 
 func _sanitize_stats() -> void:
 	stats.max_hp = maxf(1.0, float(stats.max_hp))
@@ -604,16 +768,32 @@ func _sanitize_stats() -> void:
 	stats.status_spread = clampf(float(stats.status_spread), 0.0, 1.0)
 	# 特性 / 道具共用的武器行为加成（负值无意义，统一抬到 0）
 	stats.bullet_speed_bonus = maxf(0.0, float(stats.bullet_speed_bonus))
+	stats.throw_speed_bonus = maxf(0.0, float(stats.throw_speed_bonus))
+	stats.throw_range_bonus = maxf(0.0, float(stats.throw_range_bonus))
 	stats.bullet_range_bonus = maxf(0.0, float(stats.bullet_range_bonus))
 	stats.melee_range_bonus = maxf(0.0, float(stats.melee_range_bonus))
 	stats.aoe_radius_bonus = maxf(0.0, float(stats.aoe_radius_bonus))
 	stats.low_hp_dmg_bonus = clampf(float(stats.low_hp_dmg_bonus), 0.0, 5.0)
 	stats.momentum_dmg_bonus = clampf(float(stats.momentum_dmg_bonus), 0.0, 5.0)
+	# 元素同化度（五行体系 §7）：不许为负；上限 2.0 与 Registry.STAT_LIMITS 一致。
+	# ⚠️ save_run._sanitize_stats 是这份的副本，改这里必须同步改那边。
+	for eid in Config.ELEMENTS:
+		var ak := "assim_" + String(eid)
+		stats[ak] = clampf(float(stats.get(ak, 0.0)), 0.0, 2.0)
 	for sid in Config.STATUS:
 		var key := "on_hit_" + String(sid)
 		stats[key] = clampf(float(stats.get(key, 0.0)), 0.0, 1.0)
 
-func take_damage(raw: float) -> void:
+## 受击结算。element = 来袭伤害的五行（空串 = 无属性攻击，不吃元素修正）。
+## armor_pierce = 攻击者的穿甲（§5.3 怪机制）：按 (1 − pierce) 缩放**我的护甲项**。
+##   注意穿的是「护甲」，不是「减伤」——闪避/法宝减伤/五行修正都不受影响。
+##   默认 0.0 = 老行为，所有非敌人来源（环境、反伤）不传即无穿甲。
+##
+## 五行体系 §12-S1：受击侧修正走 Config.apply_hit_mult ——
+##   受击修正 = clamp(关系基数(来袭元素→我的元素) − 我对该元素的同化度, −cap)
+## ⚠️ 顺序：元素修正必须在护甲/法宝之后、扣血之前，且要用**元素修正后**的伤害参与
+##    「低血减伤」等百分比乘区，否则改一下元素就能绕过减伤类道具。
+func take_damage(raw: float, element_atk: String = "", armor_pierce: float = 0.0) -> void:
 	if iframes > 0.0:
 		return
 	if GameRng.chance(stats.dodge):
@@ -622,9 +802,19 @@ func take_damage(raw: float) -> void:
 	# 岩肤符：受击【前】同步查询法宝的护甲加成与低血减伤
 	# （player_damaged 信号在本次结算之后才发，在那里改已经太晚）
 	var armor := float(stats.armor) + ArtifactSystem.armor_bonus(self)
+	# ---- 穿甲（§5.3）：先削护甲、再走递减曲线 ----
+	# 必须削**护甲值**而不是削最终伤害：护甲曲线是递减的（armor/(armor+8)），
+	# 直接乘最终伤害会让「穿甲 100%」在高护甲下只等于减伤 50%，与直觉不符。
+	# clamp 到 [0,1] 由内容侧校验兜底，这里再夹一次防负护甲（负数护甲会变成增伤）。
+	armor *= (1.0 - clampf(armor_pierce, 0.0, 1.0))
 	var dmg: float = raw * (1.0 - armor / (armor + 8.0))
 	dmg *= ArtifactSystem.incoming_damage_mult(self)
+	# 五行受击修正：我对「来袭元素」的同化度越高，吃得越少（§2.3-B）
+	if element_atk != "" and element != "":
+		var assim_in := float(stats.get("assim_" + element_atk, 0.0))
+		dmg = Config.apply_hit_mult(dmg, element_atk, element, assim_in)
 	hp -= dmg
+	BalanceLog.add_damage_taken(dmg)   # 逐波平衡日志（第 8 轮）：本波受击总量
 	iframes = Config.PLAYER.iframes
 	EventBus.screen_shake.emit(3.5)
 	EventBus.player_damaged.emit(dmg)
@@ -749,6 +939,20 @@ func evolve_progress() -> Array:
 				"have": int(counts[wtype]), "need": need })
 	return progress
 
+## 武器侧「已无处可升」：槽位已满、没有还能凑满 3 把的基础武器、且每把都是进化体。
+## 用途：商店据此降低武器刷新概率（把货架让给同化度 / 升级这类还能提升的构筑件）。
+## ⚠️ 别写成「槽位满就算饱和」—— 满槽但手里还有 2 把基础武器时，波末仍会进化，
+##    那时把武器刷率砍掉会把「凑第 3 把」的最后机会一起砍掉。
+func weapon_side_saturated() -> bool:
+	if weapons.size() < MetaProgress.weapon_slots():
+		return false
+	if not evolve_progress().is_empty():
+		return false   # 还有能凑到 3 把再进化的基础武器
+	for w in weapons:
+		if not _is_evolved_form(String(w.type)):
+			return false
+	return true
+
 ## 下一个进化目标名（多分支时优先「尚未持有」的方向），供商店/图鉴提示；无进化返回空串
 func next_evolve_name(wtype: String) -> String:
 	var cfg: Dictionary = Registry.weapons.get(wtype, {})
@@ -849,7 +1053,7 @@ func _skill_nova_status() -> bool:
 			continue
 		hit += 1
 		if dmg > 0.0:
-			e.take_damage(dmg, false, true)
+			e.take_damage(dmg, false, true, _skill_element(), "skill")
 		if sid != "":
 			e.apply_status(sid, int(skill.get("stacks", 1)), 0.0, power, dur_mult)
 	return hit > 0
@@ -905,8 +1109,21 @@ func _skill_burst_damage() -> bool:
 		if global_position.distance_to(e.global_position) > radius + e.radius:
 			continue
 		hit += 1
-		e.take_damage(dmg, false, false)
+		e.take_damage(dmg, false, false, _skill_element(), "skill")
 	return hit > 0
+
+## 技能伤害的元素：技能声明的五行 > 技能自带状态映射的五行 > 角色归属五行。
+## 例：焚天烈焰声明 status="burn" → 默认打火属性；沧海鲛人的寒潮 → 水属性。
+## 刻意不做成"永远是角色属性" —— 否则一个木角色学到的火技能会变成木伤害，
+## 玩家看到的画面（火）与实际结算（木）对不上。
+func _skill_element() -> String:
+	var se := String(skill.get("element", ""))
+	if se != "" and Config.ELEMENTS.has(se):
+		return se
+	var ss := String(skill.get("status", ""))
+	if ss != "" and Config.STATUS_ELEMENT.has(ss):
+		return String(Config.STATUS_ELEMENT[ss])
+	return element
 
 ## 技能：获得材料（丰收）
 func _skill_grant_materials() -> bool:
@@ -955,6 +1172,102 @@ func _play_skill_vfx() -> void:
 			EventBus.screen_shake.emit(1.5)
 	Sfx.play("skill_cast")
 	Haptics.rumble(0.45, 0.12, 0.3)
+
+## 该武器「实际打多远」（px）—— 与开火路径同源：弹速 / 溅射走 `_weapon_runtime_cfg()`，
+## 就是开火时用的那个函数，所以日志与 UI 读到的数字==实机在用的数字（含特性 / 道具加成）。
+##   · 投射：枪口射程（弹速 × 存活时长）＋ 溅射半径
+##           —— 溅射武器的**有效杀伤半径** = 弹体射程 + splash（`smoke_test.gd` 早已钉过这条口径）
+##   · 近战：斩击半径 range（含 `melee_range_bonus`，与 `_melee_slash` 同一算法）
+## ⚠️ `+ 26` 是枪口到角色中心的距离（见 `_spawn_bullet` 的 `Vector2.from_angle(ang) * 18.0` 与
+##    `_ignite_flame_jet` 的同款推算）。漏了它会读出「比实际短 26px」。
+func weapon_reach(cfg: Dictionary) -> float:
+	var wc := _weapon_runtime_cfg(cfg)
+	if String(wc.get("attack_type", "projectile")) == "melee":
+		return float(wc.get("range", 0.0)) * (1.0 + float(stats.melee_range_bonus))
+	return float(wc.get("bspeed", 0.0)) * float(wc.get("bullet_life", 1.1)) + 26.0 \
+		+ float(wc.get("splash", 0.0))
+
+## 该武器是否为**进化形态**：在「任一基础武器的 evolve_branches」里出现过即为进化体。
+## 刻意从注册表反查，而不是判 `id.ends_with("_ex")` —— 后缀只是内置命名习惯，
+## mod 完全可以用别的 id 命名进化体，那时后缀判据会静默失效。
+func _is_evolved_form(wtype: String) -> bool:
+	for base_id in Registry.weapons:
+		if wtype in Registry.weapons[base_id].get("evolve_branches", []):
+			return true
+	return false
+
+## 逐波平衡日志（第 8 轮需求 4）用的玩家快照：全量属性 + 武器 / 道具 / 法宝清单。
+##
+## 口径：
+##   · **数值全部取运行时真值**（`stats` / `weapons` / `Registry`），这里不另算一份；
+##   · **刻意不写「预估 DPS」**：日志只给原始因子（dmg / cd / dmg_mult / crit_ch / crit_mult …），
+##     让分析脚本按自己的口径算。日志里塞一个半成品 DPS，等体检表口径一变它就成了第二个真值。
+func balance_snapshot() -> Dictionary:
+	var counts := {}
+	for w in weapons:
+		var wt := String(w.type)
+		counts[wt] = int(counts.get(wt, 0)) + 1
+	var wl: Array = []
+	for wtype in counts:
+		var cfg: Dictionary = Registry.weapons.get(wtype, {})
+		if cfg.is_empty():
+			continue
+		var wc := _weapon_runtime_cfg(cfg)
+		wl.append({
+			"id": wtype,
+			"name": String(cfg.get("name", wtype)),
+			"count": int(counts[wtype]),
+			"evolved": _is_evolved_form(wtype),
+			"element": String(cfg.get("element", "")),
+			"family": String(cfg.get("family", "")),
+			"attack_type": String(cfg.get("attack_type", "projectile")),
+			"proj_kind": String(cfg.get("proj_kind", "bullet")),
+			"dmg": float(cfg.get("dmg", 0.0)),
+			"cd": float(cfg.get("cd", 0.0)),
+			# 实战冷却 = 面板 cd ÷ 攻速倍率（与 try_fire 的算法一字不差）
+			"cd_effective": float(cfg.get("cd", 0.0)) / maxf(0.01, float(stats.as_mult)),
+			"reach": weapon_reach(cfg),
+			"splash": float(wc.get("splash", 0.0)),
+			"pellets": int(wc.get("pellets", 1)),
+			"status": String(cfg.get("status", "")),
+			"price": int(cfg.get("price", 0)),
+			"desc": String(cfg.get("desc", "")),
+		})
+	var items: Array = []
+	for iid in items_owned:
+		var it: Dictionary = Registry.items.get(String(iid), {})
+		items.append({
+			"id": String(iid),
+			"name": String(it.get("name", iid)),
+			"count": int(items_owned[iid]),
+			"rarity": String(it.get("rarity", "")),
+			# 原始 effects 字典（键 = stats 键）：中文文案归 UI 层（EntryText），
+			# 日志只存机器可分析的原值，免得同一份说明在两处各写一遍。
+			"effects": (it.get("effects", {}) as Dictionary).duplicate(),
+		})
+	var arts: Array = []
+	for aid in artifacts_owned:
+		var a: Dictionary = Registry.get_artifact(String(aid))
+		arts.append({
+			"id": String(aid),
+			"name": String(a.get("name", aid)),
+			"stacks": int(artifact_stacks.get(String(aid), 0)),
+			"desc": String(a.get("desc", "")),
+		})
+	return {
+		"hp": hp,
+		"max_hp": float(stats.max_hp),
+		"element": element,
+		"sigil": sigil,
+		"char_trait": char_trait.duplicate(),
+		"skill": skill.duplicate(),
+		"stats": stats.duplicate(),
+		"weapons": wl,
+		"items": items,
+		"artifacts": arts,
+		"upgrades": upgrades_owned.keys(),
+		"family_synergy": _family_synergy_bonus.duplicate(),
+	}
 
 func _draw() -> void:
 	# 角色+枪整体朝向 facing（射击时更新，移动时跟随输入方向）

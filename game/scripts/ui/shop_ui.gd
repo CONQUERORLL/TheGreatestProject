@@ -16,10 +16,12 @@ var _reroll_cost := 0
 var _wave := 0
 var _save_dirty := false    # 有未落盘的商店操作
 var _save_pending := false  # 合并写定时器已排队
+var _assim_pity := 0        # 连续「整店没出同化度」的店数，刷到即归零（第 9 轮保底）
+var _forced_assim := false  # 本店是否由同化度保底塞了一格（测试观测，同 forced_synergy）
 
 var _title: Label
 var _mat: Label
-var _goods_box: HBoxContainer
+var _goods_box: GridContainer   # 第 9 轮：一排放不下就平均换行（见 _goods_grid），不再是单行 HBox
 var _left_box: VBoxContainer
 var _items_box: VBoxContainer
 var _reroll_btn: Button
@@ -68,9 +70,20 @@ func _build() -> void:
 	center.add_child(_title)
 	_mat = _mk_label(18, Color("e8b84b"))
 	center.add_child(_mat)
-	_goods_box = HBoxContainer.new()
-	_goods_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	_goods_box.add_theme_constant_override("separation", 8)
+	# 商品区容器：GridContainer 而不是 HBoxContainer（第 9 轮）。
+	# `columns == 商品数` 时行为与单行 HBox 完全一致；放不下时由 `_goods_grid()`
+	# 改小 columns，就变成「平均换行」（6 格 → 3+3，而不是 5+1 留一张孤卡）。
+	# 旧版单行 HBox 的问题是硬溢出：桌面 6 × 150 宽 + 左右侧栏本来就超出 1280，
+	# 最后一张卡会被顶到屏幕外 —— 看得见、点不到，且不报错。
+	_goods_box = GridContainer.new()
+	_goods_box.columns = Config.SHOP_SLOTS
+	# ⚠️ GridContainer **没有** `alignment`（那是 BoxContainer 的属性）——
+	#    写错了不是静默失败而是运行期 `Invalid assignment of property`，
+	#    并且会**中断整个 `_build()`**，导致后面所有控件（含 reroll/heal/next 三个按钮）
+	#    全是 null，商店直接不可用。居中只能用 size_flags。
+	_goods_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_goods_box.add_theme_constant_override("h_separation", 8)
+	_goods_box.add_theme_constant_override("v_separation", 8)
 	_goods_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	center.add_child(_goods_box)
 	var actions := HBoxContainer.new()
@@ -107,10 +120,20 @@ func _side_style() -> StyleBoxFlat:
 	sb.content_margin_bottom = 10.0
 	return sb
 
-func _make_left_column() -> VBoxContainer:
+## 左侧属性栏 = 「固定视图 + 滚动条」（第 9 轮 · 用户要求）。
+## 属性行数会随道具 / 法宝 / 同化度增长，裸 VBox 超出面板高度只会被**裁掉** ——
+## 看不到最后几行，且没有任何提示（不是报错，只是「信息悄悄少了」）。
+func _make_left_column() -> Control:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	_left_box = VBoxContainer.new()
+	_left_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_left_box.add_theme_constant_override("separation", 4)
-	return _left_box
+	scroll.add_child(_left_box)
+	return scroll
 
 func _make_right_column() -> VBoxContainer:
 	var vb := VBoxContainer.new()
@@ -153,6 +176,9 @@ func _stat_row(name_text: String, value_text: String) -> HBoxContainer:
 	l.add_theme_font_size_override("font_size", 13)
 	l.add_theme_color_override("font_color", Color("9aa3b2"))
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 悬浮看该属性的具体含义（第 8 轮）。`attach_hover` 会把这**一个 Label**
+	# 置为 STOP，整行仍是 IGNORE —— 所以不会挡住右侧数值或下方按钮。
+	HintBubble.attach_hover(l, name_text, EntryText.stat_help(name_text), self)
 	row.add_child(l)
 	var v := Label.new()
 	v.text = value_text
@@ -195,6 +221,24 @@ func _refresh_left() -> void:
 	_left_box.add_child(_stat_row("回复", "%.1f / 秒" % float(s.regen)))
 	_left_box.add_child(_stat_row("收获率", "+%d%%" % roundi(float(s.harvesting) * 100.0)))
 	_left_box.add_child(_stat_row("吸血", "%.0f / 击杀" % float(s.lifesteal)))
+	# ---- 五行同化度（§6.2 / S5）----
+	# 与 main.gd `_refresh_pause_content` 里的那一节同源同步：同化度此前**界面完全不显示**
+	# （ui/ 下 grep `assim` 零命中，2026-09-17 第 7 轮补）。商店是买「金髓 / 青木汁…」的地方，
+	# 更需要当场看见自己现在各系多少 —— 否则买了不知道加了什么。
+	# ⚠️ 只列 > 0 的元素，白板角色不开这一节。
+	var assim_hdr := false
+	for assim_eid in Config.ELEMENTS:
+		var assim_key := "assim_" + String(assim_eid)
+		var assim_val := float(s.get(assim_key, 0.0))
+		if assim_val <= 0.0:
+			continue
+		if not assim_hdr:
+			assim_hdr = true
+			_left_box.add_child(_stat_row("五行同化",
+				"受到该元素伤害 ↓｜用该元素输出 ↑"))
+		_left_box.add_child(_stat_row(
+			"　%s同化" % String(Config.ELEMENT_NAME.get(String(assim_eid), String(assim_eid))),
+			"+%d%%" % roundi(assim_val * 100.0)))
 	var status_hit := 0.0
 	for sid in Config.STATUS:
 		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
@@ -250,6 +294,7 @@ func _refresh_right() -> void:
 				Config.rarity_color(a.get("rarity", "common")))
 			anm.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			arow.add_child(anm)
+			HintBubble.attach_click(anm, _entry_detail_provider("artifact", aid), self)
 			# 叠层法宝（断刃锋/玄武核）显示当前层数，否则这一列空着
 			var stacks := int(player.artifact_stacks.get(aid, 0))
 			if stacks > 0:
@@ -283,6 +328,7 @@ func _refresh_right() -> void:
 		nm.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
 		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(nm)
+		HintBubble.attach_click(nm, _entry_detail_provider("item", id), self)
 		var ct := Label.new()
 		ct.text = "x%d" % cnt
 		ct.add_theme_font_size_override("font_size", 13)
@@ -296,6 +342,39 @@ func _refresh_right() -> void:
 		sell.pressed.connect(_sell.bind(id))
 		row.add_child(sell)
 		_items_box.add_child(row)
+
+## ---- 点击详情（第 8 轮）----
+## 把条目 id 解析成 `{title, body}`。实现全在 `EntryText`，这里只做「哪个表去查」。
+func _entry_detail_by(kind: String, id: String) -> Dictionary:
+	match kind:
+		"artifact":
+			return EntryText.entry_detail(Registry.get_artifact(id), "法宝")
+		"weapon":
+			return EntryText.entry_detail(Registry.weapons.get(id, {}), "武器")
+		"upgrade":
+			return EntryText.entry_detail(Registry.upgrades.get(id, {}), "升级")
+		_:
+			return EntryText.entry_detail(Registry.items.get(id, {}), "道具")
+
+func _entry_detail_provider(kind: String, id: String) -> Callable:
+	return func() -> Dictionary:
+		return _entry_detail_by(kind, id)
+
+## 商品卡点击详情：回 Registry 取**原始**条目。
+## ⚠️ `goods[i].desc` 会被进化提示改写（「进化 1/3 → 庚金剑域」），
+##    直接拿它当描述会让玩家点开看到的是进度条而不是武器说明。
+func _good_detail(i: int) -> Dictionary:
+	if i < 0 or i >= goods.size():
+		return { "title": "", "body": "" }
+	var g: Dictionary = goods[i]
+	var kind := String(g.get("kind", ""))
+	if kind == "weapon":
+		return _entry_detail_by("weapon", String(g.get("wtype", "")))
+	return _entry_detail_by(kind, String(g.get("id", "")))
+
+func _good_detail_provider(i: int) -> Callable:
+	return func() -> Dictionary:
+		return _good_detail(i)
 
 ## 分组小标题（法宝 / 道具）：仅当两类同时非空时才需要区分，但法宝单列时也加上保持一致
 func _group_label(text_str: String) -> Label:
@@ -327,6 +406,7 @@ func _sell_artifact(id: String) -> void:
 
 ## 打开商店（原型 openShop：刷新费 = 8 + wave*3 × 砍价折扣，重掷商品）
 func open(shop_wave: int) -> void:
+	HintBubble.hide_for(self)   # 重开时收起上一家店残留的详情卡
 	_wave = shop_wave
 	_reroll_cost = _discounted_reroll(Config.shop_reroll_cost(_wave))
 	GameState.set_phase(GameState.Phase.SHOP)
@@ -365,7 +445,119 @@ func _roll_goods() -> void:
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in Config.SHOP_SLOTS:
 		goods.append(_roll_one(weapon_full))
-	_ensure_affinity_goods()
+	_after_roll()
+
+## 一轮抽取后的收尾（第 9 轮）。两个保底都只抢「最后一格」，所以必须互斥 ——
+## 后跑的那个会把前一个刚塞进去的换掉，表现为「保底明明该触发却没生效」。
+## 顺序：同化度保底优先（它带连续落空计数，是更强的承诺），未触发才轮到亲和保底。
+func _after_roll() -> void:
+	_forced_assim = false
+	var has_assim := false
+	for g in goods:
+		if _is_assim_good(g):
+			has_assim = true
+			break
+	if has_assim:
+		_assim_pity = 0
+	else:
+		_assim_pity += 1
+		if Config.SHOP_ASSIM_FORCE_AT > 0 and _assim_pity >= Config.SHOP_ASSIM_FORCE_AT:
+			_forced_assim = _force_assim_slot()
+	if not _forced_assim:
+		_ensure_affinity_goods()
+
+## 同化度倾向倍率：连续落空越多越容易出（刷到一次即归零）
+func _assim_weight_mult() -> float:
+	return 1.0 + Config.SHOP_ASSIM_PITY_STEP * float(mini(_assim_pity, Config.SHOP_ASSIM_PITY_MAX))
+
+## 货架项是不是「同化度」类。武器与法宝天然不是（它们没有 effects）。
+func _is_assim_good(g: Dictionary) -> bool:
+	return Config.is_assim_entry(_good_entry(g))
+
+## 从货架项反查注册表条目（武器走 wtype，升级/道具走 id，法宝走 artifacts）
+func _good_entry(g: Dictionary) -> Dictionary:
+	match String(g.get("kind", "")):
+		"weapon":
+			return Registry.weapons.get(String(g.get("wtype", "")), {})
+		"upgrade":
+			return Registry.upgrades.get(String(g.get("id", "")), {})
+		"item":
+			return Registry.items.get(String(g.get("id", "")), {})
+	return {}
+
+## 同化度保底：连续 N 店没出同化度时，把最后一个未锁定格换成同化度条目。
+## 池子取「升级 + 道具」两条（同化度两套 id 分别落在两边，见 Config.is_assim_entry）；
+## 金/红唯一件与对当前武器无用的条目照旧被闸门挡掉。返回 true = 本店已塞入。
+func _force_assim_slot() -> bool:
+	if goods.is_empty():
+		return false
+	var idx := goods.size() - 1
+	if bool(goods[idx].get("locked", false)) or bool(goods[idx].get("sold", false)):
+		return false
+	var taken := {}
+	for g in goods:
+		taken[String(g.get("id", ""))] = true
+	var pool: Array = []
+	for u in Registry.upgrade_list():
+		if taken.has(String(u.get("id", ""))):
+			continue
+		if not Config.is_assim_entry(u):
+			continue
+		if not Config.unique_pool_ok(u, player.upgrades_owned):
+			continue
+		pool.append({ "item": u,
+			"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) })
+	for it in Registry.item_list():
+		if taken.has(String(it.get("id", ""))):
+			continue
+		if not Config.is_assim_entry(it):
+			continue
+		if not Config.unique_pool_ok(it, player.items_owned):
+			continue
+		pool.append({ "item": it, "w": Config.rarity_weight(String(it.get("rarity", "common")), _wave) })
+	if pool.is_empty():
+		return false
+	# 同 _ensure_affinity_goods：weighted_pick 返回的是 entry.item（条目本身），
+	# 所以 kind 只能靠条目归属反查，别指望从池里带出来
+	var e: Dictionary = GameRng.weighted_pick(pool)
+	if e.is_empty():
+		return false
+	var kind := "upgrade" if Registry.upgrades.has(String(e.get("id", ""))) else "item"
+	goods[idx] = {
+		"kind": kind, "id": e.id, "ico": e.ico, "name": e.name,
+		"desc": e.desc, "rarity": e.get("rarity", "common"),
+		"base_price": int(e.get("price", 22)),
+		"synergy": _synergy(e), "sold": false, "locked": false,
+		"forced_assim": true,   # 测试观测：这一格是同化度保底塞进来的
+	}
+	return true
+
+## 武器出现概率的折扣系数（1.0 = 原样）。满槽 → 买不了（`buy()` 会拦）= 死格，
+## 武器侧饱和（满槽 + 全是进化体）另给一档，便于以后只放开其中一个。
+## ⚠️ 刻意不在这两个分支之间留「部分降权」：满槽时无论是哪种，格子里放武器都是浪费。
+func _weapon_chance_ratio(weapon_full: bool) -> float:
+	if not weapon_full:
+		return 1.0
+	if player != null and is_instance_valid(player) and player.weapon_side_saturated():
+		return Config.WEAPON_CHANCE_SATURATED
+	return Config.WEAPON_CHANCE_SLOTS_FULL
+
+## 商店武器池：与 Registry.shop_weapon_pool() 同一口径，额外给**已持有的同名武器**加权。
+## 只在商店侧加权，不改注册表 —— Registry.shop_weapon_pool 还有别的调用方（main 的发武器），
+## 在那里改语义会连带影响「事件卡送武器」这类路径。
+## ⚠️ 不能顺手把进化体 weight 改掉：`shop_weight == 0` 是「不进商店池」的既有契约，
+##    冒烟专门钉过这一条。
+func _shop_weapon_pool() -> Array:
+	var pool: Array = Registry.shop_weapon_pool()
+	var owned := {}
+	for w in player.weapons:
+		owned[String(w.type)] = true
+	if owned.is_empty():
+		return pool
+	for e in pool:
+		if owned.has(String(e.get("item", ""))):
+			e["w"] = float(e.get("w", 1.0)) * Config.SHOP_OWNED_WEAPON_MULT
+	return pool
 
 ## 亲和保底：整店都没契合商品时，把最后一格换成契合项（已锁定的格不动）。
 ## 与升级三选一同一个意图 —— 让「这家店与我的构筑有关」成为承诺，而不是运气。
@@ -386,6 +578,8 @@ func _ensure_affinity_goods() -> void:
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
 			continue
+		if not Config.unique_pool_ok(u, player.upgrades_owned):
+			continue   # 金/红唯一件已持有 → 不再出现
 		if not Config.entry_weapon_relevant(u, player.weapons):
 			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
@@ -395,6 +589,8 @@ func _ensure_affinity_goods() -> void:
 	for it in Registry.item_list():
 		if taken.has(String(it.get("id", ""))):
 			continue
+		if not Config.unique_pool_ok(it, player.items_owned):
+			continue   # 金/红唯一件已持有 → 不再出现
 		if not Config.entry_weapon_relevant(it, player.weapons):
 			continue
 		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
@@ -431,20 +627,27 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 				"base_price": int(a.get("price", 110)),
 				"synergy": _synergy(a), "sold": false, "locked": false }
 	var r := GameRng.range_f(0.0, 1.0)
-	if not weapon_full and r < Config.WEAPON_SHOP_CHANCE:
-		var wt: String = GameRng.weighted_pick(Registry.shop_weapon_pool())
+	# 武器概率与「让出的份额去哪」在这里一次算清（第 9 轮）：
+	# 满槽 / 武器侧饱和时武器概率降为 0，**腾出的比例全部并进升级池**（wch + uch 恒等于
+	# 原来的 0.42 + 0.29），而不是流向普通道具 —— 这才是「道具挤占核心构筑件」的根治点。
+	var wch := Config.WEAPON_SHOP_CHANCE * _weapon_chance_ratio(weapon_full)
+	var uch := Config.SHOP_UPGRADE_CHANCE + (Config.WEAPON_SHOP_CHANCE - wch)
+	if r < wch:
+		var wt: String = GameRng.weighted_pick(_shop_weapon_pool())
 		var c: Dictionary = Registry.weapons[wt]
 		return { "kind": "weapon", "wtype": wt, "ico": c.ico, "name": c.name,
 			"desc": c.desc, "rarity": c.rarity,
 			"base_price": Registry.weapon_price(wt), "synergy": 0,
 			"sold": false, "locked": false }
-	if r < Config.WEAPON_SHOP_CHANCE + Config.SHOP_UPGRADE_CHANCE:
-		var u: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.upgrade_list()))
+	if r < wch + uch:
+		var u: Dictionary = GameRng.weighted_pick(
+			_rarity_pool(Registry.upgrade_list(), player.upgrades_owned))
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
 			"base_price": int(u.get("price", 22)), "synergy": _synergy(u),
 			"sold": false, "locked": false }
-	var it: Dictionary = GameRng.weighted_pick(_rarity_pool(Registry.item_list()))
+	var it: Dictionary = GameRng.weighted_pick(
+		_rarity_pool(Registry.item_list(), player.items_owned))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
 		"base_price": int(it.price), "synergy": _synergy(it),
@@ -453,16 +656,27 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 ## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
 ## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）；
 ## 同时过滤掉「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
-func _rarity_pool(entries: Array) -> Array:
+## `owned` 传该池对应的「当前持有表」（升级 → upgrades_owned，道具 → items_owned），
+## 用于剔除金/红「唯一件」（Config.unique_pool_ok）—— 取表见 _owned_for。
+func _rarity_pool(entries: Array, owned: Dictionary) -> Array:
 	var aff := _affinity()
 	var pool: Array = []
 	for e in entries:
 		if not Config.entry_weapon_relevant(e, player.weapons):
 			continue
+		if not Config.unique_pool_ok(e, owned):
+			continue   # 金/红唯一件已持有 → 不再出现
 		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
 			* Config.affinity_mult(Config.entry_tags(e), aff)
+		if Config.is_assim_entry(e):
+			w *= _assim_weight_mult()   # 连续没刷到 → 越刷越容易出（第 9 轮）
 		pool.append({ "item": e, "w": w })
 	return pool
+
+## 唯一件闸门要用的「当前持有表」：升级看 upgrades_owned，道具看 items_owned。
+## 法宝不在此列 —— 它一直走 Registry.artifact_pool(artifacts_owned, …) 的独立通道。
+func _owned_for(kind: String) -> Dictionary:
+	return player.upgrades_owned if kind == "upgrade" else player.items_owned
 
 ## 当前构筑的亲和标签（开店时算一次并缓存）
 func _affinity() -> Array:
@@ -533,6 +747,8 @@ func _grab_focus_near(prefer: int) -> void:
 	_grab_first_focus()
 
 func _build_goods() -> void:
+	# 每次重建都重算列数：货架格数 / 屏宽 / 左右栏都可能与上次不同
+	_goods_box.columns = _goods_grid().x
 	for c in _goods_box.get_children():
 		_goods_box.remove_child(c)
 		c.queue_free()
@@ -572,17 +788,53 @@ func _rarity_style(r: String) -> StyleBoxFlat:
 	sb.set_corner_radius_all(8)
 	return sb
 
-## 商品卡尺寸。桌面固定 150×238；小屏按「可用宽度 − 右侧出售栏 − 间距」除以张数算，
-## 保证无论 4 张还是 6 张都不会顶出屏幕（旧版写死 150 宽，5 张就超出面板）。
-## 高度同时受可用高度约束，避免在矮屏上把「下一波」按钮挤出画面。
-func _good_card_size() -> Vector2:
-	if not UiMetrics.prefers_full_page():
-		return Vector2(150.0, 238.0)
+## 商品区可用尺寸（第 9 轮）：扣掉左右侧栏与外边距后，留给商品阵列的那一块。
+## ⚠️ 这里是**估算**而不是实测容器尺寸：`_build_goods()` 跑在容器 settle 之前，
+##    拿不到真实 rect。宁可估保守一点（算窄），也不要让卡片溢出屏幕外点不到。
+func _goods_avail() -> Vector2:
+	var avail := UiMetrics.available()
+	if UiMetrics.prefers_full_page():
+		# 小屏：无左属性栏；扣右侧出售栏（dp(180)）+ 栏间距 + 外边距 + 标题/材料/动作区高度
+		avail.x -= UiMetrics.dp(180.0) + 14.0 + UiMetrics.dp(24.0)
+		avail.y -= UiMetrics.dp(130.0)
+	else:
+		# 桌面：左属性栏 288 + 右出售栏 288 + 两个 14 栏间距 + 24 外边距
+		avail.x -= 288.0 * 2.0 + 14.0 * 2.0 + 24.0
+		avail.y -= 150.0
+	return Vector2(maxf(avail.x, 200.0), maxf(avail.y, 200.0))
+
+func _goods_min_w() -> float:
+	return UiMetrics.dp(110.0) if UiMetrics.prefers_full_page() else 150.0
+
+func _goods_min_h() -> float:
+	return UiMetrics.dp(120.0) if UiMetrics.prefers_full_page() else 150.0
+
+func _goods_max_h() -> float:
+	return UiMetrics.dp(238.0)
+
+## 商品阵列的行列（第 9 轮）。思路与菜单首页一致：**先把最大列数按宽度算出来，
+## 再用 ceil 反推行数，最后用 ceil(n/rows) 平均分列** —— 这样 6 格在「最多 4 列」
+## 的宽度下得到 3+3，而不是 4+2（后者最后一行只有两张，视觉上不平衡，
+## 也会让该行的卡比上一行宽，玩家点起来手感不一致）。
+func _goods_grid() -> Vector2i:
 	var n := maxi(1, goods.size())
-	var usable_w := UiMetrics.available().x - UiMetrics.dp(180.0) - 14.0 - UiMetrics.dp(24.0)
-	var w := clampf((usable_w - 8.0 * float(n - 1)) / float(n), UiMetrics.dp(96.0), UiMetrics.dp(170.0))
-	var h := clampf(UiMetrics.available().y - UiMetrics.dp(130.0), UiMetrics.dp(150.0), UiMetrics.dp(238.0))
-	return Vector2(w, h)
+	var gap := 8.0
+	var avail := _goods_avail()
+	var max_cols := int(floor((avail.x + gap) / (_goods_min_w() + gap)))
+	max_cols = clampi(max_cols, 1, n)
+	var rows := int(ceil(float(n) / float(max_cols)))
+	var cols := int(ceil(float(n) / float(rows)))
+	return Vector2i(cols, rows)
+
+## 商品卡尺寸：由 `_goods_grid()` 的行列与可用区域反推，宽度/高度各自 clamp 到
+## 「最小可读」与「最大舒适」之间。桌面不再固定 150×238 —— 那是旧版溢出的根源。
+func _good_card_size() -> Vector2:
+	var g := _goods_grid()
+	var avail := _goods_avail()
+	var gap := 8.0
+	var w := (avail.x - gap * float(g.x - 1)) / float(g.x)
+	var h := (avail.y - gap * float(g.y - 1)) / float(g.y)
+	return Vector2(maxf(w, _goods_min_w()), clampf(h, _goods_min_h(), _goods_max_h()))
 
 func _make_good_card(i: int) -> Control:
 	var g: Dictionary = goods[i]
@@ -610,6 +862,9 @@ func _make_good_card(i: int) -> Control:
 	name_l.add_theme_color_override("font_color", Config.rarity_color(g.rarity))
 	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(name_l)
+	# 点击物品名 → 弹出「加成 + 描述」详情（第 8 轮）。
+	# provider 在**点击那一刻**才求值，所以拿到的一定是当场数据（不是挂载时的旧值）。
+	HintBubble.attach_click(name_l, _good_detail_provider(i), self)
 	# 武器显示已拥有数量（同名武器聚合提示）+ 进化进度（如 3/4）
 	if g.kind == "weapon":
 		var owned := 0
@@ -702,6 +957,12 @@ func buy(i: int) -> void:
 		g.sold = true
 		_refresh()
 		return
+	# 同理：金/红「唯一件」在商店开着期间已从掉落 / 事件拿到 → 同样标售罄且不扣钱，
+	# 否则玩家会为一件已持有的金/红件付全价，只换回 apply_item 的拒绝
+	if g.kind in ["upgrade", "item"] and not Config.unique_pool_ok(g, _owned_for(String(g.kind))):
+		g.sold = true
+		_refresh()
+		return
 	GameState.add_materials(-price)
 	g.sold = true
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
@@ -741,6 +1002,7 @@ func reroll() -> void:
 			goods.append(old[i])   # 原位保留
 		else:
 			goods.append(_roll_one(weapon_full))
+	_after_roll()
 	_refresh()
 	_save_checkpoint()   # 刷新扣费后即时重存
 
@@ -772,7 +1034,9 @@ func _flush_save() -> void:
 	if not _save_dirty:
 		return
 	_save_dirty = false
-	if not SaveRun.save(_wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+	# S4.5：本函数就是「进商店时存档」的正主，checkpoint 用 `shop` ——
+	# 恢复后重新打开这一层商店（`shop_ui.open(_wave)`），而不是把 `_wave + 1` 波重打一遍。
+	if not SaveRun.save(_wave + 1, player, SaveRun.CHECKPOINT_SHOP):
 		EventBus.banner_requested.emit("存档失败", "进度未写入，请检查磁盘空间", 2.0)
 
 ## 下一波：强制落盘后关闭商店并进入 intro。

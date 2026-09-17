@@ -26,6 +26,8 @@ const TEST_UNLOCKS_PATH := "user://tests/unlocks.json"
 
 func _ready() -> void:
 	SaveRun.set_storage_root_for_tests(TEST_SAVE_ROOT)
+	# 逐波平衡日志（第 8 轮）同款隔离：用例会真的写 user:// 日志，绝不能落到正式档上
+	BalanceLog.set_storage_root_for_tests(TEST_SAVE_ROOT)
 	_cleanup_test_storage(false)
 	# 隔离本机天赋档（必须在清理之后：清理会还原存储路径）
 	MetaProgress.set_storage_path_for_tests(TEST_META_PATH)
@@ -47,9 +49,17 @@ func _ready() -> void:
 	if PlatformAchievements == null or PlatformAchievements.is_available():
 		_fail("PlatformAchievements 未注册或 headless 误检测到 Steam 后端")
 		return
+	# 成就数量不写死数字：真实判据是 PlatformAchievements._load_steam_config 的
+	# `defs == STEAM_IDS == ACHIEVEMENTS` 三方对齐（steam_config_valid）。
+	# 这里另守一个**下限**，防止「三处一起删掉一条」把配置整体缩水还判绿。
+	const ACH_FLOOR := 13
 	if not PlatformAchievements.steam_config_valid() \
-			or PlatformAchievements.steam_definitions().size() != 12:
-		_fail("Steamworks 12 项成就配置未完整对齐")
+			or PlatformAchievements.steam_definitions().size() \
+				!= CodexData.ACHIEVEMENTS.size() \
+			or PlatformAchievements.steam_definitions().size() < ACH_FLOOR:
+		_fail("Steamworks 成就配置未完整对齐（defs=%d / codex=%d / 下限 %d）"
+			% [PlatformAchievements.steam_definitions().size(),
+				CodexData.ACHIEVEMENTS.size(), ACH_FLOOR])
 		return
 	var steam_defs: Dictionary = PlatformAchievements.steam_definitions()
 	for achievement_id in CodexData.ACHIEVEMENTS:
@@ -75,10 +85,27 @@ func _ready() -> void:
 			or not CodexData.achievement_reward("survivor_5") \
 				< CodexData.achievement_reward("clear_10") \
 			or not CodexData.achievement_reward("clear_10") \
+				< CodexData.achievement_reward("clear_20") \
+			or not CodexData.achievement_reward("clear_20") \
 				< CodexData.achievement_reward("endless_20") \
 			or not CodexData.achievement_reward("boss_hunter") \
 				< CodexData.achievement_reward("boss_10"):
 		_fail("成就奖励未保持阶梯递进")
+		return
+	# 通关成就（clear_20）与无尽成就（endless_20）**必须不同源**：
+	# 标准局 best_wave 最高只到 19 —— 第 9 轮改版后中间 BOSS（W4/8/12/16）会正常派发
+	# wave_ended，但**最终 BOSS（W20）不派发**（它直接走通关分支），
+	# 所以 best_wave 永远够不到 20，endless_20 只在无尽成立。
+	# 若后人图省事把 clear_20 改成 best_wave 20，两条成就会永远同时解锁 —— 这条守住它。
+	var c20: Dictionary = CodexData.ACHIEVEMENTS.get("clear_20", {})
+	var e20: Dictionary = CodexData.ACHIEVEMENTS.get("endless_20", {})
+	if c20.is_empty() or String(c20.get("stat", "")) != "victories" \
+			or int(c20.get("target", 0)) != 1:
+		_fail("clear_20 必须以 victories>=1 判定（当前 %s）" % str(c20))
+		return
+	if not e20.is_empty() and String(e20.get("stat", "")) == String(c20.get("stat", "")):
+		_fail("clear_20 与 endless_20 同源（stat=%s），两条成就会同时解锁"
+			% String(c20.get("stat", "")))
 		return
 	var forwarded_before: int = PlatformAchievements.forwarded_count()
 	EventBus.achievement_unlocked.emit("first_blood")
@@ -129,11 +156,26 @@ func _ready() -> void:
 			and Music.current_source() != "file":
 		_fail("外部 BGM 未优先加载（source=%s）" % Music.current_source())
 		return
-	# BGM 分波次：1-4 基础 / 5-7 中盘 / 8+ 终盘 / BOSS 波专属
-	if Music.track_for_wave(1) != "battle" or Music.track_for_wave(5) != "battle_mid" \
-			or Music.track_for_wave(8) != "battle_late" or Music.track_for_wave(10) != "boss":
-		_fail("BGM 分波次映射错误")
-		return
+	# BGM 分波次：按**区块**升级（区块 1 battle / 区块 2 battle_mid / 区块 3+ battle_late）。
+	# 断言覆盖每个区块的首尾两波 —— 只测区块中段会漏掉 `block_of` 的边界写错。
+	# ⚠️ 这张表里**只能放非 BOSS 波**：第 9 轮起区块末波（W4/8/12/16）也是 BOSS 波，
+	#    它们的曲子交给下面的循环统一校验；写进这张表会立刻以"BGM 映射错了"报红。
+	var bgm_expect := { 1: "battle", 3: "battle", 5: "battle_mid", 7: "battle_mid",
+		9: "battle_late", 19: "battle_late" }
+	for bw in bgm_expect:
+		if Music.track_for_wave(int(bw)) != String(bgm_expect[bw]):
+			_fail("BGM 分波次映射错误（W%d → %s，期望 %s）"
+				% [int(bw), Music.track_for_wave(int(bw)), String(bgm_expect[bw])])
+			return
+	# BOSS 波（含第 9 轮新增的中间 BOSS）必须一律切 BOSS 曲。
+	# ⚠️ 期望集**从被测数据算**（`Config.is_boss_wave`），不写死 4/8/12/16 ——
+	#    否则以后调整 BOSS 节奏（每 4 波 → 每 5 波）时会以"BGM 坏了"的面目报红。
+	for bw2 in range(1, Config.WAVES_TOTAL + 1):
+		if not Config.is_boss_wave(bw2):
+			continue
+		if Music.track_for_wave(bw2) != "boss":
+			_fail("BOSS 波未切 BOSS 曲（W%d → %s）" % [bw2, Music.track_for_wave(bw2)])
+			return
 	Music.play_track("battle_mid")
 	if Music.current_track() != "battle_mid":
 		_fail("中盘 BGM 未生成/切换失败")
@@ -198,7 +240,15 @@ func _ready() -> void:
 		_fail("关闭局内图鉴后未恢复战斗阶段（%d -> %d）" % [phase_before_click, GameState.phase])
 		return
 	EventBus.wave_ended.connect(_on_wave_ended)
-	get_tree().create_timer(8.0).timeout.connect(_check_weapons)   # 首杀窗口放宽，避免 RNG 抖动误报
+	# 首杀窗口。
+	#
+	# ⚠️ S2 从 8.0 放宽到 16.0：开局武器默认值从 `pistol`（远程 540 弹速）变成了
+	#    `knife`（近战 **射程 95px**）—— 实测首杀落在 **t≈11.6s**（探针 25s 窗口实测，
+	#    见 S2 施工记录），8s 必然误红。这不是武器"没开火"（`try_fire` 自动索敌，
+	#    近战走 `_melee_slash`，探针里 kills 会持续增长），而是**近战需要等敌人走进
+	#    95px 才够得着**，属于设计使然。
+	#    16.0 给了约 1.4 倍余量，同时仍能守住"武器真的在造成伤害"这条语义。
+	get_tree().create_timer(16.0).timeout.connect(_check_weapons)
 
 func _on_wave_ended(w: int) -> void:
 	_last_ended = w
@@ -304,19 +354,77 @@ func _check_wave() -> void:
 	if loot_left != 0:
 		_fail("波末回收后仍残留掉落（%d）" % loot_left)
 		return
-	# 数值调整断言：波时 45+5/波、初始移速 742（495+50%）
-	if Config.wave_duration(1) != 45.0 or Config.wave_duration(2) != 50.0 \
+	# 数值调整断言：波时 30+3w（§8 二十波制）、初始移速 742（495+50%）
+	# ⚠️ 旧值是 45/50（`45 + 5(w-1)`）—— 20 波制下那条曲线末波要 140s，已废弃。
+	#    这里同时钉住首末两端，只改一端（例如漏改 +3w 的系数）会立刻报红。
+	if Config.wave_duration(1) != 33.0 or Config.wave_duration(20) != 90.0 \
 			or not is_equal_approx(Config.PLAYER.base_speed, 742.0):
 		_fail("数值调整未生效（波时/移速）")
 		return
 	# Registry 注册表 + 示例 mod 加载断言
-	if Registry.weapons.size() < 8 or not Registry.weapons.has("laser"):
-		_fail("Registry 未加载示例 mod 武器 laser")
+	#
+	# ⭐ 五行体系 S2：内置武器收缩到 5 把五行武器，其余 24 把移入官方工坊包
+	#    （`game/mods/brotato_lite_core/manifest.json`）→ 内置 5 + mod `laser` 1 = **6**。
+	#    阈值从 8 改 5：「五行武器齐全」是新语义（旧语义「内置武器够多」已不适用）。
+	#
+	# ⚠️ `has("laser")` **必须保留** —— 它才是这条断言真正的价值：
+	#    验证**创意工坊加载链路是通的**（`_load_mod_dir` → `_apply_manifest` → `register_weapon`）。
+	#    只删不改这里的 size() 会把这个覆盖一起丢掉。
+	if Registry.weapons.size() < 6 or not Registry.weapons.has("laser"):
+		_fail("Registry 未加载示例 mod 武器 laser（内置 %d 把）" % Registry.weapons.size())
 		return
+	# 内置五行武器必须齐全且各自带 element（防「元素武器漏配 element → 默默退化成白板」）
+	for wid in Config.LOADOUT_WEAPONS:
+		if not Registry.weapons.has(String(wid)):
+			_fail("开局池武器缺失：%s" % String(wid))
+			return
+		var we: String = String(Registry.weapons[String(wid)].get("element", ""))
+		if not Config.ELEMENTS.has(we):
+			_fail("开局池武器 %s 的 element 非法/缺失：'%s'" % [String(wid), we])
+			return
+	# 五行武器恰好覆盖 5 个元素、不重不漏（这是「五把 = 五行」这句话的机器可验版本）
+	var elem_seen: Array = []
+	for wid2 in Config.LOADOUT_WEAPONS:
+		var e2: String = String(Registry.weapons[String(wid2)].get("element", ""))
+		if e2 in elem_seen:
+			_fail("开局池元素重复：%s（%s 与 %s）" % [e2, String(wid2), e2])
+			return
+		elem_seen.append(e2)
+	if elem_seen.size() != Config.ELEMENTS.size():
+		_fail("开局池元素覆盖不全：%s" % str(elem_seen))
+		return
+	# ⭐ 五行体系 S2：内置角色收缩到 6 个（potato 白板 + 5 元素修士）
+	#    阈值 7 → 6。
 	if Registry.items.size() < 19 or Registry.difficulties.size() < 3 \
-			or Registry.characters.size() < 7:
+			or Registry.characters.size() < 6:
 		_fail("Registry 内置内容缺失（items=%d difficulties=%d characters=%d）"
 			% [Registry.items.size(), Registry.difficulties.size(), Registry.characters.size()])
+		return
+	# 6 角色 = 恰好 1 个白板 + 5 个元素，且 5 元素不重不漏（§13 断言 8）
+	#
+	# ⚠️ S2：必须只遍历**内置 6 角色**。原先遍历 `Registry.characters` 全量是"当时恰好等于内置"
+	#    的巧合 —— 一旦工坊包加载进来（11 个角色），`vampire` 之类的旧角色会被同一条推导链
+	#    推出元素（实测 vampire → metal），与 `metal_adept` 撞车 → 误报「角色元素重复」。
+	#    "内置 5 元素齐备"这个验收目标本来就只约束内置内容，故显式列清单。
+	var builtin_char_ids := ["potato", "metal_adept", "wood_adept", "water_adept",
+		"fire_adept", "earth_adept"]
+	var blanks := 0
+	var char_elems: Array = []
+	for cid in builtin_char_ids:
+		if not Registry.characters.has(String(cid)):
+			_fail("内置角色缺失：%s" % String(cid))
+			return
+		var ce: String = Config.element_for_character(String(cid))
+		if ce == "":
+			blanks += 1
+		else:
+			if ce in char_elems:
+				_fail("角色元素重复：%s（%s）" % [ce, String(cid)])
+				return
+			char_elems.append(ce)
+	if blanks != 1 or char_elems.size() != Config.ELEMENTS.size():
+		_fail("内置 6 角色应为 1 白板 + 5 元素，实为 白板 %d / 元素 %d（%s）"
+			% [blanks, char_elems.size(), str(char_elems)])
 		return
 	# 新品阶/新内容回归：金色+红色道具与升级、新武器、新角色、新怪物、难度精英
 	if not Config.RARITIES.has("mythic") or not Config.RARITIES.has("legendary"):
@@ -326,14 +434,19 @@ func _check_wave() -> void:
 			or Config.rarity_weight("legendary", 9) <= 0.0:
 		_fail("稀有度权重曲线错误（legendary 应 LV1=0、LV9 起解锁）")
 		return
-	if not Registry.items.has("i-crown") or not Registry.upgrades.has("berserk") \
-			or not Registry.weapons.has("sniper") or not Registry.weapons.has("blade"):
-		_fail("高品阶道具/升级/新武器未注册")
+	if not Registry.items.has("i-crown") or not Registry.upgrades.has("berserk"):
+		_fail("高品阶道具/升级未注册")
 		return
-	for cid in ["berserker", "ranger", "farmer", "vampire", "guardian", "gunner"]:
-		if not Registry.characters.has(cid):
-			_fail("新角色缺失：%s" % cid)
+	# ⚠️ 五行体系 S2 的连带改动：`sniper` / `blade` / 6 个旧角色（berserker/ranger/farmer/
+	#    vampire/guardian/gunner）**已移入官方工坊包**，不再进内置 Registry。
+	#    这条断言原意是「Phase 1/2 的内容没丢」，故改为断言**新内置集**齐全 ——
+	#    同时它顺带成了 S2 的验收锚：内置武器恰好 5 把五行 + 1 把 mod laser。
+	#    （被冻结的内容由工坊包提供，`laser` 那条断言已覆盖工坊链路是否通。）
+	for wid in Config.LOADOUT_WEAPONS:
+		if not Registry.weapons.has(String(wid)):
+			_fail("内置五行武器缺失：%s" % String(wid))
 			return
+	# （内置角色存在性已在上面「1 白板 + 5 元素」处逐个验过，不再重复）
 	for eid in ["swarm", "bomber", "wizard", "shadow", "guard"]:
 		if not Registry.enemies.has(eid):
 			_fail("新怪物缺失：%s" % eid)
@@ -436,7 +549,10 @@ func _check_levelup() -> void:
 	if player.stats == stats_before and is_equal_approx(player.hp, hp_before):
 		_fail("升级未产生任何属性变化")
 		return
-	# ---- 单次跨两级：第一次选择后必须立即重抽三张，第二次选择后恢复战斗 ----
+	# ---- 单次跨两级：第 9 轮起**合并成一次选择**，收益 ×2 ----
+	# 旧行为：每个等级各弹一次、每次重抽三张 → 连升 N 级要点 N 次（用户反馈次数太多）。
+	# 本段钉两件事：① 只弹一次（仍是三选一）  ② 收益真的按级数兑现。
+	# ⚠️ 第 3 条「第二组卡有焦点」的断言已随本次行为变更删除 —— 不再有第二组卡。
 	var need_two := Config.xp_need(GameState.level) + Config.xp_need(GameState.level + 1)
 	GameState.gain_xp(need_two + 1)
 	await get_tree().process_frame
@@ -444,20 +560,31 @@ func _check_levelup() -> void:
 		_fail("单次跨两级未生成首组卡（phase=%d queue=%d cards=%d）" %
 			[GameState.phase, GameState.level_queue, ui.card_count()])
 		return
+	if ui.merged_count() != 2:
+		_fail("连升两级未合并成一次选择（merged=%d）" % ui.merged_count())
+		return
+	var pick_rarity := "common"
+	var pick_id := ""
+	if typeof(ui._choices[0]) == TYPE_DICTIONARY:
+		pick_rarity = String(ui._choices[0].get("rarity", "common"))
+		pick_id = String(ui._choices[0].get("id", ""))
+	# 期望次数从**被测数据**算：金/红唯一件的第二次会被硬闸门拒绝 → 只 +1；
+	# 其余强化吃满 merged 次。不写死 2，否则一抽到神话卡就假红。
+	var want_times := 1 if Config.is_unique_rarity(pick_rarity) else 2
+	var own_before := int(player.upgrades_owned.get(pick_id, 0))
 	ui._choose(0)
 	await get_tree().process_frame
-	if GameState.phase != GameState.Phase.LEVEL_UP or GameState.level_queue != 1 or ui.card_count() != 3:
-		_fail("连升第二组未重新抽卡（phase=%d queue=%d cards=%d）" %
-			[GameState.phase, GameState.level_queue, ui.card_count()])
-		return
-	var focus2: Control = ui.get_viewport().gui_get_focus_owner()
-	if focus2 == null or focus2.get_parent() != ui.get_node("Center/Box/Cards"):
-		_fail("连升第二组卡未获得焦点")
-		return
-	ui._choose(0)
 	if GameState.phase != GameState.Phase.PLAYING or GameState.level_queue != 0:
-		_fail("连升完成后未恢复 PLAYING")
+		_fail("连升完成后未恢复 PLAYING（phase=%d queue=%d）" %
+			[GameState.phase, GameState.level_queue])
 		return
+	if pick_id != "":
+		var got := int(player.upgrades_owned.get(pick_id, 0)) - own_before
+		print("SMOKE: merge pick=%s rarity=%s applied=%d want=%d" %
+			[pick_id, pick_rarity, got, want_times])
+		if got != want_times:
+			_fail("连升收益未按级数兑现（%s 期望 +%d，实际 +%d）" % [pick_id, want_times, got])
+			return
 	# ---- 空白卡回归：品阶门槛把亲和保底池清零时（契合升级全是 epic 且 Lv<3），
 	# weighted_pick 曾返回 null → 第三张卡只剩 [3] 的空白卡。复现路径：
 	# 火焰喷射器开局 → 亲和标签 {burn} → 契合升级只有 epic 的 burningheart（Lv 1 权重 0）----
@@ -780,11 +907,21 @@ func _check_items() -> void:
 		_fail("status_resist 未减免状态时长（%.2f）" % float(e_stat.statuses.freeze.remaining))
 		return
 	# 玩家侧载荷：武器 status 打包进 roll，经 apply_hit_roll 落到敌人
+	#
+	# ⚠️ S2：原断言把门槛硬编码成 `status_chance >= 0.85`，那是按旧武器数值写的。
+	#    内置武器换成 flamethrower（status_chance = 0.80）后必然失败 ——
+	#    但失败原因不是"载荷没打包"，而是"门槛写死了一个过期的数字"。
+	#    → 改为**按武器配置推导期望值**：这样换任何武器都不会误报，
+	#      而"载荷字段丢失/取错源"仍会被抓到（那才是本断言要看的）。
 	var wcfg: Dictionary = Registry.weapons["flamethrower"]
 	var w_roll: Dictionary = p2._roll_damage(10.0, wcfg)
-	if String(w_roll.status) != "burn" or float(w_roll.status_chance) < 0.85:
-		_fail("武器状态载荷未打包（status=%s chance=%.2f）"
-			% [String(w_roll.status), float(w_roll.status_chance)])
+	var expect_ch := clampf(float(wcfg.get("status_chance", 1.0)) + float(p2.stats.status_chance), 0.0, 1.0)
+	if String(w_roll.status) != "burn" or not is_equal_approx(float(w_roll.status_chance), expect_ch):
+		_fail("武器状态载荷未打包（status=%s chance=%.2f，期望 %.2f）"
+			% [String(w_roll.status), float(w_roll.status_chance), expect_ch])
+		return
+	if float(w_roll.status_chance) <= 0.0:
+		_fail("武器状态载荷命中率为 0（status=%s）" % String(w_roll.status))
 		return
 	e_stat.status_resist = 0.0
 	e_stat.statuses.clear()
@@ -874,16 +1011,30 @@ func _check_items() -> void:
 	_check_phase2_content()
 	_check_phase3_artifacts()
 	_check_event_cards()
-	await _check_map_themes()   # 内含 physics_frame 等待（索敌视线需要索引重建）
+	_check_map_themes()
 	await _check_character_traits()
 	await _check_weapon_fx()
 	await _check_ballistic_lead()
 	_check_affinity()
 	_check_sigils()
+	_check_element_engine()
+	_check_element_channels()
+	_check_element_output()
+	_check_element_mobs()
+	_check_element_gate()
+	_check_assim_items()
+	_check_unique_items()
+	_check_visual_layer()
+	_check_balance()
+	_check_reach_safety()
+	_check_balance_log()
+	_check_dot_contribution()
+	_check_assim_gain()
 	_check_affinity_floor()
 	_check_object_pool()
 	_check_boss_death_skills()
 	_check_boss_skills()
+	_check_round9_boss_terrain()
 	_check_unlocks()
 	_check_sect_talents()
 	if _failed:
@@ -972,14 +1123,29 @@ func _check_items() -> void:
 	p2.velocity = saved_vel
 	mm._cancel()
 	print("SMOKE: mouse move OK")
-	# ---- 三槽存档验证：自动档入槽1 → 槽间隔离 → 篡改恢复一致 → 清档 + 损档容错 ----
-	for i: int in [2, 3]:   # 清其他槽残留，不动槽 1 的自动存档
-		GameState.slot_id = i
-		SaveRun.clear()
+	# ---- 单档存档验证（S4.5 §10.1）：唯一档 → 篡改恢复一致 → 备份兜底 → 清档 + 损档容错 ----
 	GameState.slot_id = 1
-	if not SaveRun.exists(1):
-		_fail("商店阶段未自动生成存档（槽 1）")
+	# 唯一档只有一个槽：`slot_path` 对 0 / 2 必须返回空串（调用方据此拒绝写入）
+	if SaveRun.SLOT_COUNT != 1 or SaveRun.slot_path(0) != "" or SaveRun.slot_path(2) != "":
+		_fail("单档化未生效：SLOT_COUNT=%d / slot_path(0)='%s' / slot_path(2)='%s'"
+			% [SaveRun.SLOT_COUNT, SaveRun.slot_path(0), SaveRun.slot_path(2)])
 		return
+	if not SaveRun.exists(1):
+		_fail("商店阶段未自动生成存档")
+		return
+	# checkpoint 口径（§13-29）：进度档必须写 `shop`，否则恢复后会把刚打过的那波重打一遍
+	if String(SaveRun.summary(1).get("checkpoint", "")) != SaveRun.CHECKPOINT_SHOP:
+		_fail("进度档 checkpoint 不是 shop（实为 '%s'）"
+			% SaveRun.summary(1).get("checkpoint", ""))
+		return
+	# 清档后 restore 必须返回 0 且不动现场（此时才写下面往返比对用的档）
+	SaveRun.clear()
+	GameState.materials = 555
+	if SaveRun.restore(p2) != 0 or GameState.materials != 555:
+		_fail("无档时 restore 应返回 0 且不改动现场（mats=%d）" % GameState.materials)
+		return
+	# 第 7 轮：先种一条升级记账进档，否则下面的往返断言会在「两边都是空」时假绿
+	p2.upgrades_owned = { "hp": 2, "berserk": 1 }
 	if not SaveRun.save(9, p2):
 		_fail("合法波次存档写入失败")
 		return
@@ -990,25 +1156,18 @@ func _check_items() -> void:
 	var s_stats: Dictionary = p2.stats.duplicate()
 	var s_wcnt: int = p2.weapons.size()
 	var s_items: Dictionary = p2.items_owned.duplicate()
-	# 空槽隔离：槽 2 无档，restore 必须返回 0 且不动现场
-	GameState.slot_id = 2
-	GameState.materials = 555
-	if SaveRun.restore(p2) != 0:
-		_fail("空槽 2 不应恢复出进度")
-		return
-	if GameState.materials != 555:
-		_fail("空槽 restore 不应改动现场")
-		return
-	# 篡改现场后从槽 1 恢复
+	var s_ups: Dictionary = p2.upgrades_owned.duplicate()
+	# 篡改现场后从唯一档恢复
 	GameState.materials = 7
 	GameState.level = 1
 	GameState.xp = 5
 	p2.hp = 1.0
 	p2.weapons = []
 	p2.items_owned = {}
+	p2.upgrades_owned = {}
 	GameState.slot_id = 1
 	var nw: int = SaveRun.restore(p2)
-	print("SMOKE: save slot1 wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
+	print("SMOKE: save unique wave=%d mats=%d lv=%d xp=%d hp=%.0f weapons=%d items=%d" %
 		[nw, GameState.materials, GameState.level, GameState.xp,
 		p2.hp, p2.weapons.size(), p2.items_owned.size()])
 	if nw != 9:
@@ -1036,6 +1195,18 @@ func _check_items() -> void:
 	if not items_ok:
 		_fail("存档恢复后 items_owned 不一致")
 		return
+	# 第 7 轮：升级记账必须一起往返 —— 丢了这个键，续档后「金/红升级唯一」会**静默**失效
+	# （upgrades_owned 归空 → 同一张金升级能再刷一遍），不报错、只是不再唯一。
+	var ups_ok: bool = p2.upgrades_owned.size() == s_ups.size()
+	if ups_ok:
+		for k in s_ups:
+			if int(p2.upgrades_owned.get(k, -1)) != int(s_ups[k]):
+				ups_ok = false
+				break
+	if not ups_ok:
+		_fail("存档恢复后 upgrades_owned 不一致（存档=%s / 恢复=%s）" % [str(s_ups), str(p2.upgrades_owned)])
+		return
+	p2.upgrades_owned = {}   # 探针清理：别把这条用例种下的账留给后面的用例
 	# 连续保存应保留上一版；正式文件损坏时从该备份恢复。
 	SaveRun.clear()
 	if not SaveRun.save(8, p2) or not SaveRun.save(9, p2):
@@ -1049,30 +1220,17 @@ func _check_items() -> void:
 		return
 	SaveRun.clear()
 	if SaveRun.exists(1):
-		_fail("槽 1 清档失败")
+		_fail("清档失败：唯一档仍在")
 		return
-	# 槽 2 独立读写
-	GameState.slot_id = 2
-	if not SaveRun.save(8, p2):
-		_fail("槽 2 合法存档写入失败")
-		return
-	if not SaveRun.exists(2):
-		_fail("槽 2 保存失败")
-		return
-	if SaveRun.exists(1):
-		_fail("槽间隔离失败：槽 1 不应有档")
-		return
-	SaveRun.clear()
 	# 损档容错：垃圾内容应判定无效
-	GameState.slot_id = 3
-	var fj := FileAccess.open(SaveRun.slot_path(3), FileAccess.WRITE)
+	var fj := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
 	fj.store_string("corrupted{{{")
 	fj.close()
 	if SaveRun.restore(p2) != 0:
 		_fail("损坏存档未被判定为无效")
 		return
 	SaveRun.clear()
-	var malformed := FileAccess.open(SaveRun.slot_path(3), FileAccess.WRITE)
+	var malformed := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
 	malformed.store_string(JSON.stringify({"version": 2, "rng_a": 1,
 		"run": {"wave": 3, "materials": 0, "kills": 0, "run_time": 0,
 			"level": 1, "xp": 0, "level_queue": 0},
@@ -1082,47 +1240,108 @@ func _check_items() -> void:
 		_fail("结构完整但深层字段非法的存档未被拒绝")
 		return
 	SaveRun.clear()
-	GameState.slot_id = 1
-	if SaveRun.save(Config.WAVES_TOTAL + 1, p2) or SaveRun.slot_path(0) != "":
-		_fail("非法波次/槽位未被拒绝")
+	# 「第 1 波之前没有商店」：手改成 `wave 1 + shop` 的档必须降级为「从第 1 波起跑」，
+	# 否则恢复后会去开一个不存在的「第 0 波商店」（`shop_ui.open(0)`）。
+	# 注意与下一段互为对照 —— 同一波号、只有 checkpoint 不同，恢复语义必须相反。
+	if not SaveRun.save(1, p2, SaveRun.CHECKPOINT_SHOP):
+		_fail("wave 1 + shop 存档写入失败")
 		return
-	# ---- 武器进化：多分支待选队列 + 指定进化 ----
+	if SaveRun.restore(p2) != 1 \
+			or SaveRun.restored_checkpoint != SaveRun.CHECKPOINT_WAVE_START:
+		_fail("wave 1 + shop 档未被降级为 wave_start（实为 %s）"
+			% SaveRun.restored_checkpoint)
+		return
+	SaveRun.clear()
+	# 新局初始档（main.gd `start_run` 之后那次 save(1)）用的就是 wave_start
+	if not SaveRun.save(1, p2, SaveRun.CHECKPOINT_WAVE_START) or SaveRun.restore(p2) != 1 \
+			or SaveRun.restored_checkpoint != SaveRun.CHECKPOINT_WAVE_START:
+		_fail("新局初始档（wave 1 + wave_start）未被原样恢复")
+		return
+	SaveRun.clear()
+	if SaveRun.save(Config.WAVES_TOTAL + 1, p2):
+		_fail("非法波次未被拒绝")
+		return
+	# ---- 武器进化：单分支自动合成 + 多分支待选队列 + 指定进化 ----
+	#
+	# ⚠️ 2026-09-17 S8 重写（第二次）：S2 时内置 5 把的进化树**指向空气**被清空
+	#    （`knife.evolve_branches` 原本指向已迁入工坊包的 `blade`/`blade_ex`），
+	#    本段退化成「验证清空后的必然行为」。S8 已按 §4.4 **补回进化形态**，
+	#    所以这里恢复成「验证进化真的会发生」，并补上三条新的不变式：
+	#      ① **进化体必须自带 element，且与基础体同元素** —— 否则「元素武器 →
+	#         无属性武器」把五行体系打穿，而且**完全不报错**，只表现为
+	#         「进化后伤害反而不吃关系加成」这种最难查的静默失效。
+	#      ② `evolve_need > 0` 与「分支非空」必须同真同假（S2 那条半配置护栏仍然有效）。
+	#      ③ 分支目标必须已注册 + `shop_weight == 0` —— 前者防「合成静默失败」，
+	#         后者防玩家绕过「凑 3 把」直接在商店买到进化体。
 	var p4: Node2D = _main.get_node("Player")
 	var saved_weapons4: Array = p4.weapons.duplicate(true)
+	for wid in Config.LOADOUT_WEAPONS:
+		# 变量名用 wcfg2：本函数上方已有 `wcfg`（武器容器循环里），GDScript 同一作用域不重名
+		var wcfg2: Dictionary = Registry.weapons[String(wid)]
+		var has_need := int(wcfg2.get("evolve_need", 0)) > 0
+		var branches: Array = wcfg2.get("evolve_branches", [])
+		if has_need != (not branches.is_empty()):
+			_fail("内置武器 %s 的进化配置半残（evolve_need=%d / branches=%d）"
+				% [String(wid), int(wcfg2.get("evolve_need", 0)), branches.size()])
+			return
+		if not has_need:
+			_fail("内置武器 %s 缺进化配置（S8 后 5 把基础武器都应可进化）" % String(wid))
+			return
+		# 单分支 = 波末自动合成；写成多分支会走进化选择 UI，与本轮设计不符
+		if branches.size() != 1:
+			_fail("内置武器 %s 应恰好 1 个进化分支（实测 %d）" % [String(wid), branches.size()])
+			return
+		for bid in branches:   # 分支目标必须真实存在，否则合成会静默失败
+			if not Registry.weapons.has(String(bid)):
+				_fail("内置武器 %s 的进化分支 %s 未注册" % [String(wid), String(bid)])
+				return
+			var excfg: Dictionary = Registry.weapons[String(bid)]
+			var exel := String(excfg.get("element", ""))
+			if exel != String(wcfg2.get("element", "")):
+				_fail("进化体 %s 的元素「%s」与基础体 %s 的「%s」不一致（会把五行打穿）"
+					% [String(bid), exel, String(wid), String(wcfg2.get("element", ""))])
+				return
+			if float(excfg.get("shop_weight", -1.0)) != 0.0:
+				_fail("进化体 %s 的 shop_weight 应为 0（实测 %s），否则商店能直接买到"
+					% [String(bid), str(excfg.get("shop_weight", "缺失"))])
+				return
+	# 凑 3 把金剑 → 单分支应**自动**合成 1 把 knife_ex（且不弹选择 UI）
 	p4.weapons = []
-	for _i2 in 4:
-		p4.weapons.append({ "type": "pistol", "cd": 0.1 })
-	p4.weapons.append({ "type": "rocket", "cd": 0.1 })   # 混入其他武器验证只合成同名
-	# 多分支不自动进化，进入待选队列
-	var evolved: Array = p4.evolve_weapons()
-	if not evolved.is_empty():
-		_fail("多分支武器不应被自动进化（%s）" % str(evolved))
+	for _i2 in 3:
+		p4.weapons.append({ "type": "knife", "cd": 0.1 })
+	var evolved0: Array = p4.evolve_weapons()
+	if evolved0.size() != 1:
+		_fail("凑满 3 把金剑应自动进化 1 次（实得 %d 条公告）" % evolved0.size())
 		return
-	var choices: Array = p4.pending_evolve_choices()
-	if choices.size() != 1 or String(choices[0].weapon) != "pistol":
-		_fail("多分支待选队列错误（%s）" % str(choices))
+	var evo0: Dictionary = p4.weapons[0]
+	if p4.weapons.size() != 1 or String(evo0.get("type", "")) != "knife_ex":
+		_fail("进化后应只剩 1 把 knife_ex（实测 %s）" % str(p4.weapons))
 		return
-	# 指定进化到手枪第一个分支 = 冲锋枪
-	var txt: String = p4.evolve_weapon_to("pistol", "smg")
-	print("SMOKE: evolve_to=%s weapons=%d" % [txt, p4.weapons.size()])
-	if txt == "" or not txt.contains("冲锋枪"):
-		_fail("指定进化到冲锋枪失败（%s）" % txt)
+	if not p4.pending_evolve_choices().is_empty():
+		_fail("单分支进化不该产生待选分支（%s）" % str(p4.pending_evolve_choices()))
 		return
-	var pistol_cnt := 0
-	var smg_cnt := 0
-	for w in p4.weapons:
-		if w.type == "pistol":
-			pistol_cnt += 1
-		if w.type == "smg":
-			smg_cnt += 1
-	if pistol_cnt != 1 or smg_cnt != 1 or p4.weapons.size() != 3:
-		_fail("进化后武器列表错误（pistol=%d smg=%d total=%d）" % [pistol_cnt, smg_cnt, p4.weapons.size()])
+	# 反向对照：只凑 2 把时不该进化（否则说明 `evolve_need: 3` 没生效，凑 1 把就进化了）
+	p4.weapons = []
+	for _i3 in 2:
+		p4.weapons.append({ "type": "knife", "cd": 0.1 })
+	if not p4.evolve_weapons().is_empty() or p4.weapons.size() != 2:
+		_fail("未达 evolve_need 时不该进化（剩 %d 把）" % p4.weapons.size())
 		return
-	# 进化预览：2 把手枪显示 2/3
-	p4.weapons = [{ "type": "pistol", "cd": 0.1 }, { "type": "pistol", "cd": 0.1 }]
-	var prog: Array = p4.evolve_progress()
-	if prog.size() != 1 or int(prog[0].have) != 2 or int(prog[0].need) != 3:
-		_fail("进化进度预览错误（%s）" % str(prog))
+	# 指定进化到一个不存在的目标：必须被拒（不能默默吞掉玩家的 3 把武器）
+	# ⚠️ 别用 `blade` 当"未注册目标" —— 它如今在工坊包 brotato_lite_core 里是注册着的。
+	#    这里用一个语法合法、但任何注册表里都不会有的 id，才能真验到"拒绝"分支。
+	p4.weapons = []
+	for _i4 in 3:
+		p4.weapons.append({ "type": "knife", "cd": 0.1 })
+	if p4.evolve_weapon_to("knife", "no_such_weapon_id") != "":
+		_fail("向未注册目标进化应失败（no_such_weapon_id）")
+		return
+	if p4.weapons.size() != 3:
+		_fail("失败的进化不该消耗武器（剩 %d 把）" % p4.weapons.size())
+		return
+	# 指定进化到**合法**目标：进化选择 UI 那条路（`evolve_weapon_to`）也必须成立
+	if p4.evolve_weapon_to("knife", "knife_ex") == "" or p4.weapons.size() != 1:
+		_fail("指定进化到 knife_ex 应成功（剩 %d 把）" % p4.weapons.size())
 		return
 	p4.weapons = saved_weapons4   # 还原
 	# ---- 局外天赋：购买/效果/槽位 ----
@@ -1137,8 +1356,10 @@ func _check_items() -> void:
 	if not is_equal_approx(MetaProgress.effect_sum("stats", "max_hp"), 15.0):
 		_fail("天赋效果合计错误")
 		return
-	if MetaProgress.weapon_slots() != 6:
-		_fail("未购军火专家时武器槽应为 6")
+	# ⚠️ 期望值取自 Config.WEAPON_SLOTS，不硬编码 —— 槽位数改过一次（6→5，S8），
+	#    写死数字会在下次改槽位时又红一次，且红得像「天赋没生效」。
+	if MetaProgress.weapon_slots() != Config.WEAPON_SLOTS:
+		_fail("未购军火专家时武器槽应为 %d" % Config.WEAPON_SLOTS)
 		return
 	# 精华不足拒绝：余额清零后尝试购买
 	MetaProgress.essence = 0
@@ -1146,8 +1367,9 @@ func _check_items() -> void:
 		_fail("精华不足不应购入军火专家")
 		return
 	MetaProgress.essence = 1000
-	if not MetaProgress.buy_talent("arsenal") or MetaProgress.weapon_slots() != 7:
-		_fail("军火专家购买后武器槽应为 7")
+	# 军火专家 = +1 槽，同样绑 Config 而非写死 7（同上）
+	if not MetaProgress.buy_talent("arsenal") or MetaProgress.weapon_slots() != Config.WEAPON_SLOTS + 1:
+		_fail("军火专家购买后武器槽应为 %d" % (Config.WEAPON_SLOTS + 1))
 		return
 	# 开局应用：stats 叠加 + 材料入账
 	MetaProgress.buy_talent("fortune")
@@ -1420,7 +1642,8 @@ func _check_items() -> void:
 		_fail("自定义单发武器未生成恰好一颗弹丸")
 		return
 	Registry.reload_content()
-	# 精确整数校验与 v1 无 checkpoint 旧单槽迁移。
+	# 精确整数校验 + 单档布局的两条兼容路径（S4.5 §10.1）：
+	#   ① v1 单槽档**原地**就是唯一档（零搬迁）　② 旧三槽布局合并取 `saved_at` 最新的一份
 	if not SaveRun.save(4, p2):
 		_fail("v1 迁移测试准备存档失败")
 		return
@@ -1431,6 +1654,16 @@ func _check_items() -> void:
 		return
 	source_file.close()
 	var legacy_data: Dictionary = source_json.data
+	# ⚠️ 时间炸弹修复（2026-09-17 踩到）：`legacy_data` 来自**真实** `SaveRun.save()`，
+	#    所以它的 `saved_at` 是**当下墙钟**；而 `_migrate_old_layout` 只在
+	#    `唯一档.saved_at < 候选.saved_at` 时才覆盖（save_run.gd:506）。
+	#    原写法把三个候选档的日期写死成 2026-09-14/15/16 —— 一旦真实时间越过它们，
+	#    唯一档就永远"最新"、合并永不发生，断言必红，而病因看着像迁移逻辑坏了。
+	#    → 改为**相对当下**的偏移：谁更新由偏移量决定，与日历无关。
+	var mig_sec := 86400
+	var mig_now := int(Time.get_unix_time_from_system())
+	legacy_data["saved_at"] = Time.get_datetime_string_from_unix_time(
+			mig_now - 30 * mig_sec, false)   # 唯一档刻意比所有候选都旧
 	SaveRun.clear()
 	legacy_data["run"]["wave"] = 4.5
 	var fractional := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
@@ -1440,17 +1673,61 @@ func _check_items() -> void:
 		_fail("小数波次绕过了精确整数校验")
 		return
 	SaveRun.clear()
+	# ① v1 老档（单槽文件名 `save_run.json` 就是新唯一档名）→ **原地即唯一档**，零搬迁；
+	#    缺 `checkpoint` 键时读出即 `shop`（v1 的语义本来就是「恢复到商店」）
 	legacy_data["version"] = 1
 	legacy_data.erase("checkpoint")
 	legacy_data["run"]["wave"] = 4
-	var legacy_path := TEST_SAVE_ROOT.path_join("save_run.json")
-	var legacy_file := FileAccess.open(legacy_path, FileAccess.WRITE)
-	legacy_file.store_string(JSON.stringify(legacy_data))
-	legacy_file.close()
+	var v1_file := FileAccess.open(SaveRun.slot_path(1), FileAccess.WRITE)
+	v1_file.store_string(JSON.stringify(legacy_data))
+	v1_file.close()
+	SaveRun.migrate_legacy_if_needed(true)   # 单档布局下必须是 no-op
+	if SaveRun.restore(p2) != 4 or SaveRun.restored_checkpoint != SaveRun.CHECKPOINT_SHOP:
+		_fail("v1 单槽档未被当作唯一档直接读出（cp=%s）" % SaveRun.restored_checkpoint)
+		return
+	# ② 旧三槽布局 → 唯一档：取 `saved_at` 最新的一份，被吞并的旧文件删除，数据不丢（§13-28）
+	# 槽 2（now−10 天）是三个候选里最新的 → 应胜出（W7）。相对偏移，不用绝对日期。
+	var slot_waves := [3, 7, 5]
+	var slot_times := [
+		Time.get_datetime_string_from_unix_time(mig_now - 20 * mig_sec, false),
+		Time.get_datetime_string_from_unix_time(mig_now - 10 * mig_sec, false),
+		Time.get_datetime_string_from_unix_time(mig_now - 15 * mig_sec, false),
+	]
+	for mig_i in range(3):
+		var mig_slot_data: Dictionary = legacy_data.duplicate(true)
+		mig_slot_data["version"] = 2
+		mig_slot_data["checkpoint"] = SaveRun.CHECKPOINT_SHOP
+		mig_slot_data["saved_at"] = String(slot_times[mig_i])
+		mig_slot_data["run"]["wave"] = int(slot_waves[mig_i])
+		var mig_file := FileAccess.open(
+			TEST_SAVE_ROOT.path_join("save_slot_%d.json" % (mig_i + 1)), FileAccess.WRITE)
+		mig_file.store_string(JSON.stringify(mig_slot_data))
+		mig_file.close()
 	SaveRun.migrate_legacy_if_needed(true)
-	if not SaveRun.exists(1) or FileAccess.file_exists(legacy_path) \
-			or SaveRun.restore(p2) != 4 or SaveRun.restored_checkpoint != SaveRun.CHECKPOINT_SHOP:
-		_fail("v1 旧单槽迁移或兼容检查点失败")
+	var mig_wave := SaveRun.restore(p2)
+	if mig_wave != 7:
+		_fail("旧三槽合并未取 saved_at 最新的一份（期望槽 2 的 W7，实为 W%d）" % mig_wave)
+		return
+	for si2 in range(1, 4):
+		if FileAccess.file_exists(TEST_SAVE_ROOT.path_join("save_slot_%d.json" % si2)):
+			_fail("旧三槽文件 save_slot_%d.json 合并后未删除" % si2)
+			return
+	# 反向对照：比唯一档更旧的旧槽档**不得**顶掉唯一档（否则「新档被旧档覆盖」不会报错）
+	var mig_stale: Dictionary = legacy_data.duplicate(true)
+	mig_stale["version"] = 2
+	mig_stale["checkpoint"] = SaveRun.CHECKPOINT_SHOP
+	# 比唯一档（合并后 = now−10 天）更旧 → 不得顶掉
+	mig_stale["saved_at"] = Time.get_datetime_string_from_unix_time(
+			mig_now - 40 * mig_sec, false)
+	mig_stale["run"]["wave"] = 19
+	var mig_stale_file := FileAccess.open(TEST_SAVE_ROOT.path_join("save_slot_3.json"),
+		FileAccess.WRITE)
+	mig_stale_file.store_string(JSON.stringify(mig_stale))
+	mig_stale_file.close()
+	SaveRun.migrate_legacy_if_needed(true)
+	var mig_stale_wave := SaveRun.restore(p2)
+	if mig_stale_wave != 7 or FileAccess.file_exists(TEST_SAVE_ROOT.path_join("save_slot_3.json")):
+		_fail("更旧的旧槽档顶掉了唯一档（恢复出 W%d）" % mig_stale_wave)
 		return
 	SaveRun.clear()
 	# 新局选槽必须进入向导，且最终确认前不能清除已有槽。
@@ -1526,10 +1803,26 @@ func _check_items() -> void:
 		return
 	menu._codex._set_filter("all")
 	menu._codex._select_tab("weapon")
-	menu._codex._on_search_changed("手枪")
-	if menu._codex._list_btns.size() != 1 \
-			or String(menu._codex._list_btns[0].get_meta("id")) != "pistol":
-		_fail("图鉴搜索未按名称过滤（%d 条）" % menu._codex._list_btns.size())
+	# ⚠️ S2：原先搜「手枪」命中 `pistol`（已迁入工坊包）。改搜内置武器的名字。
+	#
+	# ⚠️ 2026-09-17 S8 二改：S8 补回进化形态后，「金剑」会**额外命中**进化体「庚金剑域」
+	#    （名字里也含「金剑」）→ 写死「1 条 / 首条是 knife」必红。
+	#    期望集改为**从被测数据算出**（名字含「金剑」的已注册武器），这样：
+	#      · 以后再加进化体/工坊武器，只要名字含关键词就会自动进期望集，不会假红；
+	#      · 它仍是真断言 —— `knife` 必须在期望集里，且若搜索失效会返回全表 33 条。
+	menu._codex._on_search_changed("金剑")
+	var kw_expect: Array = []
+	for kwid in Registry.weapons:
+		if String(Registry.weapons[kwid].get("name", "")).find("金剑") >= 0:
+			kw_expect.append(String(kwid))
+	if menu._codex._list_btns.size() != kw_expect.size() or not kw_expect.has("knife"):
+		_fail("图鉴搜索未按名称过滤（%d 条，期望 %d 条：%s）"
+			% [menu._codex._list_btns.size(), kw_expect.size(), ", ".join(kw_expect)])
+		return
+	# 反向对照：搜一个任何武器名都不含的词应为空 —— 否则上面那条是「搜索根本没生效」的假绿
+	menu._codex._on_search_changed("绝不可能出现的武器名zzz")
+	if not menu._codex._list_btns.is_empty():
+		_fail("图鉴搜索命中了不存在的词（%d 条）" % menu._codex._list_btns.size())
 		return
 	menu._codex._on_search_changed("")
 	# 图鉴解锁奖励：首次解锁发精华，重复解锁/重复补判都不重复发
@@ -1548,9 +1841,12 @@ func _check_items() -> void:
 		_fail("图鉴奖励补判重复发放")
 		return
 	# 解锁后续详情断言所需条目（模拟局内已接触）
+	#
+	# ⚠️ S2：`pistol` 已迁入工坊包 → 改用开局的兜底武器（`Config.FALLBACK_WEAPON`）。
+	#    这样即使哪天再换默认武器，也只需改 `Config` 一处。
 	for sid in Config.STATUS:
 		CodexData.unlock("status", String(sid))
-	CodexData.unlock("weapon", "pistol")
+	CodexData.unlock("weapon", Config.FALLBACK_WEAPON)
 	CodexData.unlock("item", "i-ember")
 	CodexData.unlock("enemy", "grunt")
 	CodexData.unlock("enemy", "boss")
@@ -1559,8 +1855,19 @@ func _check_items() -> void:
 	var burn_wids: Array = []
 	for w in burn_src.get("weapons", []):
 		burn_wids.append(String(w.get("id", "")))
-	if not burn_wids.has("flamethrower") or not burn_wids.has("rocket"):
-		_fail("图鉴燃烧武器来源缺失（%s）" % str(burn_wids))
+	# ⚠️ S2：原断言要求 burn 来源里有 `flamethrower` + `rocket`。`rocket`（火箭筒）已迁入
+	#    工坊包 → 内置侧只剩 `flamethrower` 一把。改为断言「内置武器里 burn 来源恰好是
+	#    flamethrower」，再单独处理工坊包那部分（存在就一并列出，不存在不报错）。
+	if not burn_wids.has("flamethrower"):
+		_fail("图鉴燃烧武器来源缺失内置喷火枪（%s）" % str(burn_wids))
+		return
+	for wid_b in Config.LOADOUT_WEAPONS:
+		var st_b := String(Registry.weapons[String(wid_b)].get("status", ""))
+		if (st_b == "burn") != (String(wid_b) == "flamethrower"):
+			_fail("内置武器 %s 的 burn 归属与预期不符（status=%s）" % [String(wid_b), st_b])
+			return
+	if Registry.weapons.has("rocket") and not burn_wids.has("rocket"):
+		_fail("工坊包已加载但 rocket 未出现在 burn 来源里（%s）" % str(burn_wids))
 		return
 	var burn_iids: Array = []
 	for it in burn_src.get("items", []):
@@ -1572,8 +1879,33 @@ func _check_items() -> void:
 	var fz_wids: Array = []
 	for w in freeze_src.get("weapons", []):
 		fz_wids.append(String(w.get("id", "")))
-	if not fz_wids.has("frost_staff") or fz_wids.has("flamethrower"):
-		_fail("图鉴冰冻来源筛选错误（%s）" % str(fz_wids))
+	# ⚠️ S2：原断言写「freeze 来源必须含 frost_staff」—— 那是按旧 `frost_staff` 的
+	#    status 写的。S2-a 把水枪的 status 定为 **slow**（水系＝减速，冻结留给法宝/反应），
+	#    所以它在 `slow` 来源里、不在 `freeze` 来源里。
+	#    → 改为**按每把内置武器的实际 status 推导期望**：这才是本断言真正要守的东西
+	#      （「来源筛选按 status 精确匹配，不串味」），且换武器/改 status 都不会误报。
+	for wid_f in Config.LOADOUT_WEAPONS:
+		var w_f: Dictionary = Registry.weapons[String(wid_f)]
+		var st_f := String(w_f.get("status", ""))
+		if st_f == "":
+			continue   # 无状态武器（木弓）不该出现在任何状态来源里
+		var src_f: Dictionary = Registry.status_sources(st_f)
+		var ids_f: Array = []
+		for wf in src_f.get("weapons", []):
+			ids_f.append(String(wf.get("id", "")))
+		if not ids_f.has(String(wid_f)):
+			_fail("内置武器 %s 未出现在其状态 %s 的来源里（%s）" % [String(wid_f), st_f, str(ids_f)])
+			return
+	# 反向：无状态武器不得出现在任何状态来源里（防"配漏 status 被当成默认状态"）
+	for sid_f in Config.STATUS:
+		var src_all: Dictionary = Registry.status_sources(String(sid_f))
+		for wf2 in src_all.get("weapons", []):
+			if String(wf2.get("id", "")) == "blight_bow":
+				_fail("无状态武器 blight_bow 出现在 %s 来源里" % String(sid_f))
+				return
+	# 筛选不串味：burn 来源里不得出现非 burn 武器
+	if fz_wids.has("flamethrower") or burn_wids.has("frost_staff"):
+		_fail("状态来源筛选串味（burn=%s freeze=%s）" % [str(burn_wids), str(fz_wids)])
 		return
 	if Registry.status_sources("stun").get("items", []).is_empty():
 		_fail("图鉴眩晕道具来源缺失（雷击石）")
@@ -1588,10 +1920,24 @@ func _check_items() -> void:
 	if menu._codex._list_btns.size() != Registry.weapons.size():
 		_fail("图鉴武器数量不对（%d/%d）" % [menu._codex._list_btns.size(), Registry.weapons.size()])
 		return
-	menu._codex._select_entry("pistol")
+	# ⚠️ S2：`pistol` 已迁入工坊包 → 改用开局兜底武器。
+	#    另注意「进化」段：S2 时进化树被清空，S8（2026-09-17）**已补回** ——
+	#    兜底武器 knife 现在有 `evolve_need: 3` + 单分支，详情里**该**有「进化」段。
+	#    断言写成「基础伤害必在」+「进化段**按配置条件**出现」而不是写死有无，
+	#    正是为了扛住这种来回：写死"必有"会在 S2~S8 之间一直红，写死"没有"会在 S8 后失效。
+	menu._codex._select_entry(Config.FALLBACK_WEAPON)
 	var wtext := _node_text(menu._codex._detail)
-	if wtext.find("基础伤害") < 0 or wtext.find("进化") < 0:
-		_fail("图鉴武器详情缺字段（%s）" % wtext.substr(0, 60))
+	var fb: Dictionary = Registry.weapons[Config.FALLBACK_WEAPON]
+	if wtext.find("基础伤害") < 0:
+		# ⚠️ 失败信息别用 substr 截断：关键字段往往在截断点之后，
+		#    报错里看不到反而会误导排查方向。这里给长度 + 命中情况。
+		_fail("图鉴武器详情缺「基础伤害」字段（全文 %d 字）" % wtext.length())
+		return
+	var fb_has_evo := int(fb.get("evolve_need", 0)) > 0 \
+		and not (fb.get("evolve_branches", []) as Array).is_empty()
+	if fb_has_evo != (wtext.find("进化") >= 0):
+		_fail("图鉴详情「进化」段与武器配置不一致（配置 %s / 详情 %s）"
+			% ["有" if fb_has_evo else "无", "有" if wtext.find("进化") >= 0 else "无"])
 		return
 	if menu._codex._page_tween == null or not menu._codex._page_tween.is_valid():
 		_fail("图鉴详情未创建翻页 Tween")
@@ -1707,20 +2053,46 @@ func _check_items() -> void:
 		_fail("开发者面板状态速览缺失")
 		return
 	print("SMOKE: dev panel status OK")
-	menu._open_slots("new")
-	menu._do_new(1)
+	# S4.5 §10.2：向导 3 步；「开始游戏」**直接**进向导（不再有选槽弹窗），且不提前清旧档
+	if menu.TOTAL_STEPS != 3 or String(menu.STEP_TITLES[2]) != "选择难度":
+		_fail("向导应为 3 步且第 3 步是「选择难度」（实为 %d 步 / '%s'）"
+			% [menu.TOTAL_STEPS, menu.STEP_TITLES[2]])
+		return
+	if not SaveRun.exists(1):
+		_fail("主菜单回归测试的准备档不见了")
+		return
+	menu._open_wizard(false)
 	await get_tree().process_frame
-	if not menu._wizard.visible or menu._slots_panel.visible or not SaveRun.exists(1):
-		_fail("新局选槽未进入向导，或提前清除了旧档")
+	if not menu._wizard.visible or not SaveRun.exists(1):
+		_fail("「开始游戏」未直接进入向导，或提前清除了旧档")
+		return
+	# 首页入口清单：模式步移出向导后，「无尽炼狱」必须在首页；
+	# 「每日挑战」**必须不在**（§3.2.5 整体冻结，守门断言 50b）
+	var home_titles: Array = []
+	for sp in menu._home_specs():
+		home_titles.append(String(sp[0]))
+	if not home_titles.has("开 始 游 戏") or not home_titles.has("无 尽 炼 狱"):
+		_fail("首页缺少 开始游戏 / 无尽炼狱 入口（%s）" % str(home_titles))
+		return
+	if home_titles.has("每 日 挑 战"):
+		_fail("每日挑战入口应已冻结摘除（%s）" % str(home_titles))
 		return
 	# 角色选择卡：每张卡内含程序化专属头像（CharacterAvatar）
+	# ⚠️ 期望值**取自被测数据**（当前 Registry.characters 的规模），不写死数字：
+	# 内置池只有 6 人（工坊包已移出 mods/），写死 7 会红得像「头像丢了」，其实是内容池缩了。
+	# 三向对照：卡片数 == 头像数 == 角色数，任意一项掉队都算失败；空池另判（防 0==0 假绿）
+	var char_total: int = Registry.characters.size()
+	if char_total <= 0:
+		_fail("角色池为空，无法校验角色卡头像")
+		return
 	var avatar_cnt := 0
 	for card in menu._options.get_children():
 		for box_child in card.get_child(0).get_children():
 			if box_child is CharacterAvatar:
 				avatar_cnt += 1
-	if avatar_cnt < 7:
-		_fail("角色卡专属头像缺失（%d/7）" % avatar_cnt)
+	var card_cnt: int = menu._options.get_child_count()
+	if card_cnt != char_total or avatar_cnt != char_total:
+		_fail("角色卡 / 头像 / 角色数不齐（卡 %d / 头像 %d / 角色 %d）" % [card_cnt, avatar_cnt, char_total])
 		return
 	# 向导各步排版：网格必须横向铺满面板（最小分辨率下不留大块空白），
 	# 且卡片尺寸落在合理区间 —— 防「固定列数导致内容少时四周留白」回归
@@ -1762,6 +2134,69 @@ func _check_items() -> void:
 	menu._unhandled_input(accept)
 	if menu._step != 1:
 		_fail("手柄确认已选中的默认向导卡未进入下一步")
+		return
+	# ---- S4.5 难度解锁（§9.4 / 守门断言 27）----
+	# ⚠️ 先把本角色的通关记录摘掉再改写：`clear_*` 会被前面的**通关结算用例**跨用例改写，
+	#    不摘的话「未通关时困难应灰化」会随运行历史间歇性变红 ——
+	#    期望值一旦依赖「本局之前发生过什么」，就必须在断言里把它消掉。
+	var dl_char := "potato"
+	var dl_prev := CodexData.stat("clear_" + dl_char)
+	var dl_step := func() -> void:
+		menu._sel_char = dl_char
+		menu._step = 2
+		menu._build_step()
+	var dl_cards := func() -> Dictionary:
+		var out := {}
+		for dl_node in menu._options.get_children():
+			out[String(dl_node.get_meta("id"))] = dl_node
+		return out
+	CodexData.stats["clear_" + dl_char] = 0
+	menu._sel_diff = "nightmare"      # 故意选一个未解锁档，顺便验证会被夹回
+	dl_step.call()
+	await get_tree().process_frame
+	var dl_cards_none: Dictionary = dl_cards.call()
+	if not dl_cards_none.has("normal") or not dl_cards_none.has("hard") \
+			or not dl_cards_none.has("nightmare"):
+		_fail("难度步缺卡（%s）" % str(dl_cards_none.keys()))
+		return
+	if dl_cards_none["normal"].disabled or not dl_cards_none["normal"].button_pressed:
+		_fail("未通关时简单档应可选、并被夹回选中态")
+		return
+	if not dl_cards_none["hard"].disabled or not dl_cards_none["nightmare"].disabled:
+		_fail("未通关时困难/噩梦档应灰化")
+		return
+	if String(menu._sel_diff) != "normal":
+		_fail("未通关时 _sel_diff 未夹回简单档（%s）" % menu._sel_diff)
+		return
+	CodexData.stats["clear_" + dl_char] = 1
+	dl_step.call()
+	await get_tree().process_frame
+	var dl_cards_hard: Dictionary = dl_cards.call()
+	if dl_cards_hard["normal"].disabled or dl_cards_hard["hard"].disabled:
+		_fail("通关简单后 简单/困难 都应可选")
+		return
+	if not dl_cards_hard["nightmare"].disabled:
+		_fail("只通关简单时噩梦档应仍锁定")
+		return
+	CodexData.stats["clear_" + dl_char] = 3
+	dl_step.call()
+	await get_tree().process_frame
+	var dl_cards_all: Dictionary = dl_cards.call()
+	if dl_cards_all["normal"].disabled or dl_cards_all["hard"].disabled \
+			or dl_cards_all["nightmare"].disabled:
+		_fail("通关噩梦后三档应全开")
+		return
+	# 角色卡追加「已通关最高难度 N」（§10.2）：未通关**不出现**该行
+	CodexData.stats["clear_" + dl_char] = 0
+	var dl_desc_none: String = menu._character_card_desc(Registry.get_character(dl_char))
+	CodexData.stats["clear_" + dl_char] = 2
+	var dl_desc_hard: String = menu._character_card_desc(Registry.get_character(dl_char))
+	CodexData.stats["clear_" + dl_char] = dl_prev      # 还原现场
+	if dl_desc_none.find("已通关") >= 0:
+		_fail("未通关角色卡不应出现已通关标记")
+		return
+	if dl_desc_hard.find("已通关") < 0 or dl_desc_hard.find("困难") < 0:
+		_fail("角色卡未显示最高通关难度（%s）" % dl_desc_hard.replace("\n", " / "))
 		return
 	menu.queue_free()
 	print("SMOKE: save isolation + contracts + menu wizard OK")
@@ -2034,6 +2469,13 @@ func _check_run_rules() -> void:
 	if not is_equal_approx(RunRules.get_value("enemy_hp"), 3.0) or RunRules.get_int("waves") != 5:
 		_fail("手改越界的规则存档未被 clamp")
 		return
+	# ⚠️ 收尾复位（本条用例必须自己善后）：上面把 active/values/基准难度都改成了极端值
+	#    （enemy_hp=3.0 / waves=5）。不复位的话会**泄漏到后续用例**，而且症状极具迷惑性：
+	#      · `WaveManager.start_wave(n)` 会按 `RunRules.wave_total` **夹断**波号
+	#        → 后面「通关 BOSS 波 → 继续无尽」整条流程跑在错误的波号上；
+	#      · `Config.is_boss_wave` 也跟着 `wave_total` 走 → BOSS 出现在意想不到的波。
+	#    曾经它"碰巧"还能过（两个错误互相抵消），改成 20 波制后立刻暴露。
+	RunRules.apply_from_save("garbage")
 	print("SMOKE: run rules OK")
 
 ## HUD 状态图例：无来源隐藏 / 同状态武器取最大命中率 / 道具独立概率合并 / 强化加成行
@@ -2059,8 +2501,15 @@ func _check_status_legend() -> void:
 	if hud._status_panel.visible:
 		_fail("无状态来源时 HUD 图例应隐藏")
 		return
-	# 双燃烧武器（火焰喷射器 + 火箭筒）：命中率取最大，来源计数 2
-	p2.weapons = [{ "type": "flamethrower", "cd": 0.3 }, { "type": "rocket", "cd": 1.3 }]
+	# 双燃烧武器：命中率取最大，来源计数 2
+	#
+	# ⚠️ S2：原用例用「火焰喷射器 + 火箭筒」两把不同武器。`rocket` 已迁入工坊包，
+	#    内置只剩 `flamethrower` 一把带 burn → 改用**同一把武器放两格**。
+	#    `status_sources` 的 count 是按 weapons 条目累加的（player.gd:489），
+	#    所以"两格同状态 → count=2"这个语义照样被验到，且不依赖任何 mod。
+	#    「取最大命中率」的语义改由下一组断言（道具独立概率合并）承担 ——
+	#    因为两格同款武器的 chance 必然相等，取 max 与取任一无法区分。
+	p2.weapons = [{ "type": "flamethrower", "cd": 0.3 }, { "type": "flamethrower", "cd": 0.3 }]
 	var flame_ch := clampf(float(Registry.weapons["flamethrower"].get("status_chance", 1.0)), 0.0, 1.0)
 	hud._status_key = ""
 	hud._refresh_status_legend()
@@ -2070,12 +2519,13 @@ func _check_status_legend() -> void:
 			% int(src.get("burn", {}).get("count", 0)))
 		return
 	if not is_equal_approx(float(src["burn"]["chance"]), flame_ch):
-		_fail("同状态武器应取最大命中率（%.2f ≠ %.2f）" % [float(src["burn"]["chance"]), flame_ch])
+		_fail("同状态武器命中率不对（%.2f ≠ %.2f）" % [float(src["burn"]["chance"]), flame_ch])
 		return
 	if not hud._status_panel.visible or hud._status_box.get_child_count() < 2:
 		_fail("有状态来源时 HUD 图例未显示（children=%d）" % hud._status_box.get_child_count())
 		return
-	# 再叠余烬：概率按 1-(1-a)(1-b) 独立合并，来源计数 3
+	# 再叠余烬：概率按 1-(1-a)(1-b) 独立合并，来源计数 3（两格喷火 + 一件道具）
+	# 这也正是"取最大 vs 独立合并"两种语义的分界：武器之间取 max，道具走独立概率。
 	p2.apply_item("i-ember")
 	var merged := 1.0 - (1.0 - flame_ch) * (1.0 - 0.20)
 	hud._status_key = ""
@@ -2101,13 +2551,23 @@ func _check_status_legend() -> void:
 		_fail("无中毒来源时不应显示传染加成")
 		return
 	# 瘟疫之心（中毒传染）：存在中毒来源时才追加显示
-	p2.weapons = [{ "type": "venom_dagger", "cd": 0.4 }]
+	#
+	# ⚠️ S2：原用例挂 `venom_dagger`（毒牙匕首）取得中毒来源，但该武器已迁入工坊包
+	#    `brotato_lite_core`。内置 5 把五行武器里**没有中毒载体**（毒属于木，
+	#    但木弓 `blight_bow` 不带 status），所以改用**通用来源通路**
+	#    `stats.on_hit_poison`（见 player.status_sources 第二个循环）——
+	#    这条通路与武器无关，测的是同一个「中毒来源 → 显示传染加成」的判定。
+	p2.weapons = [{ "type": "flamethrower", "cd": 0.4 }]
+	var poison_ch_bak := float(p2.stats.get("on_hit_poison", 0.0))
+	p2.stats["on_hit_poison"] = 0.5
 	p2.stats.status_spread = 1.0
 	hud._status_key = ""
 	hud._refresh_status_legend()
 	if hud._bonus_label == null or String(hud._bonus_label.text).find("传染") < 0:
+		p2.stats["on_hit_poison"] = poison_ch_bak
 		_fail("中毒传染加成未显示")
 		return
+	p2.stats["on_hit_poison"] = poison_ch_bak
 	# 还原构筑，避免影响后续存档/结算断言
 	p2.weapons = w_backup
 	p2.items_owned = items_backup
@@ -2497,47 +2957,18 @@ func _check_reactions() -> void:
 	print("SMOKE: element reactions OK")
 
 ## ============================================================
-## Phase 2 主题包内容验证（5 角色 + 8 武器 + 10 敌人 + 3 BOSS）
-## 7 个验证点：Registry 完整性 / BOSS_POOL / 每日挑战 / 波次组合 / 精英池 / 五行覆盖 / stats 范围
+## Phase 2 主题包内容验证（五行阵营：10 敌人 + 3 BOSS + 20 条元素关系）
+##
+## ⚠️ S2 口径收缩：本函数原本还顺带断言「12 角色 / 22 武器 / 8 把 Phase 2 武器」，
+##    这些内容已在 S2 迁入工坊包 `brotato_lite_core`（内置只剩 6 角色 / 5 武器）。
+##    → 角色数与武器数改由 `_check_phase3_content` 断言（那里是「内容清单」的归属地）；
+##      本函数现在**只查 Phase 2 遗留且仍在内置的部分**，即敌人表与元素关系表。
+##      这样做的好处：断言不会因为「内容搬家」而误红 —— 搬家的东西不该留两处口径。
 ## ============================================================
 func _check_phase2_content() -> void:
 	if _failed:
 		return
-	# ---- 验证点 1：Registry 完整性（12 角色 / 28 武器 / 23 敌人） ----
-	var new_chars := ["pyromancer", "druid", "swordmaster", "tidecaller"]
-	for cid in new_chars:
-		if not Registry.characters.has(cid):
-			_fail("Phase 2 角色未注册：%s" % cid)
-			return
-		var ch: Dictionary = Registry.characters[cid]
-		# 角色不再绑定初始武器（开局武器完全由玩家在向导中选择），
-		# 改为校验每个角色都带合法的专属特性
-		var tr: Dictionary = ch.get("trait", {})
-		if tr.is_empty() or String(tr.get("kind", "")) not in Registry.TRAIT_KINDS:
-			_fail("角色 %s 缺少合法的专属特性" % cid)
-			return
-		if typeof(ch.get("stats", {})) != TYPE_DICTIONARY:
-			_fail("角色 %s 的 stats 不是字典" % cid)
-			return
-	if Registry.characters.size() != 12:
-		_fail("角色总数应为 12（%d）" % Registry.characters.size())
-		return
-	var new_weapons := ["thunder_gong", "tar_whip", "ember_fan", "vine_lash",
-		"gold_bell", "frost_nova", "flame_jian", "chaos_hammer"]
-	for wid in new_weapons:
-		if not Registry.weapons.has(wid):
-			_fail("Phase 2 武器未注册：%s" % wid)
-			return
-		var w: Dictionary = Registry.weapons[wid]
-		if float(w.get("shop_weight", 0.0)) <= 0.0:
-			_fail("武器 %s 的 shop_weight 必须 > 0" % wid)
-			return
-		if int(w.get("price", 0)) <= 0:
-			_fail("武器 %s 的 price 必须 > 0" % wid)
-			return
-	if Registry.weapons.size() < 22:
-		_fail("武器总数不足 22（%d）" % Registry.weapons.size())
-		return
+	# ---- 内置五行阵营敌人（Phase 2 遗留，S3 会在此基础上重建 5 元素基础怪） ----
 	var new_enemies := ["fire_imp", "fire_shaman", "wood_sprite", "vine_beast",
 		"metal_puppet", "blade_monk", "water_nymph", "ice_witch",
 		"earth_golem", "stone_titan"]
@@ -2653,21 +3084,41 @@ func _check_phase2_content() -> void:
 	if not elite_ids.has("ice_witch") or not elite_ids.has("stone_titan"):
 		_fail("精英池未包含 Phase 2 新精英怪（ice_witch/stone_titan）")
 		return
-	# ---- 验证点 6：五行武器覆盖（每个五行 ≥ 2 把武器） ----
+	# ---- 验证点 6：五行武器覆盖（S8 第 7 轮**重写**）----
+	# ⚠️ 原口径是「每个五行 ≥ 2 把武器」，且按 `status → 元素`（`Config.get_element`）推导。
+	#    那是**收缩前 28 把**时代的覆盖目标（每系都有两把以上带状态的武器），
+	#    并**靠工坊包里的旧武器凑数**。收缩到内置 10 把之后：
+	#      · 「一个元素正好一把基础武器 + 一个进化形态」就是**设计本身**；
+	#      · 木弓 `blight_bow` 与它的进化体**刻意不带 status**（定位是「高单发 + 续航」
+	#        而非上异常）→ 按旧口径 wood 恒为 0。
+	#    于是原断言只剩「工坊包在不在」这一个含义 —— 包一停用就必然红，
+	#    而它红的原因跟五行覆盖毫无关系。
+	#    → 改成当前设计真正的不变式：按武器自身 `element` 字段统计，
+	#      **5 把开局武器必须恰好覆盖五行、不重不漏**（这才是「五行 = 一个元素一把」）。
 	var elem_coverage := {"fire": 0, "wood": 0, "metal": 0, "water": 0, "earth": 0}
-	for wid2 in Registry.weapons:
-		var st := String(Registry.weapons[wid2].get("status", ""))
-		if st == "" or not Config.STATUS.has(st):
-			continue
-		var el := Config.get_element(st)
-		if elem_coverage.has(el):
-			elem_coverage[el] += 1
-	for el2 in ["fire", "wood", "metal", "water", "earth"]:
-		if int(elem_coverage[el2]) < 2:
-			_fail("五行 %s 武器覆盖不足（%d < 2）" % [el2, int(elem_coverage[el2])])
+	var elem_cov_total := 0
+	for wid_cov in Config.LOADOUT_WEAPONS:
+		var w_el := String(Config.WEAPONS.get(String(wid_cov), {}).get("element", ""))
+		if elem_coverage.has(w_el):
+			elem_coverage[w_el] = int(elem_coverage[w_el]) + 1
+			elem_cov_total += 1
+	for el_cov in ["fire", "wood", "metal", "water", "earth"]:
+		if int(elem_coverage[el_cov]) != 1:
+			_fail("开局武器未做到「一个五行恰好一把」（%s 有 %d 把）"
+				% [el_cov, int(elem_coverage[el_cov])])
 			return
-	# ---- 验证点 7（额外）：5 新角色 stats 都在 STAT_LIMITS 范围内 ----
-	for cid2 in new_chars:
+	if elem_cov_total != Config.ELEMENTS.size():
+		_fail("开局武器覆盖的元素数 %d ≠ 五行数 %d（有武器没写 element 或写了非法值）"
+			% [elem_cov_total, Config.ELEMENTS.size()])
+		return
+	# ---- 验证点 7（额外）：全量角色 stats 都在 STAT_LIMITS 范围内 ----
+	# 遍历 `Registry.characters` 全量（内置 6 个 + 示例 mod + 工坊包（若已启用）），
+	# 顺带覆盖 mod 角色的合法性 ——
+	# ⚠️ 2026-09-17（第 7 轮）：工坊包 `brotato_lite_core` 已停用，所以现在常态只有内置 6 个；
+	#    这条断言仍然遍历**全量**而不是内置 6 个 —— 它守的是「任何注册进来的角色都不能越界」，
+	#    工坊包一旦被重新启用，那 11 个会自动回到覆盖范围里，不需要改这里。
+	# register_character 虽有校验，但那是注册期的事，这里再钉一遍数值区间。
+	for cid2 in Registry.characters:
 		var stats: Dictionary = Registry.characters[cid2].get("stats", {})
 		for key in stats:
 			if not Registry.STAT_LIMITS.has(key):
@@ -3071,16 +3522,22 @@ func _check_phase3_artifacts() -> void:
 	# ---- 验证点 10：断刃锋 on_kill 实跑 + wave/run 两档层数重置 ----
 	p2.apply_artifact("art_notch_blade")
 	var crit_base: float = float(p2.stats.crit_ch)
+	# ⚠️ 2026-09-17（第 7 轮）：期望值原先硬编码 `crit_base + 0.04` —— 本轮把
+	#    `art_notch_blade.effect.per_stack` 减半（0.04 → 0.02）后这条就会红，
+	#    而红的原因不是"叠层没生效"，是"断言抄了一份会过期的数字"。
+	#    → 改为**从被测条目自身读**，以后调数值不再需要动断言。
+	var notch_per: float = float(
+		Registry.get_artifact("art_notch_blade").get("effect", {}).get("per_stack", 0.0))
 	var e_kill: Node2D = _spawn_reaction_target("grunt", far_corner + Vector2(-180.0, 0.0), p2)
 	made.append(e_kill)
 	e_kill.hp = 1.0
 	e_kill.apply_status("bleed", 1, 0.0, 40.0, 1.0)
 	e_kill.take_damage(50.0, false, false)   # 走真实 die()，验证 enemy_died 确实发出
 	if int(p2.artifact_stacks.get("art_notch_blade", 0)) != 1 \
-			or not is_equal_approx(float(p2.stats.crit_ch), crit_base + 0.04):
+			or not is_equal_approx(float(p2.stats.crit_ch), crit_base + notch_per):
 		_fail("断刃锋击杀流血敌人未叠暴击（层数 %d，暴击 %.3f，期望 1 / %.3f）"
 			% [int(p2.artifact_stacks.get("art_notch_blade", 0)),
-				float(p2.stats.crit_ch), crit_base + 0.04])
+				float(p2.stats.crit_ch), crit_base + notch_per])
 		return
 	# params.status 过滤：击杀不带流血的敌人不叠层
 	var e_plain: Node2D = _spawn_reaction_target("grunt", far_corner + Vector2(-240.0, 0.0), p2)
@@ -3200,8 +3657,23 @@ func _check_phase3_artifacts() -> void:
 func _check_phase3_content() -> void:
 	var p3: Node2D = _main.get_node("Player")
 	# ---- 数量下限（取规划 Phase 3 目标区间的下沿）----
-	var chars: int = Registry.characters.size()
-	var weapons: int = Registry.weapons.size()
+	#
+	# ⚠️⚠️ 「内置」与「Registry 总量」必须分开 —— 这是 S2 反复踩的同一个坑：
+	#    `Registry.characters/weapons` 是**内置 + 所有已加载 mod** 的合并结果，
+	#    而 S2 的验收目标是「**内置**恰好 6 角色 / 5 武器」。直接拿 Registry 总量去比
+	#    内置目标，会在工坊包加载后必然失败（实测 17 角色 / 29 武器）。
+	#    → 内置判据：条目**不带 `source` 字段**（`_apply_manifest` 只给 mod 条目打
+	#      `entry["source"] = mod_name`，`_register_builtin` 不打）。
+	var chars := 0
+	for cid in Registry.characters:
+		if not Registry.characters[cid].has("source"):
+			chars += 1
+	var weapons := 0
+	for wid in Registry.weapons:
+		if not Registry.weapons[wid].has("source"):
+			weapons += 1
+	var mod_chars: int = Registry.characters.size() - chars
+	var mod_weapons: int = Registry.weapons.size() - weapons
 	var items: int = Registry.items.size()
 	var enemies: int = Registry.enemies.size()
 	var bosses := 0
@@ -3210,11 +3682,49 @@ func _check_phase3_content() -> void:
 		if bool(ecfg.get("is_boss", false)) or String(ecfg.get("ai", "")) == "boss":
 			bosses += 1
 	var plain_enemies := enemies - bosses
-	if chars < 12:
-		_fail("角色数量未达目标（%d < 12）" % chars)
+	# S2 验收锚：内置角色必须**恰好**是 6；内置武器必须**恰好**是 `Config.WEAPONS` 全表
+	# —— 既能抓「收缩漏了」，也能抓「哪天又往内置塞回去」。
+	#
+	# ⚠️ 2026-09-17 S8：武器这条的口径从「== `LOADOUT_WEAPONS.size()`（5）」改成
+	#    「== `Config.WEAPONS.size()`」—— S8 补回了 5 个五行**进化形态**，它们是
+	#    内置条目但不进开局池，所以内置武器从 5 变 10，写死 5 必红。
+	#    ⚠️ 只把 5 改成 10 也是错的：`Config.WEAPONS.size()` 才能顺带抓住
+	#    「进化形态被 Registry 静默拒登」（数值越界 → 跳过 → 数量对不上）。
+	if chars != 6:
+		_fail("内置角色应为 6（S2 收缩目标），实为 %d（另加 mod %d 个）" % [chars, mod_chars])
 		return
-	if weapons < 20:
-		_fail("武器数量未达 Phase 3 目标（%d < 20）" % weapons)
+	if weapons != Config.WEAPONS.size():
+		_fail("内置武器应为 %d（5 五行 + 5 进化形态），实为 %d（另加 mod %d 把）"
+			% [Config.WEAPONS.size(), weapons, mod_weapons])
+		return
+	# 开局池必须严格是「5 把基础五行武器」：进化形态只能靠合成拿，不能开局白送
+	for lod_wid in Config.LOADOUT_WEAPONS:
+		var lod_cfg: Dictionary = Config.WEAPONS.get(String(lod_wid), {})
+		if lod_cfg.is_empty():
+			_fail("开局武器 %s 不在 Config.WEAPONS 里" % String(lod_wid))
+			return
+		if int(lod_cfg.get("evolve_need", 0)) <= 0:
+			_fail("开局武器 %s 缺进化配置（S8 后 5 把基础武器都应可进化）" % String(lod_wid))
+			return
+		if float(lod_cfg.get("shop_weight", 0.0)) <= 0.0:
+			_fail("开局武器 %s 的 shop_weight 必须 > 0（刷不到就永远凑不满 3 把）" % String(lod_wid))
+			return
+	# 工坊包与示例 mod 必须真的加载进来（否则上面两条会因为"没有 mod"而恰好相等，
+	# 把「mod 链路断了」伪装成「收缩成功」）
+	if mod_weapons < 1 or not Registry.weapons.has("laser"):
+		_fail("示例 mod 武器 laser 未加载（mod 武器数 %d）" % mod_weapons)
+		return
+	# ⚠️ 2026-09-17（第 7 轮）：官方工坊包 `brotato_lite_core`（11 个旧角色 + 23 把旧武器）
+	#    已按用户要求**移出** `game/mods/`，搬到 `game/mods_disabled/brotato_lite_core/`。
+	#    生效机制：`_load_mod_dir` 只扫 `res://mods` / `user://mods` 两个 base
+	#    （`registry.gd:146`），所以放回 mods/ 之外 = 彻底不加载。
+	#    原断言「mod_chars >= 11」是**那个阶段**的验收锚，现在要守的是相反的事：
+	#    「哪天有人把目录挪回去，池子会悄悄又长回来」——所以改成反向断言。
+	#    ⚠️ 两侧缺一不可：只留上面的 `laser` 会把「包被挪回来」判绿；
+	#       只留这条会把「mod 链路整条断了」判绿。必须一正一反同真。
+	if Registry.characters.has("pyromancer") or Registry.weapons.has("pistol"):
+		_fail("工坊包 brotato_lite_core 已移出 game/mods/，其角色/武器不该再注册（pyromancer=%s / pistol=%s）"
+			% [str(Registry.characters.has("pyromancer")), str(Registry.weapons.has("pistol"))])
 		return
 	if items < 30:
 		_fail("道具数量未达 Phase 3 目标（%d < 30）" % items)
@@ -3247,14 +3757,14 @@ func _check_phase3_content() -> void:
 		_fail("有敌人未通过注册校验（Registry %d < Config %d）"
 			% [Registry.enemies.size(), Config.ENEMIES.size()])
 		return
-	# ---- 新增内容 id 齐全 ----
-	for cid in ["gunner", "warlord"]:
+	# ---- 新增内容 id 齐全（S2 后：内置只认 6 角色 + 5 武器；冻结内容归工坊包）----
+	for cid in ["potato", "metal_adept", "wood_adept", "water_adept", "fire_adept", "earth_adept"]:
 		if not Registry.characters.has(cid):
-			_fail("新增角色缺失：%s" % cid)
+			_fail("内置角色缺失：%s" % cid)
 			return
-	for wid in ["railgun", "blight_bow", "frost_hammer", "gold_scepter"]:
-		if not Registry.weapons.has(wid):
-			_fail("新增武器缺失：%s" % wid)
+	for wid in Config.LOADOUT_WEAPONS:
+		if not Registry.weapons.has(String(wid)):
+			_fail("内置五行武器缺失：%s" % String(wid))
 			return
 	for iid in ["i-warden", "i-hunter", "i-lodestone", "i-thorn", "i-feather",
 			"i-focus", "i-plaguevial", "i-sunstone"]:
@@ -3301,14 +3811,20 @@ func _check_phase3_content() -> void:
 			_fail("武器 %s 的 shop_weight 为负" % String(wid2))
 			return
 	# ---- 自洽 4：每日挑战角色池必须覆盖全部已注册角色（防新增角色漏加，漏了完全静默）----
-	if Config.DAILY_CHARACTERS.size() != Registry.characters.size():
-		_fail("每日挑战角色池未覆盖全部角色（%d vs %d）"
-			% [Config.DAILY_CHARACTERS.size(), Registry.characters.size()])
+	#
+	# ⚠️ 五行体系第 6 轮拍板：**每日挑战整体冻结**（§3.2.5）。
+	#    `Config.DAILY_CHARACTERS` 保留常量但**不再被读取** —— 冻结期它的内容与
+	#    当前角色池无关，若继续断言「池子 == 注册数」，就会在收缩到 6 角色时误报红。
+	#    故改为：**池子只允许包含已注册角色**（这是它解冻后仍必须成立的不变式），
+	#    同时断言「冻结使得它未被读取」这一状态 —— 见下方 daily_setup 的守卫断言。
+	var pool_unknown: Array = []
+	for cid_d in Config.DAILY_CHARACTERS:
+		if not Registry.characters.has(String(cid_d)):
+			pool_unknown.append(String(cid_d))
+	if not pool_unknown.is_empty():
+		_fail("每日挑战角色池含未注册角色：%s（解冻前须与内置角色池对齐）"
+			% ", ".join(pool_unknown))
 		return
-	for cid4 in Registry.characters:
-		if not Config.DAILY_CHARACTERS.has(String(cid4)):
-			_fail("每日挑战角色池缺少 %s" % String(cid4))
-			return
 	print("SMOKE: phase 3 content OK")
 
 ## 江湖奇遇事件卡（Phase 4）：数据完整性 / 抽取池 / UI 可负担性 / 效果执行 / 图鉴 / 触发门控
@@ -3316,8 +3832,10 @@ func _check_phase3_content() -> void:
 ## 后续「触控驱动移动」「暂停面板」等用例会因阶段退回 INTRO 而误报。
 ## 波次推迟的契约由 _suppress_event_cards + _pending_wave_after_event 归零共同验证。
 func _check_event_cards() -> void:
-	if Config.EVENT_CARDS.size() != 10:
-		_fail("奇遇事件卡数量不对（%d，应为 10）" % Config.EVENT_CARDS.size())
+	# S3.5 起为 11 张（新增 `ev_origin_dao`，覆盖第 5 区块主题「归元道场」——
+	# 主题扩到 5 个后若不加卡，`theme_seen` 的覆盖断言会先红，且第五区全程无奇遇）
+	if Config.EVENT_CARDS.size() != 11:
+		_fail("奇遇事件卡数量不对（%d，应为 11）" % Config.EVENT_CARDS.size())
 		return
 	var choice_total := 0
 	var theme_seen := {}
@@ -3526,63 +4044,36 @@ func _check_event_cards() -> void:
 	p_ev.hp = minf(hp_saved, float(p_ev.stats.max_hp))
 	print("SMOKE: event cards OK")
 
-## 线段-圆求交等价性：Combat.segment_circle_entry_t 与 Obstacles._segment_circle_entry_t
-## 是刻意重复的两份实现（为规避 class_name 循环依赖），必须永远返回相同结果。
-## 用随机用例覆盖三类情形：命中（t∈[0,1]）、起点已在圆内（t=0）、完全不相交（INF）。
-## 只要有人只改了其中一份，这里立刻红。
-func _check_segment_math_equivalence() -> void:
-	var hits := 0
-	var misses := 0
-	var inside := 0
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 20260911   # 固定种子：失败可复现
-	for i in 400:
-		var from := Vector2(rng.randf_range(-400.0, 400.0), rng.randf_range(-400.0, 400.0))
-		var to := Vector2(rng.randf_range(-400.0, 400.0), rng.randf_range(-400.0, 400.0))
-		var center := Vector2(rng.randf_range(-300.0, 300.0), rng.randf_range(-300.0, 300.0))
-		var radius := rng.randf_range(1.0, 80.0)
-		var a: float = Combat.segment_circle_entry_t(from, to, center, radius)
-		var b: float = Obstacles._segment_circle_entry_t(from, to, center, radius)
-		# 两者要么同为 INF，要么数值一致（用 is_equal_approx 容忍浮点误差）
-		var both_inf: bool = not is_finite(a) and not is_finite(b)
-		var both_fin: bool = is_finite(a) and is_finite(b) and is_equal_approx(a, b)
-		if not both_inf and not both_fin:
-			_fail("线段求交两份实现不一致：from=%s to=%s center=%s r=%.3f → Combat=%s / Obstacles=%s"
-				% [str(from), str(to), str(center), radius, str(a), str(b)])
-			return
-		if both_inf:
-			misses += 1
-		else:
-			hits += 1
-			if is_zero_approx(a):
-				inside += 1
-	# 抽样必须真的覆盖到「命中」与「未命中」两类，否则等价性断言形同虚设
-	if hits < 20 or misses < 20:
-		_fail("线段求交等价性抽样未覆盖足够情形（命中 %d / 未命中 %d）" % [hits, misses])
-		return
-	print("SMOKE: segment math equivalent OK (命中 %d / 内含 %d / 未命中 %d / 共 400)"
-		% [hits, inside, misses])
-
-## 地图主题化（Phase 5）：主题数据 / 波次映射 / 障碍物生成分布 / 推出与遮挡判定 /
-## 索敌视线 / BOSS 波削减 / 氛围粒子。最后把现场还原成当前波次的主题。
+## 地图主题化（Phase 5）：主题数据 / 波次映射 / 氛围粒子。
+## 地形（障碍物）系统已于 2026-09-14 整体移除，本检查随之收缩为
+## 「主题表结构 + 波次映射 + 粒子装配」三件事，不再涉及地形几何。
 func _check_map_themes() -> void:
 	var wm: Node = _main.get_node("WaveManager")
-	var p_mt: Node2D = _main.get_node("Player")
 	# ---- 主题数据与波次映射 ----
-	if Config.MAP_THEMES.size() != 3 or Config.MAP_THEME_ORDER.size() != 3:
-		_fail("地图主题数量不对（%d）" % Config.MAP_THEMES.size())
+	if Config.MAP_THEMES.size() != 5 or Config.MAP_THEME_ORDER.size() != 5:
+		_fail("地图主题数量不对（%d/%d，应为 5 = BLOCK_COUNT）"
+			% [Config.MAP_THEMES.size(), Config.MAP_THEME_ORDER.size()])
+		return
+	if Config.MAP_THEMES.size() != Config.BLOCK_COUNT:
+		_fail("主题数 %d 应等于区块数 %d（一区一景）"
+			% [Config.MAP_THEMES.size(), Config.BLOCK_COUNT])
 		return
 	for tid in Config.MAP_THEMES:
 		var t: Dictionary = Config.MAP_THEMES[tid]
-		for key in ["name", "bg", "grid", "accent", "obstacle", "particle", "waves"]:
+		for key in ["name", "bg", "grid", "accent", "particle", "waves"]:
 			if not t.has(key):
 				_fail("地图主题 %s 缺字段 %s" % [String(tid), key])
 				return
-		if not Obstacle.SHAPES.has(String(t.get("obstacle", ""))):
-			_fail("地图主题 %s 引用了未知障碍物外观（%s）"
-				% [String(tid), String(t.get("obstacle", ""))])
+		# 反向断言：obstacle 字段必须保持不存在（地形系统已移除），防止死字段悄悄回流
+		if t.has("obstacle"):
+			_fail("地图主题 %s 仍带已废弃的 obstacle 字段（地形系统已移除）" % String(tid))
 			return
-	var expect := { 1: "bamboo", 3: "bamboo", 4: "temple", 6: "temple", 7: "nether", 10: "nether" }
+	# 波 → 主题映射：**与 block_of 同源**（区块 1→bamboo … 区块 5→origin）。
+	# 表里刻意包含每个区块的**首尾两波**（4/5、8/9、12/13、16/17 这些跨越点）——
+	# 只测区块中段的话，`block_of` 的整除边界写错（例如 `/` 写成向上取整）也测不出来。
+	var expect := { 1: "bamboo", 4: "bamboo", 5: "temple", 8: "temple",
+		9: "nether", 12: "nether", 13: "blade", 16: "blade",
+		17: "origin", 20: "origin" }
 	for w_key in expect:
 		if Config.map_theme_for_wave(int(w_key)) != String(expect[w_key]):
 			_fail("第 %d 波主题映射错误（%s，期望 %s）"
@@ -3593,177 +4084,31 @@ func _check_map_themes() -> void:
 		if not Config.MAP_THEMES.has(Config.map_theme_for_wave(w2)):
 			_fail("无尽第 %d 波主题越界（%s）" % [w2, Config.map_theme_for_wave(w2)])
 			return
-	# 背景/网格/强调色三主题必须两两不同，否则「换景」没有意义
+	# 背景色各主题必须两两不同，否则「换景」没有意义。
+	# ⚠️ 原先写死比较 bgs[0..2]，扩到 5 个主题后会**漏检** 3/4 号 —— 改成两两比较。
 	var bgs: Array = []
-	for tid2 in Config.MAP_THEMES:
+	var tids: Array = []
+	for tid2 in Config.MAP_THEME_ORDER:
+		tids.append(String(tid2))
 		bgs.append(String(Config.MAP_THEMES[tid2].get("bg", "")))
-	if bgs.size() != 3 or bgs[0] == bgs[1] or bgs[1] == bgs[2] or bgs[0] == bgs[2]:
-		_fail("三主题背景色未区分（%s）" % str(bgs))
+	if bgs.size() != Config.MAP_THEMES.size():
+		_fail("主题序与主题表数量不符（%d/%d）" % [bgs.size(), Config.MAP_THEMES.size()])
 		return
-	# BOSS 波判定与削减上限的关系
+	for i in bgs.size():
+		for j in range(i + 1, bgs.size()):
+			if bgs[i] == bgs[j]:
+				_fail("地图主题背景色重复（%s 与 %s 同为 %s）"
+					% [String(tids[i]), String(tids[j]), String(bgs[i])])
+				return
+	# BOSS 波判定（障碍物削减上限断言已随地形系统移除）
 	if not Config.is_boss_wave(Config.BOSS_WAVE):
 		_fail("第 %d 波未被判定为 BOSS 波" % Config.BOSS_WAVE)
-		return
-	if Config.OBSTACLE_BOSS_MAX > Config.OBSTACLE_MIN:
-		_fail("BOSS 波障碍物上限不低于普通波下限（%d vs %d）"
-			% [Config.OBSTACLE_BOSS_MAX, Config.OBSTACLE_MIN])
 		return
 	# 当前主题应当与当前波次一致（start_wave 写入 GameState）
 	if GameState.map_theme != Config.map_theme_for_wave(wm.wave):
 		_fail("当前主题与波次不符（wave=%d theme=%s）" % [wm.wave, GameState.map_theme])
 		return
 	print("SMOKE: map themes mapping OK (%s @ wave %d)" % [GameState.map_theme, wm.wave])
-	# ---- 障碍物生成：数量 / 避开出生点 / 场内 / 块间通道 ----
-	var origin := Vector2(Config.WORLD.w, Config.WORLD.h) * 0.5
-	var made: int = _main.spawn_obstacles("nether", Config.OBSTACLE_MAX)
-	if made < Config.OBSTACLE_MIN:
-		_fail("障碍物生成数量不足（%d，请求 %d）" % [made, Config.OBSTACLE_MAX])
-		return
-	var entries: Array = Obstacles.entries()
-	if entries.size() != made or Obstacles.count() != made:
-		_fail("障碍物数据与索引不一致（%d / %d / %d）"
-			% [entries.size(), Obstacles.count(), made])
-		return
-	var r := Obstacle.radius("stele")
-	var min_gap := r * 2.0 + 56.0
-	for e in entries:
-		var p: Vector2 = e.pos
-		if p.distance_to(origin) < Config.OBSTACLE_SAFE_RADIUS + r - 0.01:
-			_fail("障碍物侵入玩家出生点安全圈（%.1f）" % p.distance_to(origin))
-			return
-		if p.x < r or p.y < r or p.x > Config.WORLD.w - r or p.y > Config.WORLD.h - r:
-			_fail("障碍物越出世界边界（%s）" % str(p))
-			return
-	for i in entries.size():
-		var a: Vector2 = entries[i].pos
-		for j in range(i + 1, entries.size()):
-			var b: Vector2 = entries[j].pos
-			if a.distance_to(b) < min_gap - 0.01:
-				_fail("障碍物间距不足，可能出现死路（%.1f < %.1f）" % [a.distance_to(b), min_gap])
-				return
-	print("SMOKE: obstacles spawned=%d gap>=%.0f safe>=%.0f"
-		% [made, min_gap, Config.OBSTACLE_SAFE_RADIUS])
-	# ---- 碰撞与视线：改用「世界中心一块已知障碍物」的受控场景 ----
-	# 生成集是随机的，坐标可能贴边导致测试线段越界；碰撞/视线是纯几何，
-	# 用受控单块障碍物验证既确定又可读，生成集的分布特征已在上面单独断言
-	var c0 := Vector2(Config.WORLD.w, Config.WORLD.h) * 0.5
-	var cr := Obstacle.radius("stele")
-	Obstacles.rebuild([{ "pos": c0, "kind": "stele", "r": cr }])
-	if Obstacles.count() != 1:
-		_fail("受控障碍物重建失败（%d）" % Obstacles.count())
-		return
-	# ---- 非法条目必须被拒且如实上报数量（否则「要 50 块只来 30 块」会被静默吞掉）----
-	var rejected := Obstacles.rebuild([
-		{ "pos": c0, "kind": "stele", "r": cr },          # 合法
-		{ "pos": Vector2.ZERO, "kind": "stele", "r": 0.0 },   # r<=0 → 拒
-		{ "pos": Vector2(INF, 0.0), "kind": "stele", "r": cr },  # 非有限坐标 → 拒
-		"not a dictionary",                                 # 类型错 → 拒
-	])
-	if rejected != 3:
-		_fail("Obstacles.rebuild 未如实上报被拒条目数（rejected=%d，期望 3）" % rejected)
-		return
-	if Obstacles.count() != 1:
-		_fail("Obstacles.rebuild 保留了本应被拒的条目（count=%d，期望 1）" % Obstacles.count())
-		return
-	Obstacles.rebuild([{ "pos": c0, "kind": "stele", "r": cr }])   # 还原受控场景
-	var pushed := Obstacles.resolve_circle(c0, 16.0)
-	if pushed.distance_to(c0) < cr + 16.0 - 0.01:
-		_fail("与障碍物圆心重合的实体未被推出（%.1f）" % pushed.distance_to(c0))
-		return
-	var far_pos := c0 + Vector2(cr + 16.0 + 80.0, 0.0)
-	if Obstacles.resolve_circle(far_pos, 16.0) != far_pos:
-		_fail("远离障碍物的实体被误推出")
-		return
-	if not Obstacles.overlaps_circle(c0, 1.0):
-		_fail("障碍物自身位置未被判定为重叠")
-		return
-	if Obstacles.overlaps_circle(far_pos, 16.0):
-		_fail("障碍物外侧 80px 的实体被误判为重叠")
-		return
-	var from := c0 + Vector2(-(cr + 120.0), 0.0)
-	var to := c0 + Vector2(cr + 120.0, 0.0)
-	var t_hit := Obstacles.first_block_t(from, to, 4.0)
-	if not is_finite(t_hit) or t_hit <= 0.0 or t_hit >= 1.0:
-		_fail("穿过障碍物的线段未被挡住（t=%.3f）" % t_hit)
-		return
-	var offset := Vector2(0.0, cr + 200.0)
-	var t_clear := Obstacles.first_block_t(from + offset, to + offset, 4.0)
-	if is_finite(t_clear):
-		_fail("未经过障碍物的线段被误判为遮挡（t=%.3f）" % t_clear)
-		return
-	if Obstacles.has_los(from, to, 4.0):
-		_fail("has_los 与实际遮挡结果不一致（应被挡住）")
-		return
-	if not Obstacles.has_los(from + offset, to + offset, 4.0):
-		_fail("has_los 与实际遮挡结果不一致（应通畅）")
-		return
-	print("SMOKE: obstacle collision OK (block_t=%.3f)" % t_hit)
-	# ---- 索敌视线：被障碍物挡住的近处敌人必须让位给无遮挡的远处敌人 ----
-	var far := c0 + Vector2(-(cr + 400.0), 0.0)
-	var e_blocked: Node2D = _spawn_reaction_target("grunt", c0 + Vector2(cr + 20.0, 0.0), p_mt)
-	var e_visible: Node2D = _spawn_reaction_target("grunt",
-		far + Vector2(0.0, -(cr * 2.0 + 500.0)), p_mt)
-	await get_tree().physics_frame
-	var blocked_visible := Obstacles.has_los(far, e_blocked.global_position, 4.0)
-	var clear_visible := Obstacles.has_los(far, e_visible.global_position, 4.0)
-	var picked: Node2D = Combat.nearest_enemy_visible(far, 4.0)
-	e_blocked.queue_free()
-	e_visible.queue_free()
-	if blocked_visible:
-		_fail("被障碍物遮挡的敌人未被判定为无视线")
-		return
-	if not clear_visible:
-		_fail("无遮挡的敌人被误判为无视线")
-		return
-	if picked == e_blocked:
-		_fail("索敌未避开被障碍物遮挡的目标")
-		return
-	print("SMOKE: obstacle line-of-sight targeting OK")
-	# ---- 线段求交等价性：Combat 与 Obstacles 的两份解析解必须永远一致 ----
-	# 背景：Obstacles.has_los ← Combat.nearest_enemy_visible，反向调用会形成 class_name
-	# 循环依赖，因此两份实现只能各自保留（见两处函数的「等价性契约」注释）。
-	# 风险不是重复本身，而是「改了一份忘了另一份」且无人发现。这里用随机用例把契约钉死。
-	_check_segment_math_equivalence()
-	if _failed:
-		return
-	# ---- 弹丸遮挡回归：没有障碍物时弹丸绝不能凭空消失 ----
-	# 踩过的坑：first_block_t 用 INF 表示「没被挡住」，而 INF > 0.0 为真、
-	# INF <= enemy_t（同样为 INF）也为真，于是漏判把「没挡住」当成「挡住」，
-	# 每颗子弹在第一帧就被销毁——无敌人时 enemy_t 同为 INF，这个坑更隐蔽。
-	# 这里放一颗零速弹丸：没有障碍物可挡、也不会命中敌人或飞出世界，它必须活下来
-	var saved_phase: int = GameState.phase
-	var saved_queue: int = GameState.level_queue
-	GameState.level_queue = 0
-	GameState.set_phase(GameState.Phase.PLAYING)
-	Obstacles.clear()
-	var free_bullet: Node2D = preload("res://scenes/weapons/bullet.tscn").instantiate()
-	_main.add_child(free_bullet)
-	free_bullet.setup(c0 + Vector2(0.0, -300.0), PI,
-		{ "bspeed": 0.0, "bullet_life": 5.0 }, { "dmg": 1.0, "crit": false })
-	for _i in 6:
-		await get_tree().physics_frame
-	var survived := is_instance_valid(free_bullet) and not free_bullet.is_queued_for_deletion()
-	if is_instance_valid(free_bullet):
-		free_bullet.queue_free()
-	GameState.set_phase(saved_phase)
-	GameState.level_queue = saved_queue
-	if not survived:
-		_fail("无障碍物时弹丸被误判为被遮挡（第一帧即销毁）")
-		return
-	print("SMOKE: obstacle-free bullet survives OK")
-	# ---- BOSS 波障碍物削减（临时把波次推到 BOSS 波，验完立即还原）----
-	var saved_wave: int = wm.wave
-	var saved_endless: bool = GameState.endless
-	GameState.endless = false
-	wm.wave = Config.BOSS_WAVE
-	_main._apply_map_theme("nether")
-	var boss_count: int = Obstacles.count()
-	wm.wave = saved_wave
-	GameState.endless = saved_endless
-	if boss_count > Config.OBSTACLE_BOSS_MAX:
-		_fail("BOSS 波障碍物未削减（%d > %d）" % [boss_count, Config.OBSTACLE_BOSS_MAX])
-		return
-	print("SMOKE: boss wave obstacles=%d (cap %d)" % [boss_count, Config.OBSTACLE_BOSS_MAX])
 	# ---- 氛围粒子：每主题脚本匹配且登记进 fx 组 ----
 	for tid3 in Config.MAP_THEME_ORDER:
 		_main._apply_map_theme(String(tid3))
@@ -3785,11 +4130,8 @@ func _check_map_themes() -> void:
 			_fail("主题 %s 氛围粒子混进了打击感 fx 组（会污染全程特效计数）" % String(tid3))
 			return
 	print("SMOKE: theme particles OK (%s)" % str(Config.MAP_THEME_ORDER))
-	# ---- 还原：重建当前波次的主题障碍物 ----
+	# ---- 还原：切回当前波次的主题（氛围粒子随之重建）----
 	_main._apply_map_theme(GameState.map_theme)
-	if Obstacles.count() < 1:
-		_fail("还原当前主题后障碍物为空")
-		return
 	print("SMOKE: map themes OK")
 
 ## 递归找第一个文本包含 frag 的 Label，返回其完整文本（找不到返回空串）
@@ -3859,10 +4201,26 @@ func _check_character_traits() -> void:
 	if not bad.is_empty():
 		_fail("角色特性数据异常：%s" % ", ".join(bad))
 		return
-	# 四类机制都必须有角色在用 —— 少了任何一类就说明新机制没接线
+	# 四类机制都必须**接上代码** —— 少了任何一类就说明新机制没接线。
+	#
+	# ⚠️ 2026-09-17（第 7 轮）：原口径是「注册表里必须有角色在用这四类 kind」，
+	#    但那在内置五行池里**从来就不成立** —— potato + 5 修士全是 `stats`，
+	#    aura / thorns / momentum 一直是 S2 的已知缺口（印记语义错位、构筑亲和恒空）。
+	#    此前这条能绿，只是因为工坊包里的旧角色**恰好**补上了这三类；
+	#    包一停用，它就退化成「在验工坊包在不在」，而它想守的是「机制有没有接线」。
+	#    → 改成**双来源覆盖**：内容侧（有角色在用）**或**机制侧（本函数下半段
+	#      §3 光环 / §5 战意 / §6 荆棘 会用临时 `char_trait` 各实跑一遍）。
+	#      两边都没有 = 这一类真的没人验 → 仍然报错（这才是它要守的东西）。
+	var kind_covered := {}
 	for k2 in Registry.TRAIT_KINDS:
-		if int(kinds.get(k2, 0)) <= 0:
-			_fail("没有任何角色使用 %s 类特性" % String(k2))
+		if int(kinds.get(k2, 0)) > 0:
+			kind_covered[String(k2)] = "content"
+	for mk in ["aura", "momentum", "thorns"]:
+		if not kind_covered.has(mk):
+			kind_covered[mk] = "mechanism"
+	for k2 in Registry.TRAIT_KINDS:
+		if not kind_covered.has(String(k2)):
+			_fail("特性类别 %s 既没有角色在用、也没有机制侧实跑（新机制没接线）" % String(k2))
 			return
 	# ---- 2. stats 类特性的 effects 键必须已接线（写错字只会静默失效）----
 	var valid := {}
@@ -3986,12 +4344,41 @@ func _check_weapon_fx() -> void:
 	if not missing.is_empty():
 		_fail("武器缺少外观族映射：%s" % ", ".join(missing))
 		return
+	# ⚠️ S2：「孤儿映射」的判据必须是 **Registry.weapons**（内置 + 已加载 mod），
+	#    不能是 `Config.WEAPONS`（只剩内置 10 把）。
+	#    `WEAPON_FX` 是**保留全量**的：内置 10 把 + 工坊包 23 把，全都写在这张表里
+	#    —— 这样武器迁出内置后，只要工坊包还在，外观族就不会静默劣化成兜底族。
+	#    若这里拿 `Config.WEAPONS` 当白名单，工坊包那 23 条会被误判成悬空映射。
+	#
+	# ⚠️ 2026-09-17（第 7 轮）：工坊包已移出 `game/mods/` → 那 23 条**当下确实未注册**，
+	#    但它们仍是「保留全量」设计的合法条目。判据因此变成三选一：
+	#    已注册 / 在 `Registry.FROZEN_PACK_WEAPONS` 白名单里 / 否则就是幽灵 id。
+	#    没有这份白名单，「包被停用」与「表里写错一个 id」会给出完全一样的报错。
 	var orphans: Array = []
 	for wid2 in Registry.WEAPON_FX:
-		if not Config.WEAPONS.has(String(wid2)):
-			orphans.append(String(wid2))
+		if Registry.weapons.has(String(wid2)):
+			continue
+		if Registry.FROZEN_PACK_WEAPONS.has(String(wid2)):
+			continue   # 合法的冻结条目（包已停用，见 Registry.FROZEN_PACK_WEAPONS）
+		orphans.append(String(wid2))
 	if not orphans.is_empty():
 		_fail("外观族映射指向不存在的武器：%s" % ", ".join(orphans))
+		return
+	# 反向对照：白名单自己也得对得上 —— 否则上面那条会退化成「白名单写多宽都能绿」。
+	# 少写 → 合法冻结条目被误判成幽灵；多写 → 给不存在的武器开后门。两侧都在这里钉住。
+	var frozen_hit := 0
+	for fw in Registry.FROZEN_PACK_WEAPONS:
+		if Registry.WEAPON_FX.has(String(fw)):
+			frozen_hit += 1
+	if frozen_hit != Registry.FROZEN_PACK_WEAPONS.size():
+		_fail("WEAPON_FX 里的冻结工坊包条目数 %d ≠ 白名单 %d（两边必须一一对应）"
+			% [frozen_hit, Registry.FROZEN_PACK_WEAPONS.size()])
+		return
+	if Registry.FROZEN_PACK_WEAPONS.size() != Registry.WEAPON_FX.size() \
+			- Config.WEAPONS.size():
+		_fail("白名单 %d + 内置武器 %d ≠ WEAPON_FX 全量 %d（有武器既不在内置也不在白名单）"
+			% [Registry.FROZEN_PACK_WEAPONS.size(), Config.WEAPONS.size(),
+				Registry.WEAPON_FX.size()])
 		return
 	# ---- 2. 外观族必须与攻击方式匹配（近战配投射族 = 永远画不出来）----
 	var melee_fx := ["slash", "whip", "smash"]
@@ -4042,9 +4429,12 @@ func _check_weapon_fx() -> void:
 	bt.queue_free()
 	var sl := Slash.new()
 	_main.add_child(sl)
-	sl.setup(Vector2.ZERO, 0.0, 100.0, 1.9, String(Registry.weapons["blade"].get("fx", "")))
+	# ⚠️ S2：原用例读 `Registry.weapons["blade"]`（太刀）取 fx。`blade` 已迁入工坊包，
+	#    虽然 mod 加载后仍能取到，但那样这条断言就变成"依赖 mod 存在"的假保证
+	#    —— 内置链路一旦坏掉，只要工坊包还在就照样绿。改用内置的 `knife`（fx=slash）。
+	sl.setup(Vector2.ZERO, 0.0, 100.0, 1.9, String(Registry.weapons["knife"].get("fx", "")))
 	if String(sl.fx) != "slash":
-		_fail("太刀的刀光未取到 slash 外观族（%s）" % String(sl.fx))
+		_fail("金剑的刀光未取到 slash 外观族（%s）" % String(sl.fx))
 		sl.queue_free()
 		return
 	sl.queue_free()
@@ -4131,15 +4521,41 @@ func _check_affinity() -> void:
 			_fail("entry_tags 未能推导出 %s（得到 %s）" % [String(s[1]), str(tags)])
 			return
 	# ---- 2. 亲和推导：武器形态 / 武器状态 / 角色光环 / 已持有法宝 ----
-	if not ("melee" in Config.affinity_tags("potato", [{ "type": "blade" }], {})):
+	# ⚠️ S2：本组原用 `blade`（近战）与 `venom_dagger`（poison）当样本，两者都已迁入
+	#    工坊包。它们加载后依然能推出标签，但那样验的是"工坊包在不在"，不是"推导逻辑对不对"。
+	#    → 改为「内置武器 + 临时注册探针武器」：既能覆盖同一批推导分支，又不依赖任何 mod。
+	if not ("melee" in Config.affinity_tags("potato", [{ "type": "knife" }], {})):
 		_fail("近战武器未推导出 melee 亲和")
 		return
-	if not ("poison" in Config.affinity_tags("potato", [{ "type": "venom_dagger" }], {})):
+	# 内置 5 把里没有带 poison 的（金剑=bleed / 喷火=burn / 水枪=slow / 土弹=stun），
+	# 但 poison 标签通路本身必须还在（毒系道具/法宝/未来内容都靠它）。临时注册一把探针。
+	Registry.weapons["__poison_probe"] = {
+		"id": "__poison_probe", "status": "poison", "attack_type": "ranged",
+	}
+	if not ("poison" in Config.affinity_tags("potato", [{ "type": "__poison_probe" }], {})):
 		_fail("带毒武器未推导出 poison 亲和")
+		Registry.weapons.erase("__poison_probe")
 		return
-	if not ("burn" in Config.affinity_tags("pyromancer", [], {})):
-		_fail("焚天祭司的光环未推导出 burn 亲和")
+	Registry.weapons.erase("__poison_probe")
+	# ⚠️ 已知缺口（不在 S2 范围，留给 S3/S4 决策）：
+	#    `kind == "aura"` 是角色推元素亲和的唯一通路，而**内置 6 角色没有一个 aura**
+	#    （potato 无元素；5 修士 trait.kind 全是 "stats"）→ 对内置角色，② 号通路恒空。
+	#
+	# ⚠️ 2026-09-17（第 7 轮）：原先借 `pyromancer`（工坊包，aura+burn）验这条通路，
+	#    但工坊包已移出 `game/mods/` → 该角色不再注册，这条会直接红。
+	#    → 改为**临时注册探针角色**，与上面 `__poison_probe`（探针武器）同一手法：
+	#      验的是「aura 推导逻辑本身」，而不是「某个包在不在」。用完立刻 erase，
+	#      不给后面「遍历 Registry.characters」的用例留下污染源。
+	#    等到 S3/S4 给修士补元素光环（或给 stats kind 也加 element→status 推导）时，
+	#    这条断言应改回内置角色。
+	Registry.characters["__aura_probe"] = {
+		"id": "__aura_probe", "name": "探针", "trait": { "kind": "aura", "status": "burn" },
+	}
+	if not ("burn" in Config.affinity_tags("__aura_probe", [], {})):
+		_fail("aura 角色的光环未推导出 burn 亲和")
+		Registry.characters.erase("__aura_probe")
 		return
+	Registry.characters.erase("__aura_probe")
 	if not ("stun" in Config.affinity_tags("potato", [], { "art_stone_skin": 1 })):
 		_fail("已持有土系法宝未推导出 earth→stun 亲和")
 		return
@@ -4204,6 +4620,21 @@ func _check_sigils() -> void:
 			_fail("印记 %s 的颜色非法：%s" % [String(sid), String(s.color)])
 			return
 	# ---- 2. 每个角色都能推导出合法印记（空串合法 = 刻意无印记）----
+	#
+	# ⚠️ S2 口径变化：本组的覆盖门槛原为「≥8 种印记被使用」，那是按旧 17 角色池定的。
+	#    内容收缩后内置只剩 6 个角色，且 5 修士的 trait.kind 都是 `stats`，
+	#    `sigil_for` 的 `aura` 分支（唯一能推五行印记的入口）对内置角色**永不命中** →
+	#    印记只能从 effects 反推，得到的是**风格印记**：
+	#        potato="" / metal_adept="luck" / wood_adept="wood" / water_adept="wood"
+	#        fire_adept="wood" / earth_adept="guard"   → 共 3 种
+	#    → 门槛改为「内置 6 角色不得推得非法印记，且至少推出 1 种非空印记」。
+	#      覆盖面门槛挪到 §12 的 S3/S4「5 元素怪 + 抗性模型」阶段随内容一起定。
+	#
+	# ⚠️ 顺带记一个**真实语义错位**（不是本用例能修的，留给 S3/S4）：
+	#    「赤焰修士」的印记被推成 `wood`（青瘴）而非 `fire`，因为它是 `stats` kind，
+	#    只能从 effects 的 `status_dmg_mult` 反推。同理「鎏金修士」→ `luck`。
+	#    等修士补上元素光环（或给 stats kind 也加 element→sigil 推导）后，
+	#    这里应改回逐个断言 `fire/wood/water/metal/earth`。
 	var used := {}
 	var blank := 0
 	for cid in Registry.characters:
@@ -4215,8 +4646,22 @@ func _check_sigils() -> void:
 			blank += 1
 		else:
 			used[sg] = true
-	if used.size() < 8:
-		_fail("印记覆盖面过低：只有 %d 种被角色使用" % used.size())
+	if used.is_empty():
+		_fail("没有角色推导出任何印记（推导链整条失效）")
+		return
+	var builtin_used := {}
+	var builtin_blank := 0
+	for cid in ["potato", "metal_adept", "wood_adept", "water_adept", "fire_adept", "earth_adept"]:
+		var sg2 := Config.sigil_for(cid)
+		if sg2 == "":
+			builtin_blank += 1
+		else:
+			builtin_used[sg2] = true
+	if builtin_used.is_empty():
+		_fail("内置 6 角色没有一个推导出印记（内置内容整条推导链失效）")
+		return
+	if builtin_blank >= 6:
+		_fail("内置角色全部无印记（potato 应刻意无印记，其余应至少推出风格印记）")
 		return
 	if blank >= Registry.characters.size():
 		_fail("所有角色都没有印记")
@@ -4230,13 +4675,53 @@ func _check_sigils() -> void:
 		_fail("未知角色应推导出空印记")
 		return
 	# ---- 4. 推导规则抽查：光环按元素、剑客按 effects、荆棘按定位 ----
-	var expects := { "pyromancer": "fire", "swordmaster": "blade", "guardian": "guard",
-		"warlord": "blade", "tidecaller": "water" }
-	for cid2 in expects:
-		var got := Config.sigil_for(String(cid2))
-		if got != String(expects[cid2]):
-			_fail("角色 %s 的印记应为 %s（实得 %s）" % [String(cid2), String(expects[cid2]), got])
+	# ⚠️ S2：内置 6 角色里没有 aura / thorns / momentum 三种 kind（potato + 5 stats 修士），
+	#    而这三条分支正是 `sigil_for` 的语义核心，不能没人看住。
+	#    → 拆成两组：
+	#      ① 内置角色：钉死当前实测值（含刻意空印记），作为回归基线；
+	#      ② aura / thorns / momentum 三条分支：**用探针角色临时注册**来验。
+	#
+	# ⚠️ 2026-09-17（第 7 轮）：② 组原先借工坊包角色（pyromancer / swordmaster /
+	#    guardian / warlord / tidecaller）当被测对象，并在「包没加载」时**故意报错**。
+	#    工坊包现已按用户要求移出 `game/mods/` → 那种"报错即信号"的写法不再成立，
+	#    否则就变成「一跑冒烟就红」。改成与上面 `__aura_probe` / `__poison_probe`
+	#    同一手法：临时注册探针 → 断言 → 立刻 erase。
+	#    期望值取自 `Config.sigil_for` 的分支定义本身（aura → 元素印记 / thorns → guard /
+	#    momentum → blade），不是另抄一份字面量。
+	var builtin_expects := {
+		"potato": "",            # 显式声明无印记（均衡之道）
+		"metal_adept": "luck",   # stats kind → 从 effects.crit_ch 反推
+		"wood_adept": "wood",    # stats kind → 从 effects.status_dmg_mult 反推
+		"water_adept": "wood",   # stats kind → 从 effects.status_dur_mult 反推
+		"fire_adept": "wood",    # stats kind → 从 effects.status_dmg_mult 反推
+		"earth_adept": "guard",  # stats kind → 从 effects.armor 反推
+	}
+	for cid3 in builtin_expects:
+		var got_b := Config.sigil_for(String(cid3))
+		if got_b != String(builtin_expects[cid3]):
+			_fail("内置角色 %s 的印记应为 %s（实得 %s）"
+				% [String(cid3), String(builtin_expects[cid3]), got_b])
 			return
+	var probes := {
+		"__sigil_aura": { "kind": "aura", "status": "burn", "want": "fire" },
+		"__sigil_thorns": { "kind": "thorns", "want": "guard" },
+		"__sigil_momentum": { "kind": "momentum", "want": "blade" },
+	}
+	var checked_branches := 0
+	for pid in probes:
+		var pr: Dictionary = probes[pid]
+		Registry.characters[String(pid)] = { "id": String(pid), "name": "探针",
+			"trait": { "kind": String(pr["kind"]), "status": String(pr.get("status", "")) } }
+		var got := Config.sigil_for(String(pid))
+		Registry.characters.erase(String(pid))   # 立刻归还，别污染后面遍历 characters 的用例
+		if got != String(pr["want"]):
+			_fail("印记分支 %s 推导失效（应为 %s，实得 %s）"
+				% [String(pr["kind"]), String(pr["want"]), got])
+			return
+		checked_branches += 1
+	if checked_branches == 0:
+		_fail("aura/thorns/momentum 三条印记分支无被测对象")
+		return
 	# ---- 5. 数据链路：印记必须真的到达弹丸与刀光实例 ----
 	var b = preload("res://scenes/weapons/bullet.tscn").instantiate()
 	b.setup(Vector2.ZERO, 0.0, { "fx": "bolt", "bspeed": 500.0 },
@@ -4265,6 +4750,1033 @@ func _check_sigils() -> void:
 		_fail("_roll_damage 未打包印记")
 		return
 	print("SMOKE: sigils OK (%d kinds in use / %d blank)" % [used.size(), blank])
+
+## ============================================================
+## 五行对抗引擎（§13 断言 43~51）
+##
+## 目的：把「双向元素修正模型」的每一条算术都钉死。
+##   - 相生相克表方向正确（不依赖 REACTIONS 的 id 约定，那张表方向是反的）
+##   - 输出侧 6 档 / 受击侧 4 档的**刻意不对称**确实成立
+##   - §2.3-C 木角色标定（-90 / -75 / 0 / -50）逐条对得上
+##   - 关系基数与 cap 分列（写错语义就会冒出「相生两侧落 other 档」的错值）
+##   - 区域元素序末位是同属（否则 90% cap 永远触发不了）
+## ============================================================
+func _check_element_engine() -> void:
+	# ---- 43. 相生相克表：完整覆盖 5 行，且与「木→火→土→金→水→木」一致 ----
+	var gen_want := { "wood": "fire", "fire": "earth", "earth": "metal",
+		"metal": "water", "water": "wood" }
+	var ovc_want := { "wood": "earth", "earth": "water", "water": "fire",
+		"fire": "metal", "metal": "wood" }
+	for e in Config.ELEMENTS:
+		if String(Config.GENERATES.get(e, "")) != String(gen_want[e]):
+			_fail("GENERATES[%s] 应为 %s，实为 %s"
+				% [String(e), String(gen_want[e]), String(Config.GENERATES.get(e, ""))])
+			return
+		if String(Config.OVERCOMES.get(e, "")) != String(ovc_want[e]):
+			_fail("OVERCOMES[%s] 应为 %s，实为 %s"
+				% [String(e), String(ovc_want[e]), String(Config.OVERCOMES.get(e, ""))])
+			return
+	# ---- 44. 关系枚举：6 档齐全，字段（out/hit/hcap）都是数值 ----
+	for rid in ["i_beat", "gen_me", "same", "i_gen", "beats_me", "other"]:
+		if not Config.ELEMENT_RELATION.has(rid):
+			_fail("ELEMENT_RELATION 缺少关系 %s" % rid)
+			return
+		for f in ["out", "hit", "hcap"]:
+			if not Config.ELEMENT_RELATION[rid].has(f):
+				_fail("关系 %s 缺少字段 %s" % [rid, f])
+				return
+	# ---- 45. element_relation：穷举 5×5，逐项对照 §2.3-A/§2.3-B 表 ----
+	# 木角色视角：土 i_beat / 水 gen_me / 木 same / 火 i_gen / 金 beats_me
+	var want_rel := { "earth": "i_beat", "water": "gen_me", "wood": "same",
+		"fire": "i_gen", "metal": "beats_me" }
+	for tgt in want_rel:
+		var got := Config.element_relation("wood", String(tgt))
+		if got != String(want_rel[tgt]):
+			_fail("木→%s 应为 %s，实为 %s" % [String(tgt), String(want_rel[tgt]), got])
+			return
+	# 方向性：反向关系必须互换或落到对称档
+	if Config.element_relation("earth", "wood") != "beats_me":
+		_fail("土→木 应为 beats_me（木克土的逆）")
+		return
+	if Config.element_relation("water", "wood") != "i_gen":
+		_fail("水→木 应为 i_gen（木生水的逆）")
+		return
+	# 空元素 / 非法元素一律 other
+	if Config.element_relation("", "fire") != "other" or Config.element_relation("wood", "") != "other":
+		_fail("空元素应判为 other")
+		return
+	if Config.element_relation("void", "wood") != "other":
+		_fail("非法元素应判为 other")
+		return
+	# ---- 46. 输出侧 6 档：木角色逐项对 §2.3-A ----
+	var want_out := { "earth": +0.25, "water": +0.15, "wood": +0.10,
+		"fire": -0.15, "metal": -0.25 }
+	for tgt2 in want_out:
+		var got_o := Config.out_mult("wood", String(tgt2))
+		if not is_equal_approx(got_o, float(want_out[tgt2])):
+			_fail("输出 木→%s 应为 %+.2f，实为 %+.2f"
+				% [String(tgt2), float(want_out[tgt2]), got_o])
+			return
+	# ---- 47. 受击侧 4 档：基数 + cap 分列，且相生两侧与 other 同为 0/0.50 ----
+	# 参考系说明：hit_base/hit_cap 的第一参数是**攻击方**，第二参数是**防御方**（木）。
+	# 表读的是防御方视角的关系，故这里必须写 hit_base(来袭元素, "wood")。
+	var want_hit := { "earth": -0.25, "water": 0.00, "wood": -0.10,
+		"fire": 0.00, "metal": +0.25 }
+	var want_cap := { "earth": 0.75, "water": 0.50, "wood": 0.90,
+		"fire": 0.50, "metal": 0.25 }
+	for atk in want_hit:
+		var got_h := Config.hit_base(String(atk), "wood")
+		var got_c := Config.hit_cap(String(atk), "wood")
+		if not is_equal_approx(got_h, float(want_hit[atk])):
+			_fail("受击基数 木受%s 应为 %+.2f，实为 %+.2f"
+				% [String(atk), float(want_hit[atk]), got_h])
+			return
+		if not is_equal_approx(got_c, float(want_cap[atk])):
+			_fail("受击 cap 木受%s 应为 %.2f，实为 %.2f"
+				% [String(atk), float(want_cap[atk]), got_c])
+			return
+	# 参考系必须真的按防御方解，写反了会静默算错（这里正面钉死）
+	if Config.hit_relation("earth", "wood") != "i_beat":
+		_fail("受击参考系错误：木受土应为 i_beat（木克土），实为 %s"
+			% Config.hit_relation("earth", "wood"))
+		return
+	if Config.element_relation("earth", "wood") != "beats_me":
+		_fail("攻击侧参考系应保持 attacker-first（土打木 = beats_me）")
+		return
+	# 受击侧 4 档归一是**数据自然导出**：相生两侧 + other 必须落同一档
+	if Config.hit_tier("water", "wood") != "other" or Config.hit_tier("fire", "wood") != "other":
+		_fail("相生两侧应归入受击 other 档")
+		return
+	if Config.hit_tier("wood", "wood") != "same" \
+			or Config.hit_tier("earth", "wood") != "i_beat" \
+			or Config.hit_tier("metal", "wood") != "beats_me":
+		_fail("受击 4 档归一错误")
+		return
+	# 空元素：hit_tier 返回空串（不在 UI 上伪装成「其他」），hit_mult 返回 0
+	if Config.hit_tier("", "wood") != "" or Config.hit_tier("wood", "") != "":
+		_fail("空元素的受击档位应为空串")
+		return
+	if not is_equal_approx(Config.hit_mult("", "wood", 1.0), 0.0):
+		_fail("空元素时 hit_mult 应为 0（不参与修正）")
+		return
+	# ---- 48. hit_mult 公式：clamp(基数 − 同化度, −cap, +∞) ----
+	# 木角色对土（i_beat，基数 -0.25，cap 0.75）：同化度 0 → -0.25；0.5 → -0.75；1.0 → 封顶 -0.75
+	if not is_equal_approx(Config.hit_mult("earth", "wood", 0.0), -0.25) \
+			or not is_equal_approx(Config.hit_mult("earth", "wood", 0.5), -0.75) \
+			or not is_equal_approx(Config.hit_mult("earth", "wood", 1.0), -0.75):
+		_fail("hit_mult 木受土 未按 clamp(基数−同化度, −cap) 解算")
+		return
+	# 木受木（same，基数 -0.10，cap 0.90）：同化度 0.8 → -0.90；0.95 → 仍 -0.90
+	if not is_equal_approx(Config.hit_mult("wood", "wood", 0.8), -0.90) \
+			or not is_equal_approx(Config.hit_mult("wood", "wood", 0.95), -0.90):
+		_fail("hit_mult 同属 cap 90%% 未生效")
+		return
+	# 木受金（beats_me，基数 +0.25，cap 0.25）：同化度 0.25 → 0；0.5 → 仍 0（不能转成减伤）
+	if not is_equal_approx(Config.hit_mult("metal", "wood", 0.0), +0.25) \
+			or not is_equal_approx(Config.hit_mult("metal", "wood", 0.25), 0.0) \
+			or not is_equal_approx(Config.hit_mult("metal", "wood", 0.9), 0.0):
+		_fail("hit_mult 克我 未在 0 处封顶（同化度不该把增伤变成减伤）")
+		return
+	# 木受水 / 受火（相生两侧与 other）：基数 0，cap 0.50 → 满同化度最多 -0.50
+	if not is_equal_approx(Config.hit_mult("water", "wood", 0.0), 0.0) \
+			or not is_equal_approx(Config.hit_mult("water", "wood", 0.5), -0.50) \
+			or not is_equal_approx(Config.hit_mult("water", "wood", 1.0), -0.50):
+		_fail("hit_mult 相生两侧 未按 0 → -50%% 解算")
+		return
+	# ---- 49. §2.3-C 木角色标定：受土 -75 / 受木 -90 / 受金 0 / 受水 -50 / 受火 -50 ----
+	var calibrate := { "earth": -0.75, "wood": -0.90, "metal": 0.0,
+		"water": -0.50, "fire": -0.50 }
+	for tgt4 in calibrate:
+		var got_cal := Config.hit_mult(String(tgt4), "wood", 1.0)
+		if not is_equal_approx(got_cal, float(calibrate[tgt4])):
+			_fail("§2.3-C 标定 木满同化受 %s 应为 %+.2f，实为 %+.2f"
+				% [String(tgt4), float(calibrate[tgt4]), got_cal])
+			return
+	# ---- 50. apply_out_mult / apply_hit_mult：空元素必须完全不参与（倍率 1.0）----
+	if not is_equal_approx(Config.apply_out_mult(100.0, "", "wood"), 100.0) \
+			or not is_equal_approx(Config.apply_out_mult(100.0, "wood", ""), 100.0) \
+			or not is_equal_approx(Config.apply_hit_mult(100.0, "", "wood"), 100.0) \
+			or not is_equal_approx(Config.apply_hit_mult(100.0, "wood", ""), 100.0):
+		_fail("空元素时元素修正应为恒等（倍率 1.0）")
+		return
+	# 木打土（i_beat +0.25）：100 → 125；木打金（beats_me -0.25）：100 → 75
+	if not is_equal_approx(Config.apply_out_mult(100.0, "wood", "earth"), 125.0) \
+			or not is_equal_approx(Config.apply_out_mult(100.0, "wood", "metal"), 75.0):
+		_fail("apply_out_mult 未按 §2.3-A 解算")
+		return
+	# ---- 50b. 敌表 element：写下的每一条都必须是合法五行 ----
+	for eid in Config.ENEMIES:
+		var ee := String(Config.ENEMIES[eid].get("element", ""))
+		if ee != "" and not Config.ELEMENTS.has(ee):
+			_fail("敌人 %s 的 element 非法：%s" % [String(eid), ee])
+			return
+	# 主题包 10 条必须五行齐全，否则「区块元素序」在某个区块会刷不出本区块的怪
+	var themed := { "fire": 0, "wood": 0, "metal": 0, "water": 0, "earth": 0 }
+	for eid2 in Config.ENEMIES:
+		var e2 := String(Config.ENEMIES[eid2].get("element", ""))
+		if e2 != "" and not String(eid2).begins_with("boss"):
+			themed[e2] = int(themed[e2]) + 1
+	for k in themed:
+		if int(themed[k]) < 2:
+			_fail("五行 %s 的普通怪不足 2 种（实际 %d）" % [String(k), int(themed[k])])
+			return
+	# BOSS 池六条必须都有 element（同属 BOSS 是 90% cap 的唯一实战触发源）
+	for bid in Config.BOSS_POOL:
+		if String(Config.ENEMIES[bid].get("element", "")) == "":
+			_fail("BOSS %s 缺少 element（同属 BOSS 是 90%% cap 的唯一触发源）" % String(bid))
+			return
+	# ---- 50c. 区域元素序：末位必须是 same（同属），否则 90% cap 永远触发不了 ----
+	if String(Config.REGION_SLOT_RELATIONS[Config.REGION_SLOT_RELATIONS.size() - 1]) != "same":
+		_fail("区域关系序末位不是 same —— 同属 BOSS 拿不到 90%% cap")
+		return
+	# 关系序是「每区块一个」，长度 = 区块数（5），不是每区波数（4）
+	if Config.REGION_SLOT_RELATIONS.size() != Config.BLOCK_COUNT:
+		_fail("区域关系序长度 %d 应等于区块数 %d"
+			% [Config.REGION_SLOT_RELATIONS.size(), Config.BLOCK_COUNT])
+		return
+	if Config.BLOCK_COUNT * Config.BLOCK_WAVES != 20:
+		_fail("区块数 %d × 每区波数 %d 应等于 20（§8 定稿的 20 波结构）"
+			% [Config.BLOCK_COUNT, Config.BLOCK_WAVES])
+		return
+	# S3.5 收口：WAVES_TOTAL 到此**硬等价**（S1 阶段留的 [note] 软提示已到期）。
+	# 为什么值得一条硬断言：上面只校验了 BLOCK_COUNT × BLOCK_WAVES == 20 这条**结构**等式，
+	# 却没校验波次上限**用的是不是这个结构** —— 若有人把 WAVES_TOTAL 改回 10，
+	# 区块表照样按 5×4 出怪、主题照样 5 景区，但游戏在第 10 波就通关了，
+	# 后 10 波的编排（含 W20 同属 BOSS 的 90% cap）全部变成死代码且无人报错。
+	if Config.WAVES_TOTAL != Config.BLOCK_COUNT * Config.BLOCK_WAVES:
+		_fail("WAVES_TOTAL(%d) 与区块结构（%d 区 × %d 波 = %d）不一致"
+			% [Config.WAVES_TOTAL, Config.BLOCK_COUNT, Config.BLOCK_WAVES,
+				Config.BLOCK_COUNT * Config.BLOCK_WAVES])
+		return
+	# BOSS_WAVE 必须落在标准局最后一波，否则 `is_boss_wave` 的 `w == BOSS_WAVE` 会
+	# 指向一个根本不存在的波次（通关波没有 BOSS = 玩家打不完）。
+	if Config.BOSS_WAVE != Config.WAVES_TOTAL:
+		_fail("BOSS_WAVE(%d) 应等于标准局最后一波 WAVES_TOTAL(%d)"
+			% [Config.BOSS_WAVE, Config.WAVES_TOTAL])
+		return
+	# 木角色的区域序：土→水→火→金→木
+	var seq: Array = Config.REGION_SEQUENCE_WOOD
+	if seq.size() != Config.BLOCK_COUNT:
+		_fail("木角色区域序长度应为 %d" % Config.BLOCK_COUNT)
+		return
+	if String(seq[seq.size() - 1]) != "wood":
+		_fail("木角色区域序末位应为木（同属），实为 %s" % String(seq[seq.size() - 1]))
+		return
+	# block_of：W1-4→1，W5→2，W20→5
+	if Config.block_of(1) != 1 or Config.block_of(4) != 1 \
+			or Config.block_of(5) != 2 or Config.block_of(20) != 5:
+		_fail("block_of 区块划分错误（W1=%d W4=%d W5=%d W20=%d）"
+			% [Config.block_of(1), Config.block_of(4), Config.block_of(5), Config.block_of(20)])
+		return
+	# ---- 50d. S3.5 区块轮转：推导链 / 区块池 / 区块加权 / 渐入 / 区域加成幂等 ----
+	# ⚠️ 这一段是**后来补上的**，起因是复核时发现：
+	#    上面 `REGION_SEQUENCE_WOOD` 只被检查了「长度」和「末位是木」，
+	#    而它存在的**全部意义**是「推导结果 == 手写期望」的交叉校验 ——
+	#    缺了那条比对，`region_sequence()` 等一整套 S3.5 推导链等于没有任何断言覆盖。
+	# 1) 推导 == 手写期望（木角色）
+	var derived: Array = Config.region_sequence("wood")
+	if derived != Config.REGION_SEQUENCE_WOOD:
+		_fail("木角色区域序推导结果与手写期望不符（推导 %s / 期望 %s）"
+			% [str(derived), str(Config.REGION_SEQUENCE_WOOD)])
+		return
+	# 2) 推广到**任意**角色元素：逐位验证「该位元素与 owner 的关系 == 该位应处的关系」。
+	#    这条才是真正的不变量 —— 它保证 5 个元素角色共用一套关系序，
+	#    而不是只对「木」写死一张表（§9.3 的思路，也是为什么不需要 5 张表）。
+	for owner6 in Config.ELEMENTS:
+		var seq_own: Array = Config.region_sequence(String(owner6))
+		if seq_own.size() != Config.REGION_SLOT_RELATIONS.size():
+			_fail("角色元素 %s 的区域序长度不对（%d）" % [String(owner6), seq_own.size()])
+			return
+		for i6 in seq_own.size():
+			var slot_rel := String(Config.REGION_SLOT_RELATIONS[i6])
+			var got_rel := Config.element_relation(String(owner6), String(seq_own[i6]))
+			if got_rel != slot_rel:
+				_fail("区域序推导错位：%s 角色第 %d 位应处于 %s，实际元素 %s 的关系是 %s"
+					% [String(owner6), i6 + 1, slot_rel, String(seq_own[i6]), got_rel])
+				return
+	# 3) 白板回落木序 —— 但**回落不等于获得了木属性**（对照组必须保持空元素）
+	if Config.region_sequence("") != Config.REGION_SEQUENCE_WOOD:
+		_fail("白板角色的区域序应回落木序（纯内容编排默认值）")
+		return
+	if Config.element_for_character("potato") != "":
+		_fail("土豆勇者的元素必须保持空串 —— 回落区域序不等于给它补了五行归属")
+		return
+	# 4) wave_area_element：区块内恒定、跨区块必变
+	if Config.wave_area_element("wood", 1) != Config.wave_area_element("wood", 4) \
+			or Config.wave_area_element("wood", 4) == Config.wave_area_element("wood", 5):
+		_fail("wave_area_element 未按区块跳变（W1=%s W4=%s W5=%s）"
+			% [Config.wave_area_element("wood", 1), Config.wave_area_element("wood", 4),
+				Config.wave_area_element("wood", 5)])
+		return
+	# 5) W10-20 **不掉进无尽公式**（§8.2 点名的头号坑）。
+	#    判据刻意选「区块内逐项稳定」而不是「与无尽结果不相等」：
+	#    旧的无尽公式权重**每波都在变**（`t` 随波次爬升），所以「W10 == W11」
+	#    本身就是「W10-20 走的是区块表」的证据，出问题时诊断信息也更有指向性。
+	GameState.endless = false
+	if Config.wave_composition(10) != Config.wave_composition(11):
+		_fail("标准局区块内出怪池不稳定（W10 ≠ W11）—— W10-20 可能掉进了无尽公式")
+		return
+	if Config.wave_composition(8) == Config.wave_composition(9):
+		_fail("区块边界未换池（W8 与 W9 相同，跨的是区块 2 → 3）")
+		return
+	for tid5 in Config.THEMED_POOL_LADDER[Config.BLOCK_COUNT - 1]:
+		if not _comp_ids(Config.wave_composition(20)).has(String(tid5)):
+			_fail("标准局 W20 应含区块 5 的阵营怪 %s（区块表未生效到最后一波）" % String(tid5))
+			return
+	# 6) compose_pool 区块加权：本区区域元素那只元素怪 ×2，其余一律不动。
+	#    木角色区块 2（W5-8）的区域元素是水 → 只有 `water_splitter` 翻倍。
+	#    ⚠️ 「其余不动」这半条不能省：只验翻倍的话，实现写成「所有元素怪都翻倍」也照样通过。
+	var area5 := Config.wave_area_element("wood", 5)
+	var mob5 := String(Config.ELEMENT_MOB_FOR.get(area5, ""))
+	var base5: Array = Config.wave_composition(5)
+	var pool5: Array = Config.compose_pool(5, "wood")
+	if mob5 == "" or pool5.size() != base5.size():
+		_fail("compose_pool 不应改变条目数（mob=%s base=%d pool=%d）"
+			% [mob5, base5.size(), pool5.size()])
+		return
+	var base_w := _pool_weight(base5, mob5)
+	if base_w <= 0.0 \
+			or not is_equal_approx(_pool_weight(pool5, mob5), base_w * Config.BLOCK_WEIGHT_MULT):
+		_fail("区块加权未生效（%s：%.4f → %.4f，期望 ×%.1f）"
+			% [mob5, base_w, _pool_weight(pool5, mob5), Config.BLOCK_WEIGHT_MULT])
+		return
+	for mid6 in Config.ELEMENT_MOB_IDS:
+		if String(mid6) == mob5:
+			continue
+		if not is_equal_approx(_pool_weight(pool5, String(mid6)), _pool_weight(base5, String(mid6))):
+			_fail("非本区主元素的元素怪 %s 被误加权（「主元素突出」变成了「全都翻倍」）"
+				% String(mid6))
+			return
+	# 7) W2 元素怪渐入白名单：恰好只放最温和的两只（理由见 `ELEMENT_MOB_W2_IDS` 注释）
+	var w2_mobs: Array = []
+	for mid7 in _comp_ids(Config.wave_composition(2)):
+		if Config.ELEMENT_MOB_IDS.has(String(mid7)):
+			w2_mobs.append(String(mid7))
+	w2_mobs.sort()
+	var want_w2: Array = (Config.ELEMENT_MOB_W2_IDS as Array).duplicate()
+	want_w2.sort()
+	if w2_mobs != want_w2:
+		_fail("W2 元素怪与渐入白名单不符（实际 %s / 期望 %s）" % [str(w2_mobs), str(want_w2)])
+		return
+	# 8) 区域加成（§5.5.3）：进新区首波发一次，**同区块重复调用必须无效**。
+	#    这是「反复读档就能反复白拿同化度」的唯一护栏，必须有行为断言 ——
+	#    光看 `_grant_area_bonus` 里那个 `block > area_bonus_block` 是看不出漏洞的。
+	var pl_r: Node = _main.get_node("Player")
+	var blk_bak: int = GameState.area_bonus_block
+	var area_bak := String(GameState.area_element)
+	var key_r := "assim_earth"
+	var stat_bak: float = float(pl_r.stats.get(key_r, 0.0))
+	GameState.area_element = "earth"
+	GameState.area_bonus_block = 0
+	pl_r.stats[key_r] = 0.0
+	_main._grant_area_bonus(1)
+	var after_first: float = float(pl_r.stats.get(key_r, 0.0))
+	_main._grant_area_bonus(1)   # 同一区块再来一次：必须无效
+	var after_second: float = float(pl_r.stats.get(key_r, 0.0))
+	pl_r.stats[key_r] = stat_bak          # 先还原再断言，避免中途 return 污染后续用例
+	GameState.area_bonus_block = blk_bak
+	GameState.area_element = area_bak
+	if not is_equal_approx(after_first, Config.AREA_BONUS):
+		_fail("区域加成未发放（assim_earth = %.4f，应为 %.2f）"
+			% [after_first, Config.AREA_BONUS])
+		return
+	if not is_equal_approx(after_second, after_first):
+		_fail("区域加成不幂等：同一区块重复领取（%.4f → %.4f）" % [after_first, after_second])
+		return
+	# ---- 51. 角色五行推导：空串合法，非空必须合法，且金印记不再缺失 ----
+	for cid in Registry.characters:
+		var ce := Config.element_for_character(String(cid))
+		if ce != "" and not Config.ELEMENTS.has(ce):
+			_fail("角色 %s 推导出非法五行：%s" % [String(cid), ce])
+			return
+	for elem in Config.ELEMENTS:
+		if not Config.SIGILS.has(elem):
+			_fail("五行印记缺失：%s（每个五行都要有印记，否则该行角色无印记可配）" % String(elem))
+			return
+	print("SMOKE: element engine OK (5x5 关系解算 / 标定 / 区域序推导 / 区块轮转 / 区域加成幂等 全部对上 §2.3+§8)")
+
+## 五行伤害通道：8 条通道是否真的把元素传到了终点。
+## 分两半 —— 输出侧（玩家→怪）与受击侧（怪→玩家），各自拿真实节点跑一次。
+func _check_element_channels() -> void:
+	var pl: Node = _main.get_node("Player")
+	# ---- 输出侧：_roll_damage 打包 element / assim ----
+	var roll: Dictionary = pl._roll_damage(10.0, {})
+	if not roll.has("element") or not roll.has("assim"):
+		_fail("_roll_damage 未打包 element/assim（输出侧元素通道断了）")
+		return
+	if String(roll.element) != String(pl.element):
+		_fail("_roll_damage 的元素（%s）与玩家归属（%s）不符"
+			% [String(roll.element), String(pl.element)])
+		return
+	# 武器显式声明 element 时应当覆盖角色归属
+	var roll_w: Dictionary = pl._roll_damage(10.0, { "element": "fire" })
+	if String(roll_w.element) != "fire":
+		_fail("武器自带 element 未覆盖角色归属（得 %s）" % String(roll_w.element))
+		return
+	# ---- 受击侧（怪物）：同一发 100 点伤害，按元素打出不同结果 ----
+	# 木怪受金（金克木 → 基 +25%）应为 125；受土（木克土 → 基 -25%）应为 75；
+	# 无属性怪恒定 100；木怪带 0.50 抗性受水（相生 0 → 关系 1.0，抗性 0.50）应为 50。
+	var cases := [
+		{ "e": "wood", "atk": "metal", "resist": 0.0,  "want": 125.0, "why": "木受金（克我 +25%）" },
+		{ "e": "wood", "atk": "earth", "resist": 0.0,  "want": 75.0,  "why": "木受土（我克 -25%）" },
+		{ "e": "",     "atk": "metal", "resist": 0.0,  "want": 100.0, "why": "无属性不吃修正" },
+		{ "e": "wood", "atk": "water", "resist": 0.50, "want": 50.0,  "why": "木受水（相生 0 × 抗性 50%）" },
+		{ "e": "wood", "atk": "wood",  "resist": 0.40, "want": 54.0,  "why": "木受木（同属 -10% × 抗性 40%）" },
+	]
+	for c in cases:
+		var en := _spawn_test_enemy(String(c.e), 1, float(c.resist))
+		if en == null:
+			return
+		en.take_damage(100.0, false, true, String(c.atk))
+		var lost: float = 100000.0 - en.hp
+		en.queue_free()
+		if absf(lost - float(c.want)) > 0.7:
+			_fail("%s 应扣 %.0f，实扣 %.2f" % [String(c.why), float(c.want), lost])
+			return
+	# ---- 受击侧（玩家）：收 element 参数且真的修正 ----
+	var pl_elem := String(pl.element)
+	if pl_elem != "":
+		# 找出「克我」的元素，无同化度时应吃 +25%
+		var nemesis := ""
+		for oe in Config.ELEMENTS:
+			if Config.element_relation(String(oe), pl_elem) == "beats_me":
+				nemesis = String(oe)
+				break
+		if nemesis != "":
+			var saved_hp: float = pl.hp
+			var saved_ifr: float = pl.iframes
+			var saved_dodge: float = float(pl.stats.dodge)
+			var saved_armor: float = float(pl.stats.armor)
+			var saved_assim: float = float(pl.stats.get("assim_" + nemesis, 0.0))
+			pl.iframes = 0.0
+			pl.stats.dodge = 0.0
+			pl.stats.armor = 0.0
+			pl.stats["assim_" + nemesis] = 0.0
+			pl.hp = 100000.0
+			pl.take_damage(100.0, nemesis)
+			var took: float = 100000.0 - pl.hp
+			if took < 120.0:
+				_fail("玩家受「克我」元素（%s）应吃 +25%%，实扣 %.2f" % [nemesis, took])
+				pl.hp = saved_hp
+				pl.iframes = saved_ifr
+				pl.stats.dodge = saved_dodge
+				pl.stats.armor = saved_armor
+				pl.stats["assim_" + nemesis] = saved_assim
+				return
+			# 同化度拉满 → 增伤被压回 0（不该变成减伤）
+			pl.stats["assim_" + nemesis] = 1.0
+			pl.hp = 100000.0
+			pl.take_damage(100.0, nemesis)
+			var took2: float = 100000.0 - pl.hp
+			if absf(took2 - 100.0) > 0.6:
+				_fail("玩家满同化度受「克我」应恰好扛平（100），实扣 %.2f" % took2)
+			pl.hp = saved_hp
+			pl.iframes = saved_ifr
+			pl.stats.dodge = saved_dodge
+			pl.stats.armor = saved_armor
+			pl.stats["assim_" + nemesis] = saved_assim
+	print("SMOKE: element channels OK (输出侧 roll / 受击侧 enemy+player 共 8 条通道)")
+
+## 输出侧元素修正真正「乘进 dmg」（§12-S1.5 / §13 第 4 条）。
+##
+## 与 _check_element_channels 的分工：
+##   · channels 验的是「元素**传到了**终点」（打包 element/assim、受击侧解算）；
+##   · 这里验的是「元素**算出分差**了」（角色元素 × 武器元素 → dmg 真的不一样）。
+## 两者缺一不可 —— 上一步的 E25/E26 只验打包，即使 out_mult 全程为 0 也照样绿，
+## 那正是 S1.5 要补的洞（"输出侧不接，六个角色的差异就只剩减伤"）。
+##
+## 断言刻意用**比值**而非绝对值：所有公式里都有 dmg_mult 这个公因子，
+## 断言比值就与角色平衡数值（0.92 / 0.95 / 1.05…）解耦 ——
+## 以后调角色强度不会把这条断言调红，但它照样能抓到 out_mult 算错。
+##
+## ⚠️⚠️ **暴击是一个独立随机乘区，必须在断言里消掉**。
+##     曾在此处直接比较两发 `_roll_damage` 的 dmg，结果恰好其中一发暴击（× crit_mult），
+##     断言以「实现错了」的面目报红 —— 而实现其实是对的。随机性不该参与断言。
+##     做法：所有必需数值一律改用非暴击基准 `crit_ch = 0` 取（见 _roll_base 注释）。
+func _check_element_output() -> void:
+	var pl: Node = _main.get_node("Player")
+	var saved_elem := String(pl.element)
+	var saved_crit: float = float(pl.stats.crit_ch)
+	var saved_assim: Dictionary = {}
+	for e in Config.ELEMENTS:
+		saved_assim[String(e)] = float(pl.stats.get("assim_" + String(e), 0.0))
+		pl.stats["assim_" + String(e)] = 0.0
+	pl.stats.crit_ch = 0.0   # 关掉暴击：见上方说明，随机性不得进入断言
+
+	# ---- E29：§2.3-A 木角色 5 档，逐条对上 out_mult ----
+	# 木 vs 土 我克 +25% / 水 生我 +15% / 木 同属 +10% / 火 我生 -15% / 金 克我 -25%
+	pl.element = "wood"
+	var spec := [
+		{ "w": "earth", "rel": "i_beat",   "want": +0.25 },
+		{ "w": "water", "rel": "gen_me",   "want": +0.15 },
+		{ "w": "wood",  "rel": "same",     "want": +0.10 },
+		{ "w": "fire",  "rel": "i_gen",    "want": -0.15 },
+		{ "w": "metal", "rel": "beats_me", "want": -0.25 },
+	]
+	# 先算一遍基准（同 base、同 dmg_mult），后面比值断言要用
+	var dmg_of: Dictionary = {}
+	for c in spec:
+		var w := String(c.w)
+		if Config.element_relation("wood", w) != String(c.rel):
+			_fail("木 vs %s 的关系应为 %s，实为 %s"
+				% [w, String(c.rel), Config.element_relation("wood", w)])
+			_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+			return
+		if absf(Config.out_mult("wood", w) - float(c.want)) > 1e-6:
+			_fail("out_mult(木, %s) 应为 %+.2f，实为 %+.2f"
+				% [w, float(c.want), Config.out_mult("wood", w)])
+			_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+			return
+		var r: Dictionary = pl._roll_damage(100.0, { "element": w })
+		# roll 必须带回 out_mult（不吃暴击：暴击是独立乘区，会污染比值）
+		if not r.has("out_mult"):
+			_fail("_roll_damage 未回传 out_mult（输出侧无处可验）")
+			_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+			return
+		if absf(float(r.out_mult) - float(c.want)) > 1e-6:
+			_fail("木持 %s：roll.out_mult 应为 %+.2f，实为 %+.2f"
+				% [w, float(c.want), float(r.out_mult)])
+			_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+			return
+		if bool(r.crit):
+			_fail("crit_ch 已置 0，_roll_damage 仍暴击（随机源没被真正压住）")
+			_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+			return
+		dmg_of[w] = float(r.dmg)
+
+	# ---- E30：§13 第 4 条 —— 木持土 vs 木持金，同目标伤害比值 1.25/0.75 ----
+	# 这一条是规格书里逐字写下的口径，也是「武器选择真的影响输出」的最小证据
+	var ratio: float = float(dmg_of["earth"]) / maxf(0.0001, float(dmg_of["metal"]))
+	if absf(ratio - (1.25 / 0.75)) > 0.01:
+		_fail("木持土 / 木持金 伤害比值应为 %.3f，实为 %.3f（土 %.2f 金 %.2f）"
+			% [1.25 / 0.75, ratio, float(dmg_of["earth"]), float(dmg_of["metal"])])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+
+	# ---- E31：相生两侧的方向 —— gen_me 为正、i_gen 为负 ----
+	# 受击侧区分不了这两档（同基数 0），只有输出侧能验，故必须在这里验
+	if not (float(dmg_of["water"]) > float(dmg_of["wood"])):
+		_fail("木持水（生我 +15%%）应高于木持木（同属 +10%%）：%.2f vs %.2f"
+			% [float(dmg_of["water"]), float(dmg_of["wood"])])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	if not (float(dmg_of["fire"]) < float(dmg_of["wood"])):
+		_fail("木持火（我生 -15%%）应低于木持木（同属 +10%%）：%.2f vs %.2f"
+			% [float(dmg_of["fire"]), float(dmg_of["wood"])])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+
+	# ---- E32：武器不声明 element 时，沿用角色元素（且与「显式同元素」等价）----
+	var r_implicit: Dictionary = pl._roll_damage(100.0, {})
+	if String(r_implicit.element) != "wood":
+		_fail("武器未声明元素时应沿用角色元素 wood，实为 %s" % String(r_implicit.element))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	if absf(float(r_implicit.out_mult) - float(dmg_of_want_same())) > 1e-6:
+		_fail("武器未声明元素时 out_mult 应为同属档，实为 %+.4f" % float(r_implicit.out_mult))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	if absf(float(r_implicit.dmg) - float(dmg_of["wood"])) > 1e-4:
+		_fail("武器未声明元素（%.2f）应与显式声明同元素（%.2f）完全等价"
+			% [float(r_implicit.dmg), float(dmg_of["wood"])])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+
+	# ---- E33：白板角色不吃任何输出侧修正（土豆勇者不该有五行红利）----
+	pl.element = ""
+	var r_blank: Dictionary = pl._roll_damage(100.0, { "element": "earth" })
+	var dmg_blank: float = float(r_blank.dmg)
+	if absf(float(r_blank.out_mult)) > 1e-6:
+		_fail("白板角色 out_mult 应为 0，实为 %+.4f" % float(r_blank.out_mult))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	pl.element = "wood"
+	# 白板（无修正）应当**低于**木持土（+25%）
+	if not (dmg_blank < float(dmg_of["earth"])):
+		_fail("白板角色（%.2f）应低于木持土（%.2f）" % [dmg_blank, float(dmg_of["earth"])])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+
+	# ---- E34：⚠️ 回归 —— _roll_damage 绝不能回写成员变量 element ----
+	# 这是 S1.5 实施时真实踩到的坑：早期版本让 atk_element 覆盖了 element，
+	# 于是「木角色装土武器」之后连**受击侧**的减伤都跟着变成土（按土元素算被克），
+	# 输出侧与受击侧同时错、且完全静默。这里把它钉死。
+	if String(pl.element) != "wood":
+		_fail("_roll_damage 回写了角色元素：期望仍为 wood，实为 %s"
+			% String(pl.element))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+
+	# ---- E35：同化度取「武器元素」那一列，不是「角色元素」那一列（S8 拍板 · 体检表 §4 决策 B）----
+	# 同化度 = 你跟这个元素的亲和度：用它打人更痛（输出侧）、挨它打更抗（受击侧），两侧都是加算。
+	# 木角色持**土武器**，堆 assim_earth=0.5 → out_mult(+0.25) + assim(0.50) = +0.75
+	# 若误取 assim_wood（角色先天五行那列）就只剩 +0.25，差 0.50
+	pl.stats["assim_earth"] = 0.5
+	var r_assim: Dictionary = pl._roll_damage(100.0, { "element": "earth" })
+	if absf(float(r_assim.out_mult) - 0.75) > 1e-6:
+		_fail("同化度应取武器元素（assim_earth=0.5 → +0.75），实为 %+.4f"
+			% float(r_assim.out_mult))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	# 同化度落在 dmg 上也要对得上：满 0.5 的相对增益 = (1+0.75)/(1+0.25) = 1.4
+	var want_assim_ratio: float = (1.0 + 0.75) / (1.0 + 0.25)
+	var got_assim_ratio: float = float(r_assim.dmg) / maxf(0.0001, float(dmg_of["earth"]))
+	if absf(got_assim_ratio - want_assim_ratio) > 0.01:
+		_fail("同化度未传导致 dmg：比值应 %.3f，实为 %.3f" % [want_assim_ratio, got_assim_ratio])
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	pl.stats["assim_earth"] = 0.0
+	# 反向对照：堆的是**角色**元素（assim_wood）→ 不该影响输出（那条只走受击侧口径）。
+	# ⚠️ 没有这条反向断言，上面那个 0.75 有可能只是「碰巧两边都读了」的假绿。
+	pl.stats["assim_wood"] = 0.5
+	var r_assim2: Dictionary = pl._roll_damage(100.0, { "element": "earth" })
+	if absf(float(r_assim2.out_mult) - 0.25) > 1e-6:
+		_fail("输出修正不得读 assim_<角色元素>（应仍为 +0.25，实为 %+.4f）"
+			% float(r_assim2.out_mult))
+		_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+		return
+	pl.stats["assim_wood"] = 0.0
+
+	_restore_element_output(pl, saved_elem, saved_crit, saved_assim)
+	print("SMOKE: element output OK (5 档标定 / 木土金比值 1.67 / 相生方向 / 白板 / 不回写 / 同化度取列)")
+
+## 木 vs 木（同属）的输出倍率，供 E32 的等价断言引用
+func dmg_of_want_same() -> float:
+	return Config.out_mult("wood", "wood")
+
+## 还原 _check_element_output 动过的玩家字段（元素快照 + 暴击率 + 全五系同化度）
+func _restore_element_output(pl: Node, elem: String, crit: float, assim: Dictionary) -> void:
+	pl.element = elem
+	pl.stats.crit_ch = crit
+	for e in assim:
+		pl.stats["assim_" + String(e)] = float(assim[e])
+
+## 造一只测试用敌人并挂到主场景（受击结算需要 parent 与 player 引用）。
+## 沿用冒烟测试既有约定：走 enemy.tscn 实例化（而非 Enemy.new()），保证子节点齐备。
+func _spawn_test_enemy(elem: String, wave: int, resist: float) -> Node:
+	var container: Node = _main
+	var wm: Node = _main.get_node_or_null("Enemies")
+	if wm != null:
+		container = wm
+	var en = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	container.add_child(en)
+	en.setup("wood_sprite" if elem == "wood" else "grunt", wave)
+	en.element = elem
+	en.element_resist = resist
+	en.hp = 100000.0
+	en.max_hp = 100000.0
+	en.player = _main.get_node_or_null("Player")
+	return en
+
+
+## 五行基础怪 + 怪物抗性模型（五行 §12-S3）。四块：
+##   ① 5 只元素怪的清单（ELEMENT_MOB_FOR / ELEMENT_MOB_IDS）自洽，且每只的归属与机制字段在位
+##   ② 抗性曲线 `Config.mob_resist` 逐条对 §5.5.2 标定（简单/困难/噩梦 + 同属 BOSS 光环）
+##   ③ 抗性 cap 表 `Config.mob_cap` 与玩家侧**只有 same 一行**不同
+##   ④ 元素怪真的进了刷怪表，且机制**真的被消费**（只查字段存在抓不到「声明了没人读」）
+func _check_element_mobs() -> void:
+	# ---- S3-1：唯一的元素怪清单必须自洽（散写 id 就会散架）----
+	if Config.ELEMENT_MOB_FOR.size() != 5:
+		_fail("ELEMENT_MOB_FOR 应有 5 条（每元素一名代言怪），实为 %d" % Config.ELEMENT_MOB_FOR.size())
+		return
+	if Config.ELEMENT_MOB_IDS.size() != 5:
+		_fail("ELEMENT_MOB_IDS 应有 5 条，实为 %d" % Config.ELEMENT_MOB_IDS.size())
+		return
+	var ids_sorted: Array = Config.ELEMENT_MOB_IDS.duplicate()
+	ids_sorted.sort()
+	var from_map: Array = []
+	for e0 in Config.ELEMENTS:
+		if not Config.ELEMENT_MOB_FOR.has(String(e0)):
+			_fail("ELEMENT_MOB_FOR 缺少元素 %s" % String(e0))
+			return
+		from_map.append(String(Config.ELEMENT_MOB_FOR[String(e0)]))
+	from_map.sort()
+	if from_map != ids_sorted:
+		_fail("ELEMENT_MOB_IDS 与 ELEMENT_MOB_FOR 不一致：%s vs %s"
+			% [str(ids_sorted), str(from_map)])
+		return
+
+	# ---- S3-2：5 只元素怪注册齐，且 element 与归属一致 ----
+	# ⚠️ element 必须显式声明且落在 ELEMENTS 内：写错一个字母会被 Enemy.setup 静默清空，
+	#    表现为「这只怪不吃元素修正」，且全程无报错。
+	for e1 in Config.ELEMENTS:
+		var mid := String(Config.ELEMENT_MOB_FOR[String(e1)])
+		if not Registry.enemies.has(mid):
+			_fail("元素怪 %s（%s）未注册" % [mid, String(e1)])
+			return
+		var ecfg: Dictionary = Registry.enemies[mid]
+		if String(ecfg.get("element", "")) != String(e1):
+			_fail("元素怪 %s 的 element 应为 %s，实为「%s」"
+				% [mid, String(e1), String(ecfg.get("element", ""))])
+			return
+
+	# ---- S3-3：每只元素怪的「机制代言字段」必须在位 ----
+	# 这一段是「字段写错/漏写」的拦截 —— `_valid()` 不拒绝未知字段，
+	# 所以写错的机制字段会**静默注册成功**，然后以「内容表里有、游戏里没效果」的面目出现。
+	var mech := {
+		"metal_guard": ["shield", "shield_resist", "armor_pierce"],
+		"wood_healer": ["regen", "regen_delay"],
+		"water_splitter": ["split_on_death"],
+	}
+	for mid2 in mech:
+		if not Registry.enemies.has(String(mid2)):
+			_fail("机制字段清单里有未注册的怪：%s" % String(mid2))
+			return
+		var mcfg: Dictionary = Registry.enemies[String(mid2)]
+		for f0 in mech[mid2]:
+			if not mcfg.has(String(f0)):
+				_fail("%s 缺少机制字段 %s（会被静默注册，但游戏里没效果）" % [String(mid2), String(f0)])
+				return
+	if float(Registry.enemies["metal_guard"].get("shield", 0.0)) <= 0.0:
+		_fail("金甲卫 shield 必须 > 0（否则机制形同虚设）")
+		return
+	if float(Registry.enemies["wood_healer"].get("regen", 0.0)) <= 0.0:
+		_fail("回春灵 regen 必须 > 0")
+		return
+	if float(Registry.enemies["wood_healer"].get("regen_delay", 0.0)) <= 0.0:
+		_fail("回春灵 regen_delay 必须 > 0（没有受击停顿就是打不死的怪）")
+		return
+	var sp = Registry.enemies["water_splitter"].get("split_on_death", {})
+	if not (sp is Dictionary) or (sp as Dictionary).is_empty():
+		_fail("分裂水灵 split_on_death 必须是非空字典")
+		return
+	if String((sp as Dictionary).get("type", "")) != "water_splitter":
+		_fail("分裂水灵应分裂成自己，实为 %s" % String((sp as Dictionary).get("type", "")))
+		return
+	if String(Registry.enemies["fire_caster"].get("ai", "")) != "shooter":
+		_fail("赤焰法师应是 shooter（复用既有 AI，不新增形态）")
+		return
+	# 土·岩卫是刻意的**无机制对照组**：它一旦带上机制，「基础解」这个基准就不存在了
+	for f1 in ["shield", "shield_resist", "armor_pierce", "regen", "regen_delay", "split_on_death"]:
+		if Registry.enemies["earth_bulwark"].has(String(f1)):
+			_fail("岩卫应是无机制对照组，却带了 %s" % String(f1))
+			return
+
+	# ---- S3-4：抗性曲线 §5.5.2 —— 逐条对难度标定 ----
+	# ⚠️ 这一组断言的**真正目的是钉死「难度 × 波次成长 = 乘法」**。
+	#    若有人照规划正文的笔误改回加法，三档在 W20 全部撞上 0.75，
+	#    下面的单调断言立刻报红（这正是判据该抓的东西）。
+	var r_normal := Config.mob_resist(20, 0.45)
+	var r_hard := Config.mob_resist(20, 0.60)
+	var r_night := Config.mob_resist(20, 0.75)
+	if absf(r_normal - 0.45) > 1e-6 or absf(r_hard - 0.60) > 1e-6 or absf(r_night - 0.75) > 1e-6:
+		_fail("W20 抗性应为 0.45 / 0.60 / 0.75，实为 %.3f / %.3f / %.3f"
+			% [r_normal, r_hard, r_night])
+		return
+	if not (r_normal < r_hard and r_hard < r_night):
+		_fail("三档难度在 W20 必须单调可分（0.45 < 0.60 < 0.75）—— 全相等说明公式退回加法了")
+		return
+	if absf(Config.mob_resist(1, 0.75)) > 1e-6:
+		_fail("W1 抗性必须为 0（起始波不该有元素抗性）")
+		return
+	if absf(Config.mob_resist(20, 0.75, 0.0, 0.15, Config.CAP_MOB_SAME_BOSS) - 0.90) > 1e-6:
+		_fail("噩梦 W20 同属 BOSS 光环应到 0.90（全项目唯一的 90%% 通道）")
+		return
+	if absf(Config.mob_resist(20, 0.75, 0.10, 0.15, 0.75) - 0.75) > 1e-6:
+		_fail("普通怪抗性必须被 0.75 cap 封住（区块偏置 + 光环不得越界）")
+		return
+
+	# ---- S3-5：抗性 cap 表 §5.5.1 —— 与玩家侧只有 same 一行不同 ----
+	for atk in Config.ELEMENTS:
+		var rel := Config.element_relation("wood", String(atk))   # 防御方 = 木
+		var mcap := Config.mob_cap(String(atk), "wood")
+		if rel == "same":
+			if absf(mcap - 0.75) > 1e-6:
+				_fail("普通怪同属 cap 应为 0.75（玩家才是 0.90），实为 %.2f" % mcap)
+				return
+			if absf(Config.mob_cap(String(atk), "wood", true) - 0.90) > 1e-6:
+				_fail("同属 BOSS 吃光环时 cap 应提到 0.90，实为 %.2f"
+					% Config.mob_cap(String(atk), "wood", true))
+				return
+		elif absf(mcap - Config.hit_cap(String(atk), "wood")) > 1e-6:
+			_fail("怪侧 cap(%s → 木) 应与玩家侧同为 %.2f，实为 %.2f（两侧只允许 same 一行不同）"
+				% [String(atk), Config.hit_cap(String(atk), "wood"), mcap])
+			return
+	if absf(Config.mob_cap("", "wood")) > 1e-6 or absf(Config.mob_cap("wood", "")) > 1e-6:
+		_fail("空元素抗性 cap 必须为 0（无属性攻击不吃元素减伤）")
+		return
+
+	# ---- S3-6：元素怪真的进了刷怪表（内容表里有、刷怪表里没有 = 白做）----
+	var w1_ids := _comp_ids(Registry.wave_composition(1))
+	for mid3 in Config.ELEMENT_MOB_IDS:
+		if w1_ids.has(String(mid3)):
+			_fail("W1 不应出现元素怪（%s）—— 开局是 95px 近战，首杀窗口会被拖长" % String(mid3))
+			return
+	var w3_ids := _comp_ids(Registry.wave_composition(3))
+	var n3 := 0
+	for mid4 in Config.ELEMENT_MOB_IDS:
+		if w3_ids.has(String(mid4)):
+			n3 += 1
+	if n3 < 3:
+		_fail("W3 至少应含 3 只元素怪（实际 %d）—— 五行克制要早期就能被感受到" % n3)
+		return
+	for wnum in [4, 10]:
+		var ids: Array = _comp_ids(Registry.wave_composition(int(wnum)))
+		for mid5 in Config.ELEMENT_MOB_IDS:
+			if not ids.has(String(mid5)):
+				_fail("W%d 五行应齐全，缺少 %s" % [int(wnum), String(mid5)])
+				return
+
+	# ---- S3-7：机制真的被消费（行为断言）----
+	# ① 穿甲：只在内容表里写 `armor_pierce` 是抓不到 bug 的（字段会被静默注册，
+	#    而玩家侧根本读不到）。这里把「声明 → 结算」整条链钉死。
+	# ② 断言用的是**比值**：法宝减伤等公因子会被约掉，与玩家配装解耦。
+	var pl2: Node = _main.get_node("Player")
+	var sv_armor: float = float(pl2.stats.armor)
+	var sv_dodge: float = float(pl2.stats.dodge)
+	var sv_hp: float = pl2.hp
+	var sv_ifr: float = pl2.iframes
+	pl2.stats.dodge = 0.0     # 关掉闪避：随机性不得进入断言
+	pl2.stats.armor = 10.0    # 显式给护甲，否则穿甲再怎么变都不影响伤害
+	# ⚠️ 探测前先摘掉玩家身上的法宝：
+	#    `player.take_damage` 里 armor = stats.armor + ArtifactSystem.armor_bonus()，
+	#    岩肤符（art_stone_skin）在「生命 ≥ 70%」时 +4 护甲；而 _probe_player_hit
+	#    每次把 hp 顶到 1e6 → 这条加成必然生效。玩家这一局到底捡到哪件法宝随实机
+	#    掉落/走位变化，于是写死的 1-10/18 = 2.25 会间歇性变成 1-14/22 = 2.75，
+	#    报错还指向「穿甲实现错了」—— 典型的假红。（同样的坑也埋在后面
+	#    「护甲为 0 时穿甲应无差别」那条：0 + 4 仍然要穿。）
+	#    摘掉之后本用例自足：期望值只由 stats.armor 决定。
+	var art_sv: Dictionary = (pl2.artifacts_owned as Dictionary).duplicate(true)
+	var stk_sv: Dictionary = (pl2.artifact_stacks as Dictionary).duplicate(true)
+	pl2.artifacts_owned = {}
+	pl2.artifact_stacks = {}
+	var d_no := _probe_player_hit(pl2, 100.0, 0.0)
+	var d_full := _probe_player_hit(pl2, 100.0, 1.0)
+	pl2.stats.armor = 0.0     # 护甲为 0 时，穿甲必须无差别（穿的是护甲，不是伤害）
+	var d_zero_no := _probe_player_hit(pl2, 100.0, 0.0)
+	var d_zero_full := _probe_player_hit(pl2, 100.0, 1.0)
+	# 探针跑完立刻还原：下面两个断言都是 _fail 后 return，
+	# 把还原子句放在它们之后会漏掉，污染后续用例的玩家状态。
+	pl2.artifacts_owned = art_sv
+	pl2.artifact_stacks = stk_sv
+	pl2.stats.armor = sv_armor
+	pl2.stats.dodge = sv_dodge
+	pl2.hp = sv_hp
+	pl2.iframes = sv_ifr
+	var want_ratio := 1.0 / (1.0 - 10.0 / 18.0)   # 护甲 10 被穿光 / 完全不穿
+	var got_ratio := d_full / maxf(0.0001, d_no)
+	if absf(got_ratio - want_ratio) > 0.05:
+		_fail("穿甲量纲不对：护甲 10 下 pierce1/pierce0 应为 %.3f，实为 %.3f（%.2f vs %.2f）"
+			% [want_ratio, got_ratio, d_no, d_full])
+		return
+	if absf(d_zero_full - d_zero_no) > 0.01:
+		_fail("护甲为 0 时穿甲不应改变伤害（说明削的是最终伤害而不是护甲）：%.2f vs %.2f"
+			% [d_zero_no, d_zero_full])
+		return
+
+	print("SMOKE: element mobs OK (5 元素怪 / 抗性曲线 0.45-0.60-0.75 / 怪侧 cap 只差 same / 穿甲已消费)")
+
+## ---- S4：元素出场闸门（§9.2 / §9.3）----
+## 这一整套守的是「**难度 = 元素出场节奏**」：数值难度改错了看得出来，
+## 闸门改错了只会表现成「简单难度怎么还有金怪」，不报错、也不影响通关。
+func _check_element_gate() -> void:
+	# ---- 4-1：木角色的三档闸门逐格对照 §9.2 的**手写禁止集** ----
+	# 这里刻意写死规划原文翻译出来的表（而不是从代码反推）—— 那正是它存在的意义：
+	# 推导链（ELEMENT_GATE → gate_allowed_relations → banned_elements）一旦改错，
+	# 只有一份独立的手写期望才能发现。
+	var expect := {
+		"normal": [["wood", "metal", "water", "fire"], ["wood", "metal"], ["metal"],
+			["metal"], []],
+		"hard": [["wood", "metal"], ["metal"], ["metal"], [], []],
+		"nightmare": [["wood", "metal"], [], [], [], []],
+	}
+	for diff in expect:
+		for bi in range(Config.BLOCK_COUNT):
+			var got := Config.banned_elements("wood", String(diff), bi + 1)
+			var want: Array = expect[diff][bi]
+			for e1 in Config.ELEMENTS:
+				if bool(got.has(e1)) != want.has(e1):
+					_fail("闸门表对不上 §9.2（%s / 区块 %d / %s）推导禁=%s 期望禁=%s"
+						% [String(diff), bi + 1, e1, str(got.keys()).replace(",", ""),
+							str(want).replace(",", "")])
+					return
+
+	# ---- 4-2：单调性 —— 难度递增禁得更少、区块递增禁得更少 ----
+	# 「解锁区块号抄错一行」（例如把 normal 的 same_block 抄到 nightmare）在这里暴露。
+	for bi2 in range(1, Config.BLOCK_COUNT + 1):
+		var n_b: Dictionary = Config.banned_elements("wood", "normal", bi2)
+		var h_b: Dictionary = Config.banned_elements("wood", "hard", bi2)
+		var x_b: Dictionary = Config.banned_elements("wood", "nightmare", bi2)
+		for e2 in Config.ELEMENTS:
+			if bool(x_b.has(e2)) and not bool(h_b.has(e2)):
+				_fail("难度单调性破坏：噩梦禁了 %s，困难却放行（区块 %d）" % [e2, bi2])
+				return
+			if bool(h_b.has(e2)) and not bool(n_b.has(e2)):
+				_fail("难度单调性破坏：困难禁了 %s，简单却放行（区块 %d）" % [e2, bi2])
+				return
+	for diff2 in ["normal", "hard", "nightmare"]:
+		for b3 in range(2, Config.BLOCK_COUNT + 1):
+			var prev_b: Dictionary = Config.banned_elements("wood", diff2, b3 - 1)
+			var cur_b: Dictionary = Config.banned_elements("wood", diff2, b3)
+			for e3 in Config.ELEMENTS:
+				if bool(cur_b.has(e3)) and not bool(prev_b.has(e3)):
+					_fail("区块单调性破坏：%s 在区块 %d 禁了 %s，上一区块却放行"
+						% [diff2, b3, e3])
+					return
+
+	# ---- 4-3：闸门只依赖「关系」，不依赖具体元素（§9.3 最关键的一步）----
+	# 把木角色的禁止集**按关系**翻译到其它 4 个角色，必须逐元素完全一致 ——
+	# 这条同时验证 `element_relation` 与 `element_with_relation` 互为逆运算；
+	# 一旦有人给某个角色单独写了张表，这里立刻不一致。
+	for pe in ["water", "fire", "metal", "earth"]:
+		for diff3 in ["normal", "hard", "nightmare"]:
+			for b4 in range(1, Config.BLOCK_COUNT + 1):
+				# ⚠️ 只翻译「木角色**确实被禁**的那些元素」——
+				#    从全部 5 个元素翻译过去会得到全集，断言就成了永真。
+				var ref: Dictionary = Config.banned_elements("wood", diff3, b4)
+				var want4 := {}
+				for e4 in Config.ELEMENTS:
+					if not bool(ref.has(e4)):
+						continue
+					# 木角色里 e4 相对木的关系 → 在本角色身上对应哪个元素
+					var rel4 := Config.element_relation("wood", String(e4))
+					want4[Config.element_with_relation(String(pe), rel4)] = true
+				var got4: Dictionary = Config.banned_elements(String(pe), diff3, b4)
+				for e5 in Config.ELEMENTS:
+					if bool(got4.has(e5)) != bool(want4.has(e5)):
+						_fail("闸门对 %s 不是「按关系映射」的结果（%s / 区块 %d / %s）"
+							% [pe, diff3, b4, e5])
+						return
+
+	# ---- 4-4：基础池必须全无元素 ----
+	# 这是「闸门永远不会把池子删空」的前提，也是 4-5 的前提。
+	for ladder in Config.BASE_POOL_LADDER:
+		for entry in ladder:
+			var bid := String((entry as Dictionary).get("item", ""))
+			if Config.mob_element(bid) != "":
+				_fail("基础池出现了带元素的怪（%s = %s）：闸门会把它删掉，池子会越删越空"
+					% [bid, Config.mob_element(bid)])
+				return
+
+	# ---- 4-5：池子永不被闸门清空（6 种角色 × 3 档难度 × 20 波）----
+	for pe5 in ["", "wood", "water", "fire", "metal", "earth"]:
+		for diff5 in ["normal", "hard", "nightmare"]:
+			for w5 in range(1, Config.WAVES_TOTAL + 1):
+				if Config.wave_composition(w5, diff5, String(pe5)).is_empty():
+					_fail("闸门把出怪池清空了（角色=%s / %s / W%d）"
+						% [pe5 if pe5 != "" else "白板", diff5, w5])
+					return
+
+	# ---- 4-6：闸门真的作用在整张池上（含阵营怪）----
+	# 只过滤那 5 只基础元素怪的实现会在这里挂 —— 阵营怪同样带 element。
+	var gated_block1 := _comp_ids(Config.wave_composition(4, "normal", "wood"))
+	var ungated_has_other := false
+	for mid_u in _comp_ids(Config.wave_composition(4)):
+		var el_u := Config.mob_element(mid_u)
+		if el_u != "" and el_u != "earth":
+			ungated_has_other = true
+	if not ungated_has_other:
+		_fail("不设闸门时 W4 本应含非土元素怪 —— 4-6 失去对照（池子本身空了？）")
+		return
+	for mid_g in gated_block1:
+		var el_g := Config.mob_element(mid_g)
+		if el_g != "" and el_g != "earth":
+			_fail("简单档区块 1 对木角色不该出「%s」属性怪（%s）—— 闸门漏穿了" % [el_g, mid_g])
+			return
+	# 区块 2 简单档仍禁金；区块 5 必须解禁金（末位那一格真的生效）
+	for mid_2 in _comp_ids(Config.wave_composition(8, "normal", "wood")):
+		if Config.mob_element(mid_2) == "metal":
+			_fail("简单档区块 2 不该出金怪（%s）—— 克我应等到区块 5" % mid_2)
+			return
+	var late_metal := false
+	for mid_5 in _comp_ids(Config.wave_composition(20, "normal", "wood")):
+		if Config.mob_element(mid_5) == "metal":
+			late_metal = true
+	if not late_metal:
+		_fail("简单档区块 5 应解禁「克我」= 金怪（§9.2）—— 末位那一格没生效")
+		return
+	# 噩梦提前到区块 2 就全开
+	var early_metal := false
+	for mid_7 in _comp_ids(Config.wave_composition(8, "nightmare", "wood")):
+		if Config.mob_element(mid_7) == "metal":
+			early_metal = true
+	if not early_metal:
+		_fail("噩梦档区块 2 应已全开（含金怪）——「最难档危险元素最早」没生效")
+		return
+
+	# ---- 4-7：Registry 与 Config 同一道闸门（mod spawn_table 也不能绕过）----
+	for w8 in [4, 10, 20]:
+		if _comp_ids(Registry.wave_composition(w8, "normal", "wood")) \
+				!= _comp_ids(Config.wave_composition(w8, "normal", "wood")):
+			_fail("Registry.wave_composition 与 Config 结果不一致（W%d）—— "
+				% w8 + "mod spawn_table 覆盖路径绕过了闸门")
+			return
+
+	# ---- 4-8：真实出怪路径确实带上了难度与玩家元素（接线断言）----
+	# 漏传难度时闸门静默失效（数值难度照旧生效，所以"感觉不出来"）—— 这条守住那根线。
+	var wm_g: Node = _main.wave_manager
+	var sv_diff: String = GameState.difficulty_id
+	var sv_wave: int = wm_g.wave
+	var sv_endless: bool = GameState.endless
+	var sv_el := ""
+	var pl_g = _main.get_node_or_null("Player")
+	if pl_g != null:
+		sv_el = String(pl_g.element)
+		pl_g.element = "wood"
+	GameState.difficulty_id = "normal"
+	GameState.endless = false
+	wm_g.wave = 4
+	var wired := _comp_ids(wm_g._spawn_pool())
+	var expect_wired := _comp_ids(Config.compose_pool(4, "wood", "normal"))
+	if pl_g != null:
+		pl_g.element = sv_el
+	GameState.difficulty_id = sv_diff
+	GameState.endless = sv_endless
+	wm_g.wave = sv_wave
+	if wired != expect_wired:
+		_fail("出怪池没带上难度/玩家元素：实际 %s / 期望 %s —— 闸门在真实路径上失效"
+			% [str(wired), str(expect_wired)])
+		return
+
+	# ---- 4-9：难度档位序号与通关记录（§9.4）----
+	if RunRules.difficulty_index("normal") != 1 or RunRules.difficulty_index("hard") != 2 \
+			or RunRules.difficulty_index("nightmare") != 3:
+		_fail("难度档位序号错（%d/%d/%d）"
+			% [RunRules.difficulty_index("normal"), RunRules.difficulty_index("hard"),
+				RunRules.difficulty_index("nightmare")])
+		return
+	if RunRules.difficulty_index("custom") != 0 or RunRules.difficulty_index("") != 0:
+		_fail("非内置难度必须返回 0，否则自定义局会白送解锁")
+		return
+	# 只增不减：先通噩梦（3），再通简单（1）不得把记录拉回 1
+	var ck := "clear_wood_adept"
+	var ck_before: int = CodexData.stat(ck)
+	CodexData.set_stat_max(ck, 3)
+	if CodexData.stat(ck) != 3:
+		_fail("通关记录未写入（%s=%d）" % [ck, CodexData.stat(ck)])
+		return
+	CodexData.set_stat_max(ck, 1)
+	if CodexData.stat(ck) != 3:
+		_fail("通关记录被低难度回退（%s=%d）—— 解锁会随再通关降级" % [ck, CodexData.stat(ck)])
+		return
+	CodexData.stats[ck] = ck_before
+
+	# ---- 4-10：难度只改显示名、id 不动（§9.1）----
+	var n_d: Dictionary = Registry.get_difficulty("normal")
+	if String(n_d.get("name", "")) != "简单" or String(n_d.get("id", "")) != "normal":
+		_fail("简单档显示名或 id 不对（%s）—— id 是存档/颜色/规则表的键，只能改 name" % str(n_d))
+		return
+
+	print("SMOKE: element gate OK (三档闸门逐格对上 §9.2 / 关系同构 / 单调 / 池非空 / "
+		+ "接线 / 通关记录只增不减)")
+
+## 把 wave_composition 的条目收成 id 数组（元素怪注入断言用）
+func _comp_ids(comp: Array) -> Array:
+	var out: Array = []
+	for entry in comp:
+		if typeof(entry) == TYPE_DICTIONARY:
+			out.append(String((entry as Dictionary).get("item", "")))
+	return out
+
+## 玩家受击探针：顶满血、清无敌帧后打一发固定伤害，返回这一发实际掉了多少血。
+## ⚠️ 每次都要重设 iframes 与 hp —— `take_damage` 会自己写这两个值，
+##    不重置就会拿上一次的残局（无敌帧未过 → 掉 0 血，断言会以"穿甲没生效"的面目报红）。
+func _probe_player_hit(pl: Node, raw: float, pierce: float) -> float:
+	pl.iframes = 0.0
+	pl.hp = 1.0e6
+	var before: float = pl.hp
+	pl.take_damage(raw, "", pierce)
+	return before - pl.hp
 
 ## 亲和保底：单靠加权只是「更常出现」，保底把关联性变成承诺。
 ## 这里直接对保底函数做确定性验证 —— 不依赖随机抽到什么，断言永远可复现
@@ -4387,6 +5899,235 @@ func _check_object_pool() -> void:
 	ObjectPool.release("test_bullet", b)
 	ObjectPool.clear()
 	print("SMOKE: object pool OK")
+
+## 第 9 轮 · 需求 4：每 4 波一个 BOSS + 场景属性地形区域。
+## 覆盖三块最容易静默出错的地方：①标准/自定义/无尽三态的 BOSS 波判定与"最终 vs 中间"分流；
+## ②地形区域必须是**纯函数**（读档/每日挑战全服一致）且不覆盖出生点；
+## ③临时同化度必须**进出可逆**（不可逆 = 把一片地的加成永久镀进存档，且完全不报错）。
+func _check_round9_boss_terrain() -> void:
+	# ⚠️ 本用例对波次总数有硬期望（标准局 20 波），而 `is_boss_wave` 会读
+	#    `RunRules.wave_total()` —— 上游只要有任何一处把自定义规则泄漏出来，
+	#    断言的失败面就会变成"每 4 波判定坏了"。先复位、用例结束再还原。
+	var rules_ctx := { "active": RunRules.active, "values": RunRules.values.duplicate(true) }
+	var endless_bak: bool = GameState.endless
+	RunRules.active = false
+	GameState.endless = false
+	var total := RunRules.wave_total(Config.WAVES_TOTAL)
+	# ---- 1. 标准局：每 BLOCK_WAVES 波一个 BOSS，最后一波恒为 BOSS ----
+	if not Config.is_boss_wave(4) or not Config.is_boss_wave(8) \
+			or not Config.is_boss_wave(12) or not Config.is_boss_wave(16):
+		_fail("标准局未按每 %d 波出 BOSS（W4/8/12/16）" % Config.BLOCK_WAVES)
+		return
+	if Config.is_boss_wave(1) or Config.is_boss_wave(5) or Config.is_boss_wave(19):
+		_fail("标准局把非 %d 倍数的波误判为 BOSS 波" % Config.BLOCK_WAVES)
+		return
+	if not Config.is_boss_wave(total):
+		_fail("标准局最后一波（%d）必须是 BOSS 波" % total)
+		return
+	# `0 % 4 == 0` 的坑：0 / 负数波次不许被判成 BOSS 波
+	if Config.is_boss_wave(0) or Config.is_boss_wave(-4):
+		_fail("is_boss_wave 把 0 / 负数波次误判为 BOSS（0 %% %d == 0 的坑）" % Config.BLOCK_WAVES)
+		return
+	# ---- 2. 最终 vs 中间的分叉（这是"W4 打完直接通关"的唯一闸门）----
+	if not Config.is_final_boss_wave(total) or Config.is_final_boss_wave(4):
+		_fail("is_final_boss_wave 判定错误（只有最后一波才是最终 BOSS）")
+		return
+	if not Config.is_mid_boss_wave(4) or Config.is_mid_boss_wave(total):
+		_fail("is_mid_boss_wave 判定错误（最后一波不是中间 BOSS）")
+		return
+	# ---- 3. 无尽不受影响：仍是每 10 波，且**不**被当成中间 BOSS（否则会被限时）----
+	GameState.endless = true
+	if not Config.is_boss_wave(30) or Config.is_boss_wave(4) or Config.is_boss_wave(28):
+		_fail("无尽 BOSS 节奏被改坏（应仍是每 10 波）")
+		return
+	if Config.is_mid_boss_wave(30) or Config.is_final_boss_wave(30):
+		_fail("无尽 BOSS 被误判为中间/最终 BOSS（会被限时或直接通关）")
+		return
+	GameState.endless = false
+	# ---- 4. 血量随波次成长 + 最终波锚点 1.0（既有 W20 平衡不变）+ 中间 BOSS 有时限 ----
+	if not is_equal_approx(Config.boss_hp_scale(total), 1.0):
+		_fail("最终 BOSS 血量锚点应为 1.0（= 改动前的值），实为 %.3f" % Config.boss_hp_scale(total))
+		return
+	var s4 := Config.boss_hp_scale(4)
+	var s8 := Config.boss_hp_scale(8)
+	var s16 := Config.boss_hp_scale(16)
+	if not (s4 > 0.0 and s4 < s8 and s8 < s16 and s16 < 1.0):
+		_fail("中间 BOSS 血量未随波次成长（W4=%.3f W8=%.3f W16=%.3f）" % [s4, s8, s16])
+		return
+	if Config.midboss_duration(4) <= Config.wave_duration(4):
+		_fail("中间 BOSS 限时未比同波普通波宽（%.1f vs %.1f）"
+			% [Config.midboss_duration(4), Config.wave_duration(4)])
+		return
+	# ---- 4b. ⭐ **消费点**断言：`boss_hp_scale` 必须被真实实例消费，不能只在 Config 里躺着 ----
+	# ⚠️⚠️ 这是第 9 轮的真实教训：本函数当时**没有任何游戏代码调用它** —— 中间 BOSS 与
+	#    最终 BOSS 血量完全相同（56 万~90 万），却多背 105~195s 限时，必然打不死。
+	#    上面 4 那几条只断言纯函数返回值，**抓不到「声明了没人读」**这种缺陷。
+	#    期望值一律从被测数据算（BOSS 基础血量 × 本波 frac × 当前难度 hp_mult），不硬编码。
+	var bcfg: Dictionary = Registry.enemies.get("boss", {})
+	var bmult: float = float(Registry.get_difficulty(GameState.difficulty_id).get("hp_mult", 1.0))
+	var probe_mid: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(probe_mid)
+	probe_mid.setup("boss", 4)
+	var want_mid: float = float(bcfg.get("hp", 0.0)) * Config.boss_hp_scale(4) * bmult
+	if not is_equal_approx(probe_mid.max_hp, want_mid):
+		_fail("中间 BOSS 血量未按 boss_hp_scale 压缩（实为 %.0f，期望 %.0f）"
+			% [probe_mid.max_hp, want_mid])
+		probe_mid.queue_free()
+		return
+	# 反向对照：中间 BOSS 必须**真的更轻** —— 否则「压缩」只是没生效的空操作，
+	# 而上面那条 is_equal_approx 在 frac==1.0 时也会假绿。
+	var probe_final: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(probe_final)
+	probe_final.setup("boss", total)
+	var mid_hp: float = probe_mid.max_hp
+	var final_hp: float = probe_final.max_hp
+	probe_mid.queue_free()
+	probe_final.queue_free()
+	if final_hp <= mid_hp:
+		_fail("中间 BOSS 未比最终 BOSS 更轻（%.0f vs %.0f）" % [mid_hp, final_hp])
+		return
+	# 反向对照 2：非 BOSS 波（W10）造出来的 BOSS **不受**压缩影响 —— 任意波次造 BOSS 是
+	# 测试/工具的常规做法，那里被压会连带压小 dmg_cap（见 config.boss_hp_scale 注释）。
+	var probe_off: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(probe_off)
+	probe_off.setup("boss", 10)
+	var off_hp: float = probe_off.max_hp
+	probe_off.queue_free()
+	if not is_equal_approx(off_hp, float(bcfg.get("hp", 0.0)) * bmult):
+		_fail("非 BOSS 波（W10）的 BOSS 血量被中间 BOSS 压缩误伤（%.0f）" % off_hp)
+		return
+	# ---- 5. 地形区域：属性跟随本区区域元素 / 圆心是纯函数 / 不覆盖出生点 ----
+	var z5: Dictionary = Config.terrain_zone_for_wave("wood", 5)
+	var z5b: Dictionary = Config.terrain_zone_for_wave("wood", 5)
+	if z5.is_empty() \
+			or String(z5.get("element", "")) != Config.wave_area_element("wood", 5):
+		_fail("地形区域属性未跟随本区区域元素（%s）" % str(z5.get("element", "<空>")))
+		return
+	if Vector2(z5.get("center", Vector2.ZERO)) != Vector2(z5b.get("center", Vector2.ONE)):
+		_fail("地形区域圆心不是纯函数（同参数两次调用结果不同）")
+		return
+	# 同一区块四波必须完全一致：玩家要能记住"这片地在这"，否则它退化成随机踩点
+	var z7: Dictionary = Config.terrain_zone_for_wave("wood", 7)
+	if Vector2(z7.get("center", Vector2.ZERO)) != Vector2(z5.get("center", Vector2.ONE)) \
+			or String(z7.get("element", "")) != String(z5.get("element", "")):
+		_fail("同一区块内地形区域发生漂移（W5 与 W7 应完全一致）")
+		return
+	# 换区（每 BLOCK_WAVES 波）必须换位置/属性（否则"每 4 波一个新地形"名存实亡）。
+	# ⚠️ 比较对象必须**跨区块**：W5 与 W6 同属区块 2，元素与圆心本来就该一模一样 ——
+	#    拿它们比会以"换区没生效"报红，而实际是实现完全正确。
+	var z4: Dictionary = Config.terrain_zone_for_wave("wood", 4)
+	var z6: Dictionary = Config.terrain_zone_for_wave("wood", Config.BLOCK_WAVES + 2)
+	if String(z4.get("element", "")) == String(z6.get("element", "")) \
+			and Vector2(z4.get("center", Vector2.ZERO)) == Vector2(z6.get("center", Vector2.ONE)):
+		_fail("换区后地形区域未发生变化（属性与位置都相同）")
+		return
+	var arena_center := Vector2(Config.WORLD.w, Config.WORLD.h) * 0.5
+	if arena_center.distance_to(Vector2(z5.get("center", Vector2.ZERO))) \
+			<= float(z5.get("radius", 0.0)):
+		_fail("地形区域覆盖了玩家出生点（开局白送一档同化度）")
+		return
+	# ---- 6. 玩家侧临时同化度：进出必须可逆（不可逆 = 静默镀金）----
+	var p2: Node2D = _main.get_node("Player")
+	var elem := String(z5.get("element", ""))
+	var akey := "assim_" + elem
+	var base := float(p2.stats.get(akey, 0.0))
+	p2.set_zone_assim(elem, Config.TERRAIN_ZONE_BONUS)
+	var mid := float(p2.stats.get(akey, 0.0))
+	if mid <= base:
+		_fail("站进地形区未获得同化度（%.3f → %.3f）" % [base, mid])
+		return
+	p2.set_zone_assim("", 0.0)
+	if not is_equal_approx(float(p2.stats.get(akey, 0.0)), base):
+		_fail("离开地形区后同化度未复原（%.3f → %.3f，期望 %.3f）"
+			% [base, float(p2.stats.get(akey, 0.0)), base])
+		return
+	# 顶到上限时也必须只撤「实际生效量」：按"想要写的量"撤会把玩家的固有同化度吃掉
+	p2.stats[akey] = 2.0
+	p2.set_zone_assim(elem, Config.TERRAIN_ZONE_BONUS)
+	p2.set_zone_assim("", 0.0)
+	if not is_equal_approx(float(p2.stats.get(akey, 0.0)), 2.0):
+		_fail("同化度已到上限时进出地形区吃掉了固有值（%.3f，期望 2.000）"
+			% float(p2.stats.get(akey, 0.0)))
+		return
+	p2.stats[akey] = base
+	p2.set_zone_assim("", 0.0)
+	# ---- 7. 怪物侧地形加成进 mob_resist 的加法项，且被 cap 吃掉（"不超过上限"）----
+	if absf(Config.mob_resist(1, 0.0, 0.0, 0.0, 0.75, Config.TERRAIN_ZONE_BONUS)
+			- Config.TERRAIN_ZONE_BONUS) > 1e-6:
+		_fail("地形加成未进入 mob_resist 的加法项")
+		return
+	if not is_equal_approx(
+			Config.mob_resist(20, 0.75, 0.0, 0.0, 0.75, Config.TERRAIN_ZONE_BONUS), 0.75):
+		_fail("地形加成未被 mob_resist 的 cap 约束（噩梦 W20 普通怪仍应 ≤ 0.75）")
+		return
+	# ---- 8. 集成：中间 BOSS 的收尾分流 + 盒子发放点必须**早于** wave_ended ----
+	# ⚠️ 这里**直调**两个处理函数（而不是 emit boss_killed），并临时摘掉 wave_ended 的监听：
+	#    `wave_manager._on_boss_killed` 会立刻 emit wave_ended → main 开商店 + 进化流程 + **写存档**。
+	#    那会把测试跑出来的假进度写进玩家的真实存档槽（本项目专门为此栽过一次）。
+	# 说明：这一步会顺手让场上敌人退场 + 清空弹丸。跑到这里时**全部与存活/弹丸相关的
+	#    断言都已经跑过**（本用例在 `_check_items` 清单里，晚于实战段），所以不会掩盖任何结论。
+	var wm_b: Node = _main.get_node("WaveManager")
+	var wave_bak: int = wm_b.wave
+	var boxes_bak: int = GameState.boss_boxes
+	var phase_bak = GameState.phase
+	var boss_bak = wm_b.boss
+	var dead_bak: bool = wm_b.boss_dead
+	var ending_bak: bool = wm_b.ending_started
+	var flee_bak: Array = []
+	for e in get_tree().get_nodes_in_group("enemies"):
+		flee_bak.append([e, float(e.flee)])
+	var wend_hooked: bool = EventBus.wave_ended.is_connected(_main._on_wave_ended)
+	if wend_hooked:
+		EventBus.wave_ended.disconnect(_main._on_wave_ended)
+	# 探针：记下 wave_ended 触发**那一刻**的盒子数 —— 这才是"波末流程看不看得见盒子"的真判据。
+	# 盒子若发在 main 那侧（晚于 wave_manager），这里读到的还是旧值。
+	var box_at_wend := [-1]
+	var probe := func(_w: int) -> void:
+		box_at_wend[0] = GameState.boss_boxes
+	EventBus.wave_ended.connect(probe)
+	wm_b.wave = 4
+	GameState.boss_boxes = boxes_bak
+	wm_b._on_boss_killed()
+	var got_box: bool = GameState.boss_boxes == boxes_bak + 1
+	var now_boxes: int = GameState.boss_boxes
+	var boss_cleared: bool = wm_b.boss == null
+	_main._on_boss_killed()   # 同一波上 main 的处理：不许落到通关分支
+	var not_won: bool = GameState.phase != GameState.Phase.VICTORY
+	# 现场还原（**必须**）：这场"BOSS"没真的打过，不许它改到下游用例的状态
+	EventBus.wave_ended.disconnect(probe)
+	if wend_hooked:
+		EventBus.wave_ended.connect(_main._on_wave_ended)
+	GameState.boss_boxes = boxes_bak
+	GameState.phase = phase_bak
+	wm_b.wave = wave_bak
+	wm_b.boss = boss_bak
+	wm_b.boss_dead = dead_bak
+	wm_b.ending_started = ending_bak
+	for pair in flee_bak:
+		if is_instance_valid(pair[0]):
+			pair[0].flee = float(pair[1])
+	# `_main._on_boss_killed` 会顺手撤掉当前地形区域（"本波结束前必须撤"的路径之一），
+	# 但这一波并没有真的结束 → 按同一波次把它重建回来，别让现场少一片地。
+	_main._setup_terrain_zone(wave_bak)
+	GameState.endless = endless_bak
+	RunRules.active = bool(rules_ctx.get("active", false))
+	RunRules.values = (rules_ctx.get("values", {}) as Dictionary).duplicate(true)
+	if not got_box:
+		_fail("中间 BOSS 击破未发放法宝盒子（%d → %d）" % [boxes_bak, now_boxes])
+		return
+	if int(box_at_wend[0]) != boxes_bak + 1:
+		_fail("盒子发放晚于 wave_ended（波末读到的盒子数=%d，应为 %d）—— 发放点必须在 wave_ended 之前"
+			% [int(box_at_wend[0]), boxes_bak + 1])
+		return
+	if not boss_cleared:
+		_fail("中间 BOSS 击破后 boss 引用未清空（HUD 会一直显示已死 BOSS 的血条）")
+		return
+	if not not_won:
+		_fail("中间 BOSS 击破误入通关结算（第 4 波就会 VICTORY）")
+		return
+	print("SMOKE: 第 9 轮 每 %d 波 BOSS（中间/最终分流 · 盒子早于 wave_ended · 血量随波成长 · 限时）"
+		% Config.BLOCK_WAVES + " + 地形区域（纯函数圆 · 加成可逆且不越上限）OK")
+
 
 ## BOSS 死亡技能：数据完整性 / 凤凰涅槃拦截 / 死亡技能确实产生弹幕
 func _check_boss_death_skills() -> void:
@@ -4602,44 +6343,49 @@ func _check_unlocks() -> void:
 				_fail("解锁条目 %s:%s 缺少 hint" % [kind, String(id)])
 				return
 	# 未列入表的默认解锁（基础内容 + mod）
+	#
+	# ⚠️ S2：原用例断言 `pistol` 默认解锁 —— 它已迁入工坊包，改为断言开局池首把
+	#    （`Config.FALLBACK_WEAPON`，也是 player / save_run 的空值兜底值）。
 	if not Unlocks.is_unlocked("character", "potato"):
 		_fail("基础角色 potato 应默认解锁")
 		return
-	if not Unlocks.is_unlocked("weapon", "pistol"):
-		_fail("基础武器 pistol 应默认解锁")
+	if not Unlocks.is_unlocked("weapon", Config.FALLBACK_WEAPON):
+		_fail("兜底武器 %s 应默认解锁" % Config.FALLBACK_WEAPON)
 		return
 	# 阈值推导：快照统计 → 清零 → 精确断言 → 还原（不受前置用例的统计污染）
+	#
+	# ⚠️ S2 口径：`CHARACTER_UNLOCKS` / `WEAPON_UNLOCKS` 现已清空
+	#    （内置 6 角色 + 5 武器全部默认解锁，见 config.gd 的注释），
+	#    原用例锁定的 warlord / gold_scepter 都已迁入工坊包。
+	#    → 这里改为断言**新口径的必然结果**，而不是删掉整段：
+	#      ① 内置全部角色 + 开局池武器在统计清零时也**必须**解锁（这是新口径的核心承诺）
+	#      ② check_new 在这种情况下应返回 0（没有"待解锁"的东西可庆祝）
+	#    真正的阈值推导逻辑因此在本轮**失去了被测对象** —— 保留断言是为了让
+	#    「解锁表清空」这件事被机器看住：谁哪天偷偷加回一条锁定，这里就会红。
 	var saved := {}
 	for k in Config.UNLOCK_STAT_KEYS:
 		saved[k] = CodexData.stat(k)
 		CodexData.stats[k] = 0
 	Unlocks.reset_for_tests()
-	if Unlocks.is_unlocked("character", "warlord"):
+	for cid in Registry.characters:
+		if not Unlocks.is_unlocked("character", String(cid)):
+			_restore_unlock_stats(saved)
+			_fail("内置角色 %s 应在统计清零时仍默认解锁（解锁表应已清空）" % String(cid))
+			return
+	for wid in Config.LOADOUT_WEAPONS:
+		if not Unlocks.is_unlocked("weapon", String(wid)):
+			_restore_unlock_stats(saved)
+			_fail("开局池武器 %s 应默认解锁（解锁表应已清空）" % String(wid))
+			return
+	# 解锁表留空是 S2 的刻意决策：任何残留条目都会让下面这条断言失败
+	if not Config.CHARACTER_UNLOCKS.is_empty() or not Config.WEAPON_UNLOCKS.is_empty():
 		_restore_unlock_stats(saved)
-		_fail("warlord 应在 victories=0 时锁定")
-		return
-	if Unlocks.is_unlocked("weapon", "gold_scepter"):
-		_restore_unlock_stats(saved)
-		_fail("gold_scepter 应在 victories=0 时锁定")
-		return
-	CodexData.stats["victories"] = 1
-	if not Unlocks.is_unlocked("character", "warlord"):
-		_restore_unlock_stats(saved)
-		_fail("warlord 应在 victories>=1 时解锁")
-		return
-	if not Unlocks.is_unlocked("weapon", "gold_scepter"):
-		_restore_unlock_stats(saved)
-		_fail("gold_scepter 应在 victories>=1 时解锁")
-		return
-	# check_new 一次性：本轮应恰有 2 个新解锁（warlord + gold_scepter），再次调用为 0
-	var n := Unlocks.check_new()
-	if n != 2:
-		_restore_unlock_stats(saved)
-		_fail("check_new 应恰有 2 个新解锁（实际 %d）" % n)
+		_fail("内置解锁表应为空（角色 %d 条 / 武器 %d 条）"
+			% [Config.CHARACTER_UNLOCKS.size(), Config.WEAPON_UNLOCKS.size()])
 		return
 	if Unlocks.check_new() != 0:
 		_restore_unlock_stats(saved)
-		_fail("check_new 第二次应返回 0（庆祝应一次性）")
+		_fail("解锁表为空时 check_new 应返回 0")
 		return
 	_restore_unlock_stats(saved)
 	Unlocks.reset_for_tests()
@@ -4673,8 +6419,13 @@ func _check_sect_talents() -> void:
 				_fail("门派 %s 的 effect 键 %s 不在 STAT_LIMITS" % [String(sid), String(k)])
 				return
 	# sect_for 映射
-	if MetaProgress.sect_for("pyromancer") != "fire":
-		_fail("sect_for(pyromancer) 应返回 fire")
+	#
+	# ⚠️ S2：`SECT_TALENTS` 的 5 个 `character` 已从旧角色（pyromancer / druid /
+	#    swordmaster / tidecaller / guardian）**重指向 5 元素修士**。旧指向是一处
+	#    真实的悬空引用 —— 角色迁入工坊包后 `sect_for()` 恒返回空串，
+	#    导致 6 个可用角色一个都吃不到门派天赋，且**全程无任何报错**。
+	if MetaProgress.sect_for("fire_adept") != "fire":
+		_fail("sect_for(fire_adept) 应返回 fire")
 		return
 	if MetaProgress.sect_for("potato") != "":
 		_fail("非门派角色 potato 应无门派")
@@ -4703,14 +6454,14 @@ func _check_sect_talents() -> void:
 	MetaProgress.reset_for_tests()
 	MetaProgress.essence = 500
 	MetaProgress.buy_sect("fire")
-	# pyromancer 吃到 fire 门派天赋
-	GameState.character_id = "pyromancer"
+	# fire_adept（赤焰修士）吃到 fire 门派天赋
+	GameState.character_id = "fire_adept"
 	var p_pyro: Node2D = preload("res://scenes/characters/player.tscn").instantiate()
 	_main.add_child(p_pyro)
 	var base_dmg: float = p_pyro.stats.status_dmg_mult
 	MetaProgress.apply_on_run_start(p_pyro)
 	if not is_equal_approx(float(p_pyro.stats.status_dmg_mult), base_dmg + 0.15):
-		_fail("门派天赋未对 pyromancer 生效（%.3f ≠ %.3f）"
+		_fail("门派天赋未对 fire_adept 生效（%.3f ≠ %.3f）"
 			% [float(p_pyro.stats.status_dmg_mult), base_dmg + 0.15])
 		p_pyro.queue_free()
 		GameState.character_id = saved_cid
@@ -4734,19 +6485,830 @@ func _check_sect_talents() -> void:
 	print("SMOKE: sect talents OK")
 
 ## 无尽炼狱模式回归：标准通关→继续无尽、BOSS 波判定/积分公式/排行榜、
-## BOSS 击破 → 商店衔接 → wave11 存档/恢复、240 敌群性能压测、死亡入榜
+## BOSS 击破 → 商店衔接 → 通关波+1 的存档/恢复、240 敌群性能压测、死亡入榜
+##
+## ⚠️ 通关波随"标准局 = 20 波"改为 W20：本用例全程走 `Config.BOSS_WAVE` 推导，
+## 不写死破关波号 —— 波次结构再变时这里不用跟着改（写死 10 的那版已经因此失效过一次）。
+## S5（道具池）：同化度道具 + 五行之悟升级 + 开局白名单收敛
+func _check_assim_items() -> void:
+	# 1) 5 件基础同化度道具（§6.2）：效果键 = assim_<元素>，值 +0.15
+	var base := { "i-assim-metal": "metal", "i-assim-wood": "wood", "i-assim-water": "water",
+		"i-assim-fire": "fire", "i-assim-earth": "earth" }
+	for id in base:
+		var it: Dictionary = Registry.items.get(id, {})
+		if it.is_empty():
+			_fail("S5: 同化度道具 %s 未注册进 Registry" % id)
+			return
+		var key := "assim_" + String(base[id])
+		if not it.get("effects", {}).has(key):
+			_fail("S5: %s 缺少效果键 %s" % [id, key])
+			return
+		if absf(float(it.effects[key]) - 0.15) > 1e-6:
+			_fail("S5: %s 的 %s 应为 0.15，实为 %s" % [id, key, str(it.effects[key])])
+			return
+
+	# 2) 5 件五行精华（§6.2）：对应元素 +0.30
+	for el in Config.ELEMENTS:
+		var gid := "i-assim-greater-" + String(el)
+		var git: Dictionary = Registry.items.get(gid, {})
+		if git.is_empty():
+			_fail("S5: 五行精华 %s 未注册" % gid)
+			return
+		var gkey := "assim_" + String(el)
+		if absf(float(git.get("effects", {}).get(gkey, -1.0)) - 0.30) > 1e-6:
+			_fail("S5: %s 的 %s 应为 0.30，实为 %s" % [gid, gkey, str(git.get("effects", {}).get(gkey, "缺失"))])
+			return
+
+	# 3) 五行归一石（§6.2）：全元素 +0.08
+	var allit: Dictionary = Registry.items.get("i-assim-all", {})
+	if allit.is_empty():
+		_fail("S5: 五行归一石 i-assim-all 未注册")
+		return
+	for el in Config.ELEMENTS:
+		var akey := "assim_" + String(el)
+		if absf(float(allit.get("effects", {}).get(akey, -1.0)) - 0.08) > 1e-6:
+			_fail("S5: i-assim-all 的 %s 应为 0.08" % akey)
+			return
+
+	# 4) 5 条五行之悟升级（§7.4）：对应元素 +0.12
+	for el in Config.ELEMENTS:
+		var wid := "wu_" + String(el)
+		var w: Dictionary = Registry.upgrades.get(wid, {})
+		if w.is_empty():
+			_fail("S5: 之悟升级 %s 未注册" % wid)
+			return
+		var wkey := "assim_" + String(el)
+		if absf(float(w.get("effects", {}).get(wkey, -1.0)) - 0.12) > 1e-6:
+			_fail("S5: %s 的 %s 应为 0.12，实为 %s" % [wid, wkey, str(w.get("effects", {}).get(wkey, "缺失"))])
+			return
+
+	# 5) 功能验证：装 i-assim-fire → assim_fire +0.15；逼近上限时夹紧到 2.0
+	#    ⚠️ 受控、可还原：期望值依赖本局 assim_fire 状态，必须先把现场存下、用完还原（铁律）
+	var pl := _main.get_node("Player")
+	var saved_fire: float = float(pl.stats.get("assim_fire", 0.0))
+	var saved_items: Dictionary = pl.items_owned.duplicate()
+	pl.apply_item("i-assim-fire")
+	var got_fire: float = float(pl.stats.get("assim_fire", 0.0))
+	if absf(got_fire - (saved_fire + 0.15)) > 1e-4:
+		_fail("S5: 装 i-assim-fire 后 assim_fire 应为 %.2f，实为 %.2f" % [saved_fire + 0.15, got_fire])
+		pl.stats["assim_fire"] = saved_fire
+		pl.items_owned = saved_items
+		return
+	# 上限夹紧：顶到 1.95 再装一次（+0.15 应被 _sanitize_stats 夹紧到 2.0，而非 2.10）
+	pl.stats["assim_fire"] = 1.95
+	pl.apply_item("i-assim-fire")
+	var capped: float = float(pl.stats.get("assim_fire", 0.0))
+	if absf(capped - 2.0) > 1e-4:
+		_fail("S5: assim_fire 超过 2.0 上限未夹紧（实为 %.4f）" % capped)
+	# 还原
+	pl.stats["assim_fire"] = saved_fire
+	pl.items_owned = saved_items
+	pl._sanitize_stats()
+
+	# 6) 开局白名单收敛（§6.1）：恰好 29 件基础属性道具；不含任何冻结的元素/on-hit 件
+	var whitelist := [
+		"i-hp", "i-bread", "i-dmg", "i-as", "i-focus", "i-spd", "i-boots", "i-feather",
+		"i-crit", "i-hunter", "i-arm", "i-warden", "i-thorn", "i-dod", "i-mag", "i-lodestone",
+		"i-harv", "i-luckypouch", "i-reg", "i-sunstone", "i-ls", "i-sanguine", "i-goldcore",
+		"i-crown", "i-titan", "i-fortress", "i-gale", "i-immortal", "i-dragonsoul",
+	]
+	if Config.LOADOUT_ITEMS.size() != whitelist.size():
+		_fail("S5: LOADOUT_ITEMS 应为 %d 件，实为 %d" % [whitelist.size(), Config.LOADOUT_ITEMS.size()])
+		return
+	var wl_set := {}
+	for x in whitelist:
+		wl_set[x] = true
+	for x in Config.LOADOUT_ITEMS:
+		if not wl_set.has(x):
+			_fail("S5: LOADOUT_ITEMS 含非白名单项 %s" % String(x))
+			return
+	for frozen in ["i-ember", "i-venom", "i-hemo", "i-tar", "i-frost", "i-thunder",
+			"i-pyro", "i-plague", "i-ragecloak", "i-flint"]:
+		if Config.LOADOUT_ITEMS.has(frozen):
+			_fail("S5: LOADOUT_ITEMS 不应含冻结元素件 %s" % frozen)
+			return
+
+	print("SMOKE: S5 同化度道具 + 之悟升级 + 白名单收敛 OK")
+
+
+## 第 7 轮：金（mythic）/ 红（legendary）= 「唯一件」——升级 / 道具全来源本局各限 1 件
+## （事件卡**本身**已有排重，见 ⑧）。语义与法宝 artifacts_owned 一致，只是过去只盖住了法宝。
+## ⚠️ 断言纪律：① 样本从 Registry 扫出来（不硬编码 id）；② 每条正向断言配反向对照
+## （common 品阶必须仍在池里 / 仍可叠加），否则「池子空了」也会判绿；
+## ③ 全程可还原 —— 现场先留档，结束前一次性还原，不给后面的用例留脏状态。
+func _check_unique_items() -> void:
+	var err := ""
+	# ① 品阶判定 + 反向对照（不能每个品阶都算唯一）
+	if not Config.is_unique_rarity("mythic") or not Config.is_unique_rarity("legendary"):
+		err = "唯一件：mythic / legendary 应判为唯一品阶"
+	elif Config.is_unique_rarity("common") or Config.is_unique_rarity("rare") \
+			or Config.is_unique_rarity("epic"):
+		err = "唯一件：common / rare / epic 不该被判为唯一品阶"
+
+	var pl := _main.get_node("Player")
+	var shop: Control = _main.get_node("UI/Shop")
+	# ② 样本（带 entry_weapon_relevant 过滤：本来就不进池的条目拿来断言会误红）
+	var mid := ""
+	var pid := ""
+	for it in Registry.item_list():
+		if not Config.entry_weapon_relevant(it, pl.weapons):
+			continue
+		if mid == "" and Config.is_unique_rarity(String(it.get("rarity", "common"))):
+			mid = String(it.get("id", ""))
+		elif pid == "" and String(it.get("rarity", "common")) == "common" \
+				and not it.get("effects", {}).is_empty():
+			pid = String(it.get("id", ""))
+	var uid := ""
+	var puid := ""
+	for u in Registry.upgrade_list():
+		if not Config.entry_weapon_relevant(u, pl.weapons):
+			continue
+		if uid == "" and Config.is_unique_rarity(String(u.get("rarity", "common"))):
+			uid = String(u.get("id", ""))
+		elif puid == "" and String(u.get("rarity", "common")) == "common":
+			puid = String(u.get("id", ""))
+	if err == "" and (mid == "" or pid == "" or uid == "" or puid == ""):
+		err = "唯一件：样本不足（金道具=%s / common 道具=%s / 金红升级=%s / common 升级=%s）" \
+			% [mid, pid, uid, puid]
+
+	# ③ 现场留档
+	var s_stats: Dictionary = pl.stats.duplicate()
+	var s_items: Dictionary = pl.items_owned.duplicate()
+	var s_ups: Dictionary = pl.upgrades_owned.duplicate()
+	var s_mats: int = GameState.materials
+
+	if err == "":
+		# ④ 池闸门（道具）：持有金道具后必须从池里消失，而 common 道具仍在
+		pl.items_owned = { mid: 1 }
+		var has_mid := false
+		var has_pid := false
+		for e in shop._rarity_pool(Registry.item_list(), pl.items_owned):
+			var eid := String(e.get("item", {}).get("id", ""))
+			if eid == mid:
+				has_mid = true
+			elif eid == pid:
+				has_pid = true
+		if has_mid:
+			err = "唯一件：已持有的金道具 %s 仍出现在道具抽取池" % mid
+		elif not has_pid:
+			err = "唯一件：common 道具 %s 被误剔出池（反向对照失败）" % pid
+
+	if err == "":
+		# ⑤ 硬闸门（道具）：第二次 apply_item 必须被拒，且 stats 一个键都不能动
+		pl.items_owned = {}
+		pl.stats = s_stats.duplicate()
+		var ok1: bool = pl.apply_item(mid)
+		var stats1: Dictionary = pl.stats.duplicate()
+		var ok2: bool = pl.apply_item(mid)
+		if not ok1:
+			err = "唯一件：首次 apply_item(%s) 就该成功" % mid
+		elif ok2:
+			err = "唯一件：第二次 apply_item(%s) 应被拒（硬闸门失效）" % mid
+		elif int(pl.items_owned.get(mid, 0)) != 1:
+			err = "唯一件：金道具 %s 持有数应为 1，实为 %d" % [mid, int(pl.items_owned.get(mid, 0))]
+		else:
+			for k in stats1:
+				if not is_equal_approx(float(stats1[k]), float(pl.stats.get(k, 1e9))):
+					err = "唯一件：被拒的那次 apply_item 仍改动了 stats[%s]" % k
+					break
+
+	if err == "":
+		# ⑥ 反向对照（道具）：common 品阶必须仍能叠加
+		pl.items_owned = {}
+		var n1: bool = pl.apply_item(pid)
+		var n2: bool = pl.apply_item(pid)
+		var ncnt: int = int(pl.items_owned.get(pid, 0))
+		if not n1 or not n2 or ncnt != 2:
+			err = "唯一件反向对照：common 道具 %s 应可叠到 2（ok=%s/%s cnt=%d）" \
+				% [pid, str(n1), str(n2), ncnt]
+
+	if err == "":
+		# ⑦ 硬闸门（升级）：金红升级同理，且 upgrades_owned 要记上
+		pl.upgrades_owned = {}
+		var u1: bool = pl.apply_upgrade(uid)
+		var u2: bool = pl.apply_upgrade(uid)
+		var ucnt: int = int(pl.upgrades_owned.get(uid, 0))
+		if not u1 or u2 or ucnt != 1:
+			err = "唯一件：金红升级 %s 应首次成功、二次被拒（ok=%s/%s cnt=%d）" \
+				% [uid, str(u1), str(u2), ucnt]
+
+	if err == "":
+		# ⑧ 池闸门（升级）：同一批断言搬到升级池
+		pl.upgrades_owned = { uid: 1 }
+		var has_u := false
+		var has_pu := false
+		for e2 in shop._rarity_pool(Registry.upgrade_list(), pl.upgrades_owned):
+			var eid2 := String(e2.get("item", {}).get("id", ""))
+			if eid2 == uid:
+				has_u = true
+			elif eid2 == puid:
+				has_pu = true
+		if has_u:
+			err = "唯一件：已获得的金红升级 %s 仍出现在升级抽取池" % uid
+		elif not has_pu:
+			err = "唯一件：common 升级 %s 被误剔出池（反向对照失败）" % puid
+
+	if err == "":
+		# ⑨ 事件卡：**不新增机制**，钉住既有的 events_seen 排重（每张每局一次）这个约定
+		var epool: Array = Config.event_card_pool([], 12)
+		if epool.is_empty():
+			err = "唯一件：事件卡池为空，无法校验排重"
+		else:
+			var first_id := String(epool[0].get("item", {}).get("id", ""))
+			for e3 in Config.event_card_pool([first_id], 12):
+				if String(e3.get("item", {}).get("id", "")) == first_id:
+					err = "唯一件：事件卡 %s 已看过却仍出现在池里" % first_id
+					break
+
+	_restore_unique_probe(pl, s_stats, s_items, s_ups, s_mats)
+	if err != "":
+		_fail(err)
+		return
+	print("SMOKE: 金红唯一件 OK（硬闸门 道具+升级 / 池闸门 / 反向对照 / 事件卡排重）")
+
+## 还原「唯一件」探针动过的现场（stats / items_owned / upgrades_owned / 材料）
+func _restore_unique_probe(pl: Node, stats: Dictionary, items: Dictionary,
+		ups: Dictionary, mats: int) -> void:
+	pl.stats = stats
+	pl.items_owned = items
+	pl.upgrades_owned = ups
+	pl.hp = minf(float(pl.hp), float(pl.stats.max_hp))
+	pl._sanitize_stats()
+	GameState.materials = mats
+	pl.queue_redraw()
+
+
+
+## §16 / §15 视觉层落地验收（S7）：特效统一入口、注册表、接口表、生克链方向、菜单动画不挡输入。
+func _check_visual_layer() -> void:
+	# ① Fx 三入口可调用（视觉层零判定，只经 Config 取色，不抛错；未知值静默 no-op）
+	if not ("fire" in Config.ELEMENTS):
+		_fail("S7: Config.ELEMENTS 缺 fire，无法验收 Fx")
+		return
+	Fx.hit_burst("fire", Vector2.ZERO)
+	Fx.element_aura("wood", Node2D.new())
+	Fx.reaction_burst("wood_fire", Vector2.ZERO)
+	Fx.hit_burst("__nope__", Vector2.ZERO)      # 未知元素：静默 no-op
+	Fx.reaction_burst("__nope__", Vector2.ZERO) # 未知反应：静默 no-op
+
+	# ② main.gd 的 AMBIENT_FX 注册表含三键（match 硬分支已改为注册表查找）
+	var fx_tbl: Variant = _main.get("AMBIENT_FX")
+	if fx_tbl == null or not (fx_tbl is Dictionary):
+		_fail("S7: main.AMBIENT_FX 不存在或非字典")
+		return
+	for k in ["bamboo_leaf", "incense", "ghost_fire"]:
+		if not fx_tbl.has(k):
+			_fail("S7: AMBIENT_FX 缺键 %s" % k)
+			return
+
+	# ③ Config.MAP_THEMES 每条含 element / bg_tint / ambient 三接口字段（可换数据不改代码）
+	for tid in Config.MAP_THEMES.keys():
+		var t := Config.MAP_THEMES[tid] as Dictionary
+		for fld in ["element", "bg_tint", "ambient"]:
+			if not t.has(fld):
+				_fail("S7: MAP_THEMES[%s] 缺接口字段 %s" % [tid, fld])
+				return
+
+	# ④ Config.REACTIONS 全部有 from/to，且方向与 GENERATES / OVERCOMES 一致（绝不解析 id）
+	for rid in Config.REACTIONS.keys():
+		var r := Config.REACTIONS[rid] as Dictionary
+		if not r.has("from") or not r.has("to"):
+			_fail("S7: REACTIONS[%s] 缺 from/to" % rid)
+			return
+		var f := String(r.get("from"))
+		var tt := String(r.get("to"))
+		var typ := String(r.get("type"))
+		if typ == "generate":
+			if String(Config.GENERATES.get(f, "")) != tt:
+				_fail("S7: REACTIONS[%s] 生方向错（%s→%s，应为 %s）" % [rid, f, tt, Config.GENERATES.get(f, "")])
+				return
+		elif typ == "overcome":
+			if String(Config.OVERCOMES.get(f, "")) != tt:
+				_fail("S7: REACTIONS[%s] 克方向错（%s→%s，应为 %s）" % [rid, f, tt, Config.OVERCOMES.get(f, "")])
+				return
+	# 显式锚定 fire_water 反向坑：id 是 fire_water 但 from=water to=fire（靠 from/to 显式纠正）
+	var fw := Config.REACTIONS.get("fire+water", {}) as Dictionary
+	if String(fw.get("from", "")) != "water" or String(fw.get("to", "")) != "fire":
+		_fail("S7: REACTIONS[fire+water] from/to 必须 water→fire（id 反例，靠 from/to 显式纠正）")
+		return
+
+	# ⑤ MenuElementLoop.spawn 可运行：默认 paused、派生链长 5、子 Label 不挡输入
+	var loop := MenuElementLoop.spawn(self, Vector2(1280.0, 720.0), null)
+	if loop == null or not (loop is MenuElementLoop):
+		_fail("S7: MenuElementLoop.spawn 返回异常")
+		return
+	if not loop.paused:
+		_fail("S7: MenuElementLoop 默认应 paused=true（定格不挡输入）")
+		return
+	# 派生链合法性（不依赖 _ready 时序，直接调 helper 校验逻辑）
+	var gen_c := loop._derive_chain(Config.GENERATES)
+	var ovr_c := loop._derive_chain(Config.OVERCOMES)
+	if gen_c.size() != 5 or ovr_c.size() != 5:
+		_fail("S7: MenuElementLoop 生/克链长度异常（%d/%d）" % [gen_c.size(), ovr_c.size()])
+		return
+	if String(gen_c[0]) != "wood" or String(ovr_c[0]) != "wood":
+		_fail("S7: MenuElementLoop 生克链必须从木出发")
+		return
+	# 子 Label 必须 MOUSE_FILTER_IGNORE（不挡首页按钮）；若 _ready 尚未同步触发则手动补一次
+	if loop.get_child_count() == 0:
+		loop._ready()
+	var label_ok := true
+	for c in loop.get_children():
+		if c is Label and c.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			label_ok = false
+	if not label_ok:
+		_fail("S7: MenuElementLoop 子 Label 未设 MOUSE_FILTER_IGNORE，会挡输入")
+		return
+	loop.queue_free()
+
+	print("SMOKE: S7 视觉层（Fx 入口 / AMBIENT_FX 注册表 / MAP_THEMES 接口 / REACTIONS 方向 / 菜单生克动画不挡输入）OK")
+
+
+## ============================================================
+## S8 · 平衡探针（五行体系 §14 观察点 → docs/武器DPS体检表.md）
+## ============================================================
+## §14 原话：记录「木角色 + 土武器 + 满土同化度」的**实测** DPS，若明显甩开其他构筑
+##   再考虑加软上限 —— **现在不加护栏，但要能看见它**。本探针就是那个「看得见」。
+##
+## ⚠️ 必须走**真实 `player._roll_damage`**，不能在测试里另抄一份乘算公式：
+##    另抄一份会让「文档里的数字」与「实际结算」悄悄分叉，而且分叉不报错。
+##
+## 口径（§2.3-A）：DPS = base ÷ cd × (1 + out_mult + assim) × (1 + crit_ch×(crit_mult−1))
+##   本探针把 crit_ch 压成 0 → 得到**非暴击口径**；
+##   含暴击口径 = 非暴击 × 1.05（Config.PLAYER 默认 crit_ch=0.05 / crit_mult=2.0）。
+##
+## ⚠️⚠️ 输出侧同化度取的是 `assim_<**武器**元素>`（2026-09-16 拍板 · 体检表 §4 决策 B）。
+##   语义：同化度 = 你跟这个元素的亲和度 —— **用它打人更痛**（输出侧，本探针量的就是这个）、
+##   **挨它打更抗**（受击侧 `_take_damage`）。两侧都读「对应属性」的那一列，都是**加算**。
+##
+##   2026-09-16 之前这里读的是 `assim_<角色元素>`，后果是「木角色堆满 assim_earth 再拿
+##   土武器」输出一点不涨（实测 24.07→24.07），与 §14 处方矛盾。改键之后 25 个格子
+##   的数值全部变化，两张矩阵必须重新转录。
+##
+##   第 ④ 步把它钉成断言并配反向对照 —— 将来若把同化度改回键角色元素，这里会立刻
+##   报红，逼着同步修订 §14 与体检表，而不是让两个数字悄悄漂移。
+
+## OVERCOMES 逆查：谁克 `ce`（即 out_mult(ce, ·) == beats_me 的那个元素）
+static func _element_that_beats(ce: String) -> String:
+	for e in Config.OVERCOMES.keys():
+		if String(Config.OVERCOMES[e]) == ce:
+			return String(e)
+	return ""
+
+
+## 还原 `_check_balance` 临时改写的现场（提前 return 的每条失败路径都要调）
+static func _balance_restore(p: Node, bak: Dictionary, assim_bak: Dictionary) -> void:
+	p.element = String(bak["element"])
+	p.stats.dmg_mult = float(bak["dmg_mult"])
+	p.stats.momentum_dmg_bonus = float(bak["momentum_dmg_bonus"])
+	p.stats.low_hp_dmg_bonus = float(bak["low_hp_dmg_bonus"])
+	p.stats.crit_ch = float(bak["crit_ch"])
+	for k in assim_bak.keys():
+		p.stats[k] = float(assim_bak[k])
+
+
+func _check_balance() -> void:
+	var p: Node = _main.get_node("Player")
+	# ---- 现场快照 + 中和 ----
+	# 断言纪律：期望值必须**只**由 Config 决定，不能取决于前面用例给这个玩家发过什么。
+	# `dmg_mult` 若不还原成 1.0，一道早期的「伤害 +10%」升级就能让 ① 的基线等式假红，
+	# 而且红得像是五行走错了 —— 实际病因却在几百行之外。
+	var bak: Dictionary = {}
+	bak["element"] = String(p.element)
+	bak["dmg_mult"] = float(p.stats.get("dmg_mult", 1.0))
+	bak["momentum_dmg_bonus"] = float(p.stats.get("momentum_dmg_bonus", 0.0))
+	bak["low_hp_dmg_bonus"] = float(p.stats.get("low_hp_dmg_bonus", 0.0))
+	bak["crit_ch"] = float(p.stats.get("crit_ch", 0.0))
+	var assim_bak: Dictionary = {}
+	# ⚠️ Config.ELEMENTS 是 **Array**（["earth","fire","metal","water","wood"]）不是 Dictionary，
+	#    这里写成 .keys() 会 Parse Error: Cannot find member "keys" in base "Array"。
+	for eid in Config.ELEMENTS:
+		assim_bak["assim_" + String(eid)] = float(p.stats.get("assim_" + String(eid), 0.0))
+	p.stats.dmg_mult = 1.0
+	p.stats.momentum_dmg_bonus = 0.0
+	p.stats.low_hp_dmg_bonus = 0.0
+	p.stats.crit_ch = 0.0
+
+	var wep_ids: Array = Config.LOADOUT_WEAPONS
+
+	# ① 基线：白板角色（element == ""）持各武器 → DPS 恒等于 dmg/cd
+	#    无元素不参与任何五行修正，这是后面所有倍率的锚点。
+	var base_line: Dictionary = {}
+	p.element = ""
+	for wid in wep_ids:
+		var wc: Dictionary = Config.WEAPONS[wid]
+		var raw: float = float(wc["dmg"])
+		var got: float = float(p._roll_damage(raw, wc).dmg)
+		if not is_equal_approx(got, raw):
+			_fail("S8: 白板角色持 %s 不该有输出侧修正（%.3f ≠ %.3f）" % [wid, got, raw])
+			_balance_restore(p, bak, assim_bak)
+			return
+		base_line[wid] = got / float(wc["cd"])
+
+	# ② 输出侧矩阵：5 元素角色 × 5 把武器，取「同化度 0」与「每把武器都吃满自己的亲和(2.0)」两档
+	#
+	# ⚠️ 满同化档必须**按武器元素逐个设置**（输出侧键武器元素），不能图省事设角色元素 ——
+	#    设角色元素的话，这一行里 5 把武器会全部拿到同一个 +2.0，
+	#    矩阵退化成「每行只差 out_mult」，而 out_mult 本来就是逐格查表的，看着完全正常，
+	#    于是「键设错了」这件事**不会红、也看不出来**。这里逐个设才真的在测键。
+	var chars: Array = ["metal", "wood", "water", "fire", "earth"]
+	var m0: Dictionary = {}
+	var mfull: Dictionary = {}
+	for ce in chars:
+		p.element = ce
+		var row0: Dictionary = {}
+		var row1: Dictionary = {}
+		for eid in Config.ELEMENTS:
+			p.stats["assim_" + String(eid)] = 0.0
+		for wid in wep_ids:
+			var wc0: Dictionary = Config.WEAPONS[wid]
+			row0[wid] = float(p._roll_damage(float(wc0["dmg"]), wc0).dmg) / float(wc0["cd"])
+		for wid in wep_ids:
+			var wc1: Dictionary = Config.WEAPONS[wid]
+			var we: String = String(wc1.get("element", ""))
+			p.stats["assim_" + we] = 2.0
+			row1[wid] = float(p._roll_damage(float(wc1["dmg"]), wc1).dmg) / float(wc1["cd"])
+			p.stats["assim_" + we] = 0.0
+		m0[ce] = row0
+		mfull[ce] = row1
+
+	# ③ 关系方向不变量（纯查表，与武器数值无关）：i_beat 必须 +0.25，beats_me 必须 −0.25
+	#    这里盯着「第一人称参考系」—— 写成反向会让减伤变增伤且不报错。
+	for ce in chars:
+		var beat_el: String = String(Config.OVERCOMES.get(ce, ""))
+		var upper: String = _element_that_beats(ce)
+		var ob: float = Config.out_mult(ce, beat_el)
+		var ou: float = Config.out_mult(ce, upper)
+		if ob != 0.25 or ou != -0.25:
+			_fail("S8: %s 输出侧关系错位（i_beat=%.2f beats_me=%.2f，应 +0.25/−0.25）"
+				% [ce, ob, ou])
+			_balance_restore(p, bak, assim_bak)
+			return
+
+	# ④ §14 观察点：木角色 + 土武器（thunder_gong）
+	#    §14 处方已拍板为「输出侧键**武器**元素」→ 这里满 **土**（= 武器元素）同化度必须撬得动，
+	#    满 **木**（= 角色元素）必须撬不动。两者都测，缺一则断言会退化成假绿。
+	var tg: Dictionary = Config.WEAPONS["thunder_gong"]
+	p.element = "wood"
+	p.stats["assim_wood"] = 0.0
+	p.stats["assim_earth"] = 0.0
+	var no_assim: float = float(p._roll_damage(float(tg["dmg"]), tg).dmg) / float(tg["cd"])
+	# 期望比值由被测数据推导（不硬编码 3.25/1.25）：rel 是木→土的关系修正，assim 满档 2.0 加在其上
+	var rel_we: float = Config.out_mult("wood", "earth")
+	var expect_full: float = no_assim * ((1.0 + rel_we + 2.0) / (1.0 + rel_we))
+	p.stats["assim_earth"] = 2.0      # 字面执行 §14 的「满土同化度」= 满**武器**元素
+	var full_earth: float = float(p._roll_damage(float(tg["dmg"]), tg).dmg) / float(tg["cd"])
+	if not is_equal_approx(full_earth, expect_full):
+		_fail("S8: 输出侧同化度应键武器元素（满 assim_earth 应 %.3f→%.3f，实为 %.3f）"
+			% [no_assim, expect_full, full_earth])
+		_balance_restore(p, bak, assim_bak)
+		return
+	# 反向对照：满「角色元素」同化度**不**撬动输出 —— 否则上面那条可能只是「两边都加了」的假绿。
+	p.stats["assim_earth"] = 0.0
+	p.stats["assim_wood"] = 2.0
+	var full_wood: float = float(p._roll_damage(float(tg["dmg"]), tg).dmg) / float(tg["cd"])
+	if not is_equal_approx(full_wood, no_assim):
+		_fail("S8: 输出侧同化度不得键角色元素（满 assim_wood 应仍为 %.3f，实为 %.3f）"
+			% [no_assim, full_wood])
+		_balance_restore(p, bak, assim_bak)
+		return
+	p.stats["assim_wood"] = 0.0
+
+	_balance_restore(p, bak, assim_bak)
+
+	# ---- 数值落盘：供 docs/武器DPS体检表.md 转录（不进断言，只打印）----
+	print("BALANCE base=" + str(base_line))
+	print("BALANCE m0=" + str(m0))
+	print("BALANCE mfull=" + str(mfull))
+	print("BALANCE wood+earth assim0=%.4f full_earth=%.4f full_wood=%.4f"
+		% [no_assim, full_earth, full_wood])
+	print("SMOKE: S8 平衡探针（基线 DPS / 输出侧矩阵 / 关系方向 / 同化度键武器元素 + 角色元素反向对照）OK")
+
+
+## ⚠️ S8 综合战力：**DPS 排序必须带上「攻击距离 / AOE / 生存」三个维度才有意义**。
+##
+## 近战 / 近距离武器（knife 95px、flamethrower 110px）必须冲进敌人的火力圈才打得到人；
+## 而 `ai == "shooter"` 的远程敌人会把自己钉在 `keep_dist`（内置 ≈270~320px）上放风筝。
+## 于是 **knife 的高单体 DPS 是「为贴脸风险付的价钱」，不是数值过强** ——
+## 单看 DPS 排名会得出「满同化前五名全是金剑 → 金剑过强」的错误结论。
+##
+## reach 口径必须与源码一致，否则文档与结算会悄悄分叉：
+##   远程 = `bspeed × bullet_life + 26.0`        （`player.gd:321`）
+##   近战 = `range × (1 + melee_range_bonus)`    （`player.gd:380`，白板下就是 `range`）
+##
+## ⚠️ 安全线只取**内置**敌人（跳过带 `source` 的 mod 条目）：若让工坊内容参与定义这条线，
+##    某 mod 塞一只 `keep_dist=20` 的射手就能让下面的反向断言假红，
+##    而病因会被指向「近战武器设计错了」——典型误诊。
+func _check_reach_safety() -> void:
+	var shooter_min := 1e9
+	var shooter_max := 0.0
+	var n_shooter := 0
+	for eid in Registry.enemies:
+		var ec: Dictionary = Registry.enemies[eid]
+		if ec.has("source"):
+			continue                       # mod 条目不参与内置平衡线的定义
+		if String(ec.get("ai", "")) != "shooter":
+			continue
+		n_shooter += 1
+		var kd: float = float(ec.get("keep_dist", 270.0))
+		shooter_min = minf(shooter_min, kd)
+		shooter_max = maxf(shooter_max, kd)
+	if n_shooter == 0:
+		_fail("S8: 内置池里没有 shooter AI —— keep_dist 安全线无从计算")
+		return
+	# AOE 面积是「客观强度」指标，比拍脑袋给倍率好复用：
+	#   扇形 = ½·r²·θ（swing_arc 是弧度） / 溅射 = π·splash²
+	var reach_tbl: Dictionary = {}
+	var aoe_tbl: Dictionary = {}
+	var eff_tbl: Dictionary = {}       # 有效交火距离 = 弹体射程 + splash（近战无 splash → 与 reach 相等）
+	for wid1 in Config.LOADOUT_WEAPONS:
+		var wc: Dictionary = Config.WEAPONS[wid1]
+		var rch: float = 0.0
+		var area: float = 0.0
+		var sp: float = float(wc.get("splash", 0.0))
+		if String(wc.get("attack_type", "projectile")) == "melee":
+			rch = float(wc.get("range", 0.0))
+			area = 0.5 * rch * rch * float(wc.get("swing_arc", 0.0))
+		else:
+			rch = float(wc.get("bspeed", 300.0)) * float(wc.get("bullet_life", 1.1)) + 26.0
+			area = PI * sp * sp
+		reach_tbl[wid1] = rch
+		eff_tbl[wid1] = rch + sp
+		aoe_tbl[wid1] = area
+	print("BALANCE reach=" + str(reach_tbl))
+	print("BALANCE reach_eff=" + str(eff_tbl))
+	print("BALANCE aoe_area=" + str(aoe_tbl))
+	print("BALANCE shooter_keep_dist=[%.0f,%.0f] n=%d" % [shooter_min, shooter_max, n_shooter])
+	# ③ 有效交火距离口径：**有 splash 的必须严格大于弹体射程，没 splash 的必须严格相等**。
+	#    溅射武器的弹体飞到射程尽头会自爆（`bullet.gd:91-93`），爆炸半径内是**全额伤害 + 全额上状态**
+	#    （`explosion.gd:52-57`，无距离衰减）→ 真实能打到人的距离 = 弹体射程 + splash。
+	#    ⚠️ 旧口径只报弹体飞行距离，把喷火枪的可用交火距离**读短了整整 75px**（110 → 实为 185），
+	#    导致「近距档」评价被系统性夸大风险 —— 属于「不报错、只是算错」那一类。
+	#    两侧都要测：只测正向的话，把 splash 加进不该加的地方（近战）也会判绿。
+	for wid4 in Config.LOADOUT_WEAPONS:
+		var wc4: Dictionary = Config.WEAPONS[wid4]
+		var sp4: float = float(wc4.get("splash", 0.0))
+		var base4: float = float(reach_tbl[wid4])
+		var eff4: float = float(eff_tbl[wid4])
+		if sp4 > 0.0 and eff4 <= base4:
+			_fail("S8: %s 带 splash=%.0f 但有效交火距离 %.0f 未超过弹体射程 %.0f（溅射没接进交火距离）"
+				% [String(wid4), sp4, eff4, base4])
+			return
+		if sp4 <= 0.0 and not is_equal_approx(eff4, base4):
+			_fail("S8: %s 无 splash 却算出有效交火距离 %.0f ≠ 弹体射程 %.0f（口径分叉）"
+				% [String(wid4), eff4, base4])
+			return
+	# ① 正向：必须存在能站在**全部**远程敌人火力圈之外的选项 —— 否则玩家全程被迫吃伤害
+	var has_safe := false
+	for wid2 in reach_tbl:
+		if float(reach_tbl[wid2]) > shooter_max:
+			has_safe = true
+			break
+	if not has_safe:
+		_fail("S8: 没有任何武器射程超过内置远程敌人最大 keep_dist(%.0f) → 玩家将被迫全程吃火力"
+			% shooter_max)
+		return
+	# ② 反向：近战武器必须**真的够不着** —— 「高风险」得是设计事实，不是配错了数值。
+	#    没有这一侧的话，把 knife 的 range 改成 400 也不会有人发现。
+	for wid3 in Config.LOADOUT_WEAPONS:
+		var wc3: Dictionary = Config.WEAPONS[wid3]
+		if String(wc3.get("attack_type", "projectile")) != "melee":
+			continue
+		var rr: float = float(reach_tbl[wid3])
+		if rr >= shooter_min:
+			_fail("S8: 近战武器 %s reach=%.0f 不该达到远程敌人最小 keep_dist=%.0f（贴脸风险就是它的定价）"
+				% [wid3, rr, shooter_min])
+			return
+	print("SMOKE: S8 综合战力（reach / AOE 面积 / %d 只内置远程怪 keep_dist %.0f~%.0f）OK"
+		% [n_shooter, shooter_min, shooter_max])
+
+
+## 单把武器在「白板 + 单体 + 非暴击」下的**稳态 DoT DPS**。
+##
+## 口径镜像 `enemy.gd:331-339` 的 tick 公式，参数全部取自 `Config`，不另抄数字：
+##   hits/s    = 1 / cd
+##   stacks/s  = hits/s × status_chance
+##   稳态层数  = min(stack_max, stacks/s × duration)   ← 只要还在打，duration 每发都被刷新
+##   每跳伤害  = 单发伤害 × dot_scale × 稳态层数
+##   DoT DPS   = 每跳伤害 / tick
+##
+## ⚠️ 单发伤害取 `WEAPONS[].dmg`（与 §1 基线表同基准）。输出侧关系 / 同化度 / 暴击
+##    是**同一个倍率同时作用在直伤和 DoT 上**（`status_power` = 打完关系后的 dmg），
+##    所以它们不改变武器之间的排序，这里不重复折算。
+## ⚠️ 中毒走 `dot_max_hp_pct`（按最大生命），与武器伤害无关 → 本函数返回 0、由调用方标注。
+func _dot_steady_dps(wc: Dictionary, scfg: Dictionary, chance_override: float = -1.0) -> float:
+	var scale := float(scfg.get("dot_scale", 0.0))
+	var tick := float(scfg.get("tick", 0.0))
+	if scale <= 0.0 or tick <= 0.0:
+		return 0.0
+	var ch := float(wc.get("status_chance", 1.0)) if chance_override < 0.0 else chance_override
+	var hits := 1.0 / maxf(0.01, float(wc.get("cd", 1.0)))
+	var stacks: float = minf(float(scfg.get("stack_max", 1)), hits * ch * float(scfg.get("duration", 0.0)))
+	return float(wc.get("dmg", 0.0)) * scale * stacks / tick
+
+
+## 状态 DoT 的稳态贡献 —— **全表此前是纯直伤口径**，DoT 一分钱没算，
+## 而「武器带 DoT」是玩家最能直接看到的一块（飘字一直在跳）。这里把它变成可复算的数字。
+##
+## ⚠️⚠️ **DoT 不吃受击侧**：`enemy.gd:345` 调的是 `take_damage(tick_dmg, false, true)`，
+##    **不传 `element_atk`** → 走不进 `take_damage` 里「关系修正 × 元素抗性」那个乘区
+##    （只吃 `_damage_taken_mult` 与法宝倍率）。也就是说
+##    **对高元素抗性的怪，DoT 相对更值钱**；反之打「被克属性」时直伤更值钱。
+##    本探针只算白板单体，**不折算这一层**，它是排序之外的独立维度。
+func _check_dot_contribution() -> void:
+	var dot_tbl: Dictionary = {}
+	var sum_tbl: Dictionary = {}
+	var n_dot := 0
+	for wid in Config.LOADOUT_WEAPONS:
+		var wc: Dictionary = Config.WEAPONS[wid]
+		var scfg: Dictionary = Config.status_cfg(String(wc.get("status", "")))
+		var d_dps: float = _dot_steady_dps(wc, scfg)
+		if d_dps > 0.0:
+			n_dot += 1
+		dot_tbl[wid] = d_dps
+		sum_tbl[wid] = float(wc.get("dmg", 0.0)) / maxf(0.01, float(wc.get("cd", 1.0))) + d_dps
+	print("BALANCE dot=" + str(dot_tbl))
+	print("BALANCE dps_total=" + str(sum_tbl))
+	# ⚠️ `dot_max_hp_pct` 型（poison）**本探针算不了** —— 它按敌人最大生命掉血、随波次变，
+	#    没有「白板单体」的固定值。这类状态**单列在 `BALANCE dot_hp_pct=`**，
+	#    ⚠️ **绝不能**混进下面的「必须 > 0」—— 否则以后给内置武器配一个 poison，
+	#    这条断言就会假红，而病因看着像「DoT 公式写错了」（典型误诊）。
+	var hp_pct_tbl: Dictionary = {}
+	for wid0 in Config.LOADOUT_WEAPONS:
+		var wc0: Dictionary = Config.WEAPONS[wid0]
+		var scfg0: Dictionary = Config.status_cfg(String(wc0.get("status", "")))
+		if float(scfg0.get("dot_max_hp_pct", 0.0)) > 0.0 \
+				and float(scfg0.get("dot_scale", 0.0)) <= 0.0:
+			hp_pct_tbl[wid0] = float(scfg0.get("dot_max_hp_pct", 0.0))
+	print("BALANCE dot_hp_pct=" + str(hp_pct_tbl))
+	# ① 双向：`dot_scale` 型（burn / bleed）必须给出**正**贡献；其余（含纯控场 slow/stun/freeze）
+	#    必须**恰好** 0。⚠️ 两侧都要有 —— 只测正向的话，「把所有状态都当 DoT 算」也会判绿。
+	for wid2 in Config.LOADOUT_WEAPONS:
+		var wc2: Dictionary = Config.WEAPONS[wid2]
+		var sid2 := String(wc2.get("status", ""))
+		var scfg2: Dictionary = Config.status_cfg(sid2)
+		var has_dot := float(scfg2.get("dot_scale", 0.0)) > 0.0
+		if has_dot and float(dot_tbl[wid2]) <= 0.0:
+			_fail("S8 DoT: %s 带 dot_scale 型状态 %s 却算出 0 贡献（公式或参数写错）" % [String(wid2), sid2])
+			return
+		if not has_dot and not is_zero_approx(float(dot_tbl[wid2])):
+			_fail("S8 DoT: %s 的状态 %s 不是 dot_scale 型 DoT，却算出 %.4f"
+				% [String(wid2), sid2, float(dot_tbl[wid2])])
+			return
+	# ② 反向对照：`status_chance = 0` 必须一点都不产生（验证「命中率 → 层数」这段真的接进去了，
+	#    而不是把 dot_scale 直接乘上单发伤害了事）
+	for wid3 in Config.LOADOUT_WEAPONS:
+		var wc3: Dictionary = Config.WEAPONS[wid3]
+		var scfg3: Dictionary = Config.status_cfg(String(wc3.get("status", "")))
+		if float(scfg3.get("dot_scale", 0.0)) <= 0.0:
+			continue
+		if _dot_steady_dps(wc3, scfg3, 0.0) > 0.0:
+			_fail("S8 DoT: %s 在 status_chance=0 时仍算出 DoT 贡献（命中率没接进层数）" % String(wid3))
+			return
+	# ③ 被测对象必须存在（否则表空了这段也判绿）
+	if n_dot < 2:
+		_fail("S8 DoT: 内置武器里带 DoT 的只有 %d 把（应 ≥2）—— 探针失去被测对象" % n_dot)
+		return
+	print("SMOKE: S8 状态 DoT（%d 把带 DoT / 白板单体稳态口径，与 §1 基线表同基准）OK" % n_dot)
+
+
+## §7.4 两条同化度获取途径（2026-09-17 补做，此前只做了道具 + 之悟升级）
+##   ① 角色特性：元素角色在**本元素**上开局 `+CHAR_START_ASSIM`（白板角色 `element==""` 不吃）
+##   ② 五行反应：每触发一次，参与的两个元素（`from` / `to`）各 `+REACTION_ASSIM_GAIN`，clamp 到上限
+##
+## ⚠️ ① 必须**新建** Player：主场景那个的 `_ready()` 早跑过了，它的 assim 混着
+##    前面用例发的道具/升级/区域加成，**无法反推「开局值」**。
+## ⚠️ 两条都配**反向对照**：只测正向的话，「全元素都加了」或「全都没加」都可能判绿。
+func _check_assim_gain() -> void:
+	var saved_cid: String = GameState.character_id
+	# 局外天赋也会改 stats，先复位才能隔离出「开局值」
+	MetaProgress.reset_for_tests()
+	# ---- ① 元素角色开局同化度 ----
+	GameState.character_id = "fire_adept"
+	var p_fire: Node2D = preload("res://scenes/characters/player.tscn").instantiate()
+	_main.add_child(p_fire)                       # 入树即触发 _ready()
+	if String(p_fire.element) != "fire":
+		_fail("fire_adept 的角色元素应为 fire，实为 %s" % String(p_fire.element))
+		p_fire.queue_free()
+		GameState.character_id = saved_cid
+		MetaProgress.reset_for_tests()
+		return
+	var got_start: float = float(p_fire.stats.get("assim_fire", 0.0))
+	if not is_equal_approx(got_start, Config.CHAR_START_ASSIM):
+		_fail("元素角色未拿到开局同化度（assim_fire=%.3f，期望 %.3f）"
+			% [got_start, Config.CHAR_START_ASSIM])
+		p_fire.queue_free()
+		GameState.character_id = saved_cid
+		MetaProgress.reset_for_tests()
+		return
+	# 反向对照：只加**本元素**那一个，其余必须是 0
+	for eid_a in Config.ELEMENTS:
+		var ea := String(eid_a)
+		if ea == "fire":
+			continue
+		if float(p_fire.stats.get("assim_" + ea, 0.0)) != 0.0:
+			_fail("开局同化度只应加本元素（assim_%s=%.3f 应为 0）"
+				% [ea, float(p_fire.stats.get("assim_" + ea, 0.0))])
+			p_fire.queue_free()
+			GameState.character_id = saved_cid
+			MetaProgress.reset_for_tests()
+			return
+	p_fire.queue_free()
+	# 白板角色（element == ""）不该吃这条
+	GameState.character_id = "potato"
+	var p_white: Node2D = preload("res://scenes/characters/player.tscn").instantiate()
+	_main.add_child(p_white)
+	for eid_b in Config.ELEMENTS:
+		var eb := String(eid_b)
+		if float(p_white.stats.get("assim_" + eb, 0.0)) != 0.0:
+			_fail("白板角色不该有开局同化度（assim_%s=%.3f）"
+				% [eb, float(p_white.stats.get("assim_" + eb, 0.0))])
+			p_white.queue_free()
+			GameState.character_id = saved_cid
+			MetaProgress.reset_for_tests()
+			return
+	p_white.queue_free()
+	GameState.character_id = saved_cid
+	MetaProgress.reset_for_tests()
+	# ---- ② 五行反应给参与元素 +3% ----
+	var pl: Node = _main.get_node("Player")
+	var assim_bak2: Dictionary = {}
+	for eid_c in Config.ELEMENTS:
+		assim_bak2["assim_" + String(eid_c)] = float(pl.stats.get("assim_" + String(eid_c), 0.0))
+		pl.stats["assim_" + String(eid_c)] = 0.0
+	# ⚠️ `Config.REACTIONS` 的**键是 "wood+fire"**，而 `EventBus.element_reaction` 带的是
+	#    **id**（"wood_fire"）—— 两者不是一回事。按 id 找才对
+	#    （`Registry.get_reaction` 同样按 id 解析，`enemy.gd:392` 发的也是 id）。
+	var rid := "wood_fire"
+	var rcfg: Dictionary = {}
+	for rk in Config.REACTIONS:
+		var rd: Dictionary = Config.REACTIONS[rk]
+		if String(rd.get("id", "")) == rid:
+			rcfg = rd
+			break
+	if rcfg.is_empty():
+		_fail("Config.REACTIONS 里找不到 id=" + rid + " 的反应")
+		return
+	var from_el := String(rcfg.get("from", ""))
+	var to_el := String(rcfg.get("to", ""))
+	# ⚠️ 缺 from/to 会让加成**静默失效且不报错** —— 必须先拦出来
+	if from_el == "" or to_el == "":
+		_fail("反应 %s 缺 from/to —— 同化度加成会静默失效" % rid)
+		return
+	EventBus.element_reaction.emit(rid, Vector2.ZERO, [])
+	var got_from: float = float(pl.stats.get("assim_" + from_el, 0.0))
+	var got_to: float = float(pl.stats.get("assim_" + to_el, 0.0))
+	if not is_equal_approx(got_from, Config.REACTION_ASSIM_GAIN) \
+			or not is_equal_approx(got_to, Config.REACTION_ASSIM_GAIN):
+		_fail("反应未给参与元素加同化度（%s=%.3f / %s=%.3f，期望各 %.3f）"
+			% [from_el, got_from, to_el, got_to, Config.REACTION_ASSIM_GAIN])
+		return
+	# 反向对照：未参与的元素必须是 0
+	for eid_d in Config.ELEMENTS:
+		var ed := String(eid_d)
+		if ed == from_el or ed == to_el:
+			continue
+		if float(pl.stats.get("assim_" + ed, 0.0)) != 0.0:
+			_fail("反应只应给参与的两个元素加同化度（assim_%s=%.3f 应为 0）"
+				% [ed, float(pl.stats.get("assim_" + ed, 0.0))])
+			return
+	# 上限：灌满再触发，不得溢出（否则存档校验 2.0 会反过来拒档）
+	var lim: Vector2 = Registry.STAT_LIMITS["assim_" + from_el]
+	var cap: float = float(lim.y)
+	pl.stats["assim_" + from_el] = cap
+	EventBus.element_reaction.emit(rid, Vector2.ZERO, [])
+	if float(pl.stats.get("assim_" + from_el, 0.0)) > cap + 1e-6:
+		_fail("反应同化度未 clamp 到上限（%.3f > %.3f）"
+			% [float(pl.stats.get("assim_" + from_el, 0.0)), cap])
+		return
+	for bk in assim_bak2:
+		pl.stats[bk] = float(assim_bak2[bk])
+	print("SMOKE: §7.4 同化度获取（角色开局 +%.0f%% / 反应 +%.0f%% 且 clamp 到 %.1f）OK"
+		% [Config.CHAR_START_ASSIM * 100.0, Config.REACTION_ASSIM_GAIN * 100.0, cap])
+
+
 func _check_endless() -> void:
 	Leaderboard.set_storage_root_for_tests("user://tests/lb")
 	Leaderboard.entries = []   # 防上次异常中断的残留文件污染名次断言
-	# ---- 标准模式第 10 波通关 → 胜利结算 → 继续无尽 ----
+	# 防御性复位自定义规则：本用例对波号有**硬期望**（BOSS 波 → +1 波），
+	# 而 `start_wave` 会按 `RunRules.wave_total` 夹断波号 —— 只要上游有任何一处
+	# 把 active/values 泄漏出来，这里就会以「无尽流程失败」的面目报红，
+	# 真正的病因却在几百行之外。一行复位把这种误诊挡掉。
+	RunRules.apply_from_save("garbage")
+	# ---- 标准模式最后一波通关 → 胜利结算 → 继续无尽 ----
 	GameState.endless = false
 	GameState.score = 0
 	var wm_v: Node = _main.get_node("WaveManager")
-	wm_v.start_wave(10)
+	wm_v.start_wave(Config.BOSS_WAVE)
 	var vboss: Node2D = wm_v.boss
 	if vboss == null:
-		_fail("标准模式第 10 波未生成 BOSS")
+		_fail("标准模式第 %d 波未生成 BOSS" % Config.BOSS_WAVE)
 		return
+	# ⚠️ 记下 BOSS id：下面的「血量随波次增长」断言必须拿**同一只 BOSS** 比。
+	#    六只 BOSS 的基础血量差 560k~900k（`boss_summoner` vs `boss_titan`），
+	#    若硬编码 `setup("boss", 30)` 而这一波的 BOSS 恰好是玄武岩王，
+	#    「w30 < w20」就会以「实现错了」的面目报红 —— 实际是断言选错了比较对象。
+	var vboss_id := String(vboss.type)
 	var vboss_hp: float = vboss.max_hp
 	if vboss_hp < 2400.0:
 		_fail("BOSS 血量未强化（max_hp=%.0f）" % vboss_hp)
@@ -4767,30 +7329,36 @@ func _check_endless() -> void:
 		return
 	_main._continue_endless()
 	await get_tree().process_frame
-	if not GameState.endless or wm_v.wave != 11 or GameState.phase != GameState.Phase.INTRO:
-		_fail("通关后继续无尽失败（endless=%s wave=%d phase=%d）"
-			% [str(GameState.endless), wm_v.wave, GameState.phase])
+	if not GameState.endless or wm_v.wave != Config.BOSS_WAVE + 1 or GameState.phase != GameState.Phase.INTRO:
+		_fail("通关后继续无尽失败（endless=%s wave=%d 期望 %d phase=%d）"
+			% [str(GameState.endless), wm_v.wave, Config.BOSS_WAVE + 1, GameState.phase])
 		return
 	# ---- 纯函数断言 ----
+	# 标准模式：BOSS 只在最后一波（改动前写死 10，20 波制下必然误红）
 	GameState.endless = false
-	if not Config.is_boss_wave(10) or Config.is_boss_wave(11) or Config.is_boss_wave(20):
-		_fail("is_boss_wave 标准模式判定错误")
+	if not Config.is_boss_wave(Config.BOSS_WAVE) \
+			or Config.is_boss_wave(Config.BOSS_WAVE - 1) \
+			or Config.is_boss_wave(Config.BOSS_WAVE - 10):
+		_fail("is_boss_wave 标准模式判定错误（第 %d 波必须是 BOSS，且 19 / 10 都不是）"
+			% Config.BOSS_WAVE)
 		return
+	# 无尽模式：每 10 波一轮
 	GameState.endless = true
-	if not Config.is_boss_wave(20) or Config.is_boss_wave(19):
+	if not Config.is_boss_wave(30) or Config.is_boss_wave(29) or Config.is_boss_wave(31):
 		_fail("is_boss_wave 无尽模式判定错误")
 		return
 	if Config.kill_score(Registry.enemies.grunt) <= 0 \
-			or Config.boss_kill_score(10) <= 0 or Config.wave_clear_score(5) <= 0:
+			or Config.boss_kill_score(Config.BOSS_WAVE) <= 0 or Config.wave_clear_score(5) <= 0:
 		_fail("积分公式错误")
 		return
-	# 无尽 BOSS 血量随波次增长（第 20 波 > 第 10 波基准）
-	var boss20: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
-	boss20.setup("boss", 20)
-	var boss20_hp: float = boss20.max_hp
-	boss20.free()
-	if boss20_hp <= vboss_hp:
-		_fail("无尽 BOSS 血量未随波次增长（w20=%.0f <= w10=%.0f）" % [boss20_hp, vboss_hp])
+	# 无尽 BOSS 血量必须随波次继续增长（**同一只 BOSS**：W30 > 标准局末波 W20 基准）
+	var boss_deep: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	boss_deep.setup(vboss_id, 30)
+	var boss_deep_hp: float = boss_deep.max_hp
+	boss_deep.free()
+	if boss_deep_hp <= vboss_hp:
+		_fail("无尽 BOSS 血量未随波次增长（w30=%.0f <= w%d=%.0f）"
+			% [boss_deep_hp, Config.BOSS_WAVE, vboss_hp])
 		return
 	# ---- 排行榜：记录 / 排序 / 名次 ----
 	if Leaderboard.record(100, 5, "测试A", 10, 60.0) != 1:
@@ -4803,13 +7371,13 @@ func _check_endless() -> void:
 	if Leaderboard.record(0, 9, "无效", 1, 1.0) != 0:
 		_fail("零分不应入榜")
 		return
-	# ---- 无尽流程：第 10 波 BOSS ----
+	# ---- 无尽流程：第 30 波 BOSS（无尽每 10 波一轮）----
 	GameState.score = 0
 	var wm: Node = _main.get_node("WaveManager")
-	wm.start_wave(10)
+	wm.start_wave(30)
 	var boss: Node2D = wm.boss
 	if boss == null:
-		_fail("无尽第 10 波未生成 BOSS")
+		_fail("无尽第 30 波未生成 BOSS")
 		return
 	var p3: Node2D = _main.get_node("Player")
 	# 普通击杀计分
@@ -4822,7 +7390,7 @@ func _check_endless() -> void:
 	if GameState.score <= 0:
 		_fail("无尽模式击杀未计积分")
 		return
-	# BOSS 击破 → 商店衔接 + wave11 存档
+	# BOSS 击破 → 商店衔接 + wave31 存档
 	boss.hp = 1.0   # 巨额抗性下单发无法秒杀：压到 1 血再打
 	boss.take_damage(1.0e9, false)
 	# 焚天凤凰会涅槃复活一次：一击后若仍未进商店（phase 仍 INTRO 且 boss 仍存活），补一刀
@@ -4834,12 +7402,12 @@ func _check_endless() -> void:
 		_fail("无尽 BOSS 击破未衔接商店（phase=%d）" % GameState.phase)
 		return
 	if not SaveRun.exists(GameState.slot_id):
-		_fail("无尽 wave11 存档失败")
+		_fail("无尽 wave31 存档失败")
 		return
 	# 存档往返：endless 标志与积分一致
 	var score_saved: int = GameState.score
-	if SaveRun.restore(p3) != 11:
-		_fail("无尽存档波次往返失败")
+	if SaveRun.restore(p3) != 31:
+		_fail("无尽存档波次往返失败（期望 31）")
 		return
 	if not GameState.endless or GameState.score != score_saved:
 		_fail("无尽标志/积分未随存档恢复（endless=%s score=%d/%d）"
@@ -4909,16 +7477,197 @@ func _check_endless() -> void:
 	GameState.endless = false
 	print("SMOKE: endless mode + leaderboard + perf OK")
 
+## 逐波平衡日志（2026-09-17 第 8 轮需求 4）：结构 / 增量 / 波次隔离 / 射程口径。
+##
+## 断言口径：
+##   · 期望值**从被测数据算**（Config.WEAPONS 的 evolve_branches、Registry 里的武器表），不写死 id；
+##   · 每条 A→B 的断言都先造出「不满足」的反向情形（未开局不落盘 / 波次之间必须清零），
+##     否则「池子空了」也能判绿；
+##   · 用完把 stats 还原（租进来的变量必须还回去，否则污染后续用例）。
+func _check_balance_log() -> void:
+	if _failed:
+		return
+	var p: Node2D = _main.get_node("Player")
+	BalanceLog.set_storage_root_for_tests(TEST_SAVE_ROOT)
+	var log_path := BalanceLog.path()
+	if FileAccess.file_exists(log_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(log_path))
+	# ---- ① 反向对照：未开局（菜单 / 图鉴里跑到的战斗代码）一个字节都不该写 ----
+	BalanceLog.close_run()
+	BalanceLog.begin_wave(2)
+	BalanceLog.add_damage_dealt(999.0, "knife")
+	BalanceLog.add_damage_taken(999.0)
+	if BalanceLog.commit(2, p, "shop"):
+		_fail("BalanceLog: 未 begin_run 就落盘了")
+		return
+	if FileAccess.file_exists(log_path):
+		_fail("BalanceLog: 未开局不应产生日志文件")
+		return
+	# ---- ② 开局 + 本波累计：总量 / 按来源拆分 / 出怪数 / 事件波 ----
+	BalanceLog.begin_run()
+	BalanceLog.begin_wave(2)
+	BalanceLog.add_damage_dealt(120.0, "knife")
+	BalanceLog.add_damage_dealt(80.0, "knife")
+	BalanceLog.add_damage_dealt(50.0, "thunder_gong")
+	BalanceLog.add_damage_dealt(30.0, "")        # 无来源 → 归 "other"
+	BalanceLog.add_damage_taken(40.0)
+	BalanceLog.add_heal(7.0)
+	BalanceLog.note_hp(p.hp)
+	BalanceLog.note_spawn(5)
+	BalanceLog.note_event("meteor")
+	if not BalanceLog.commit(2, p, "shop"):
+		_fail("BalanceLog: 开局后应能落盘")
+		return
+	if not FileAccess.file_exists(log_path):
+		_fail("BalanceLog: 落盘后文件不存在（%s）" % log_path)
+		return
+	var parsed: Variant = JSON.parse_string(FileAccess.open(log_path, FileAccess.READ).get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		_fail("BalanceLog: 日志不是合法 JSON")
+		return
+	var d: Dictionary = parsed
+	var latest: Dictionary = d.get("latest", {})
+	var wd: Dictionary = latest.get("wave_data", {})
+	if int(latest.get("wave", 0)) != 2 or String(latest.get("outcome", "")) != "shop":
+		_fail("BalanceLog: latest 的波次/outcome 不对（%s）" % str(latest))
+		return
+	if not is_equal_approx(float(wd.get("damage_dealt", 0.0)), 280.0):
+		_fail("BalanceLog: 本波总伤害应为 120+80+50+30=280，实际 %s" % str(wd.get("damage_dealt")))
+	var bysrc: Dictionary = wd.get("by_source", {})
+	if not is_equal_approx(float(bysrc.get("knife", 0.0)), 200.0) \
+			or not is_equal_approx(float(bysrc.get("thunder_gong", 0.0)), 50.0) \
+			or not is_equal_approx(float(bysrc.get("other", 0.0)), 30.0):
+		_fail("BalanceLog: 伤害来源拆分错误 %s" % str(bysrc))
+	if int(wd.get("spawned", -1)) != 5 or String(wd.get("event", "")) != "meteor" \
+			or not is_equal_approx(float(wd.get("damage_taken", 0.0)), 40.0) \
+			or not is_equal_approx(float(wd.get("heal", 0.0)), 7.0):
+		_fail("BalanceLog: 出怪数 / 事件波 / 受击 / 回复未记录 %s" % str(wd))
+	# ---- ③ 玩家快照：全量属性 + 武器清单（含实战冷却，取 try_fire 的同一算法）----
+	var snap: Dictionary = latest.get("player", {})
+	var stats_snap: Dictionary = snap.get("stats", {})
+	if not stats_snap.has("dmg_mult") or not stats_snap.has("as_mult"):
+		_fail("BalanceLog: 玩家快照缺少全量 stats")
+		return
+	var wl: Array = snap.get("weapons", [])
+	if wl.is_empty() or not (wl[0] as Dictionary).has("reach"):
+		_fail("BalanceLog: 玩家快照缺少武器清单 / 射程")
+		return
+	for we in wl:
+		var we_d: Dictionary = we
+		if not is_equal_approx(float(we_d.get("cd_effective", -1.0)),
+				float(we_d.get("cd", 0.0)) / maxf(0.01, float(p.stats.as_mult))):
+			_fail("BalanceLog: 实战冷却未按 面板cd÷攻速 折算（%s）" % str(we_d))
+			break
+	# ---- ④ 射程口径：与开火同源，且**投掷物不吃弹速/射程类加成**（第 8 轮修复点）----
+	#
+	# ⚠️⚠️ 先把身份相关加成**全部摘掉再算期望**：本用例跑在几十条用例之后，玩家身上留着
+	#    前面用例施加的加成（实测残留 melee_range_bonus 0.18 / aoe_radius_bonus 0.20）。
+	#    直接拿裸公式当期望 → 期望 495 实测 514，红了还像是「实现错了」，其实是断言
+	#    把别人的变量当成了自己的初值。用完必须原样还回去（租的变量要还）。
+	var gcfg: Dictionary = Registry.weapons.get("thunder_gong", {})
+	if gcfg.is_empty():
+		_fail("BalanceLog: Registry 缺少 thunder_gong")
+		return
+	var keep_bullet: float = float(p.stats.get("bullet_range_bonus", 0.0))
+	var keep_throw: float = float(p.stats.get("throw_range_bonus", 0.0))
+	var keep_melee: float = float(p.stats.get("melee_range_bonus", 0.0))
+	var keep_aoe: float = float(p.stats.get("aoe_radius_bonus", 0.0))
+	p.stats.bullet_range_bonus = 0.0
+	p.stats.throw_range_bonus = 0.0
+	p.stats.melee_range_bonus = 0.0
+	p.stats.aoe_radius_bonus = 0.0
+	var r_expect: float = float(gcfg.bspeed) * float(gcfg.bullet_life) + 26.0 + float(gcfg.splash)
+	var r_base: float = p.weapon_reach(gcfg)
+	if not is_equal_approx(r_base, r_expect):
+		_fail("BalanceLog: 投掷物射程应为 弹速×存活+26+splash=%.1f，实际 %.1f" % [r_expect, r_base])
+	p.stats.bullet_range_bonus = 0.5
+	if not is_equal_approx(p.weapon_reach(gcfg), r_expect):
+		_fail("BalanceLog: 投掷物不该吃「弹道射程」类加成（第 8 轮修复点）")
+	p.stats.bullet_range_bonus = 0.0
+	p.stats.throw_range_bonus = 0.5
+	if not is_equal_approx(p.weapon_reach(gcfg),
+			float(gcfg.bspeed) * float(gcfg.bullet_life) * 1.5 + 26.0 + float(gcfg.splash)):
+		_fail("BalanceLog: 投掷物应吃「投掷距离」类加成（存活时长 ×1.5）")
+	p.stats.throw_range_bonus = 0.0
+	# 爆炸半径加成改的是 splash（「爆多大」），与「飞多远」正交 → 两类武器都吃
+	p.stats.aoe_radius_bonus = 0.5
+	if not is_equal_approx(p.weapon_reach(gcfg), r_expect + float(gcfg.splash) * 0.5):
+		_fail("BalanceLog: 投掷物应吃「爆炸半径」类加成（加在 splash 上）")
+	p.stats.aoe_radius_bonus = 0.0
+	# 近战：射程 = range（不含枪口 26，也不含 splash）
+	var mcfg: Dictionary = Registry.weapons.get("knife", {})
+	var m_base: float = p.weapon_reach(mcfg)
+	if not is_equal_approx(m_base, float(mcfg.range)):
+		_fail("BalanceLog: 近战射程应等于 range（%.1f vs %.1f）" % [m_base, float(mcfg.range)])
+	p.stats.melee_range_bonus = 0.5
+	if not is_equal_approx(p.weapon_reach(mcfg), float(mcfg.range) * 1.5):
+		_fail("BalanceLog: 近战射程未吃「近战范围」加成")
+	p.stats.melee_range_bonus = 0.0
+	# 原样还回去
+	p.stats.bullet_range_bonus = keep_bullet
+	p.stats.throw_range_bonus = keep_throw
+	p.stats.melee_range_bonus = keep_melee
+	p.stats.aoe_radius_bonus = keep_aoe
+	# ---- ⑤ 进化体识别：期望集**从被测数据算**，并配反向对照 ----
+	var evolved_ids: Array = []
+	for base_id in Config.WEAPONS:
+		for br in Config.WEAPONS[base_id].get("evolve_branches", []):
+			evolved_ids.append(String(br))
+	if evolved_ids.is_empty():
+		_fail("BalanceLog: Config.WEAPONS 里一条 evolve_branches 都没有，本断言已失去意义")
+		return
+	for eid in evolved_ids:
+		if not p._is_evolved_form(eid):
+			_fail("BalanceLog: 进化体 %s 未被识别" % eid)
+			break
+	for wid in Config.WEAPONS:
+		if String(wid) in evolved_ids:
+			continue
+		if p._is_evolved_form(String(wid)):
+			_fail("BalanceLog: 基础武器 %s 被误判为进化体" % wid)
+			break
+	# ---- ⑥ 波次隔离：第二笔 commit 必须追加历史，且本波计数归零 ----
+	BalanceLog.begin_wave(3)
+	if not BalanceLog.commit(3, p, "shop"):
+		_fail("BalanceLog: 第二波落盘失败")
+		return
+	var parsed2: Variant = JSON.parse_string(FileAccess.open(log_path, FileAccess.READ).get_as_text())
+	if typeof(parsed2) != TYPE_DICTIONARY:
+		_fail("BalanceLog: 第二波后日志不是合法 JSON")
+		return
+	var d2: Dictionary = parsed2
+	var waves: Array = d2.get("waves", [])
+	if waves.size() != 2:
+		_fail("BalanceLog: 逐波历史应为 2 条（追加而非覆盖），实际 %d" % waves.size())
+		return
+	if int((waves[0] as Dictionary).get("wave", 0)) != 2 \
+			or int((waves[1] as Dictionary).get("wave", 0)) != 3:
+		_fail("BalanceLog: 逐波历史顺序/波号错误 %s" % str(waves))
+	var wd2: Dictionary = (d2.get("latest", {}) as Dictionary).get("wave_data", {})
+	if float(wd2.get("damage_dealt", -1.0)) != 0.0 or int(wd2.get("spawned", -1)) != 0:
+		_fail("BalanceLog: 波次之间未清零累计（第 2 波的数字滚进了第 3 波）%s" % str(wd2))
+	# ⚠️ 刻意**不**还原存储根：本用例之后还有别的用例会跑到 BOSS 波 / 收波
+	#    （`_on_boss_killed` → victory 落盘），根一旦还原，那些落盘就会写进开发者**真实的**
+	#    user://balance_log.json。与 SaveRun 一样全程留在测试目录，进程结束自然消失。
+	BalanceLog.close_run()
+	if _failed:
+		return   # 上面任何一条红了就别再打「OK」——否则日志里 FAIL 与 OK 同时出现，读起来自相矛盾
+	print("SMOKE: balance_log OK (waves=%d)" % waves.size())
+
 func _cleanup_test_storage(reset_root: bool) -> void:
 	var previous_slot := GameState.slot_id
-	for slot in range(1, SaveRun.SLOT_COUNT + 1):
-		GameState.slot_id = slot
-		SaveRun.clear()
-	GameState.slot_id = clampi(previous_slot, 1, SaveRun.SLOT_COUNT)
-	var legacy_path := TEST_SAVE_ROOT.path_join("save_run.json")
-	if FileAccess.file_exists(legacy_path):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(legacy_path))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_SAVE_ROOT))
+	# 唯一档：必须在 reset_storage_root_after_tests 之前清 —— 根一旦还原，
+	# clear() 指向的就是真实 user://save_run.json（会删掉开发者自己的档）
+	GameState.slot_id = 1
+	SaveRun.clear()
+	GameState.slot_id = previous_slot if previous_slot >= 1 else 1
+	# 整个测试存档根目录连文件一起清：唯一档、旧三槽 `save_slot_N.json`（合并用例会造）、
+	# .tmp/.bak 中间文件都算。只删目录的话非空时静默失败，残留会跨运行污染迁移断言
+	var root_abs := ProjectSettings.globalize_path(TEST_SAVE_ROOT)
+	if DirAccess.dir_exists_absolute(root_abs):
+		for fn in DirAccess.get_files_at(root_abs):
+			DirAccess.remove_absolute(root_abs.path_join(String(fn)))
+	DirAccess.remove_absolute(root_abs)
 	# 法宝存档用例的独立存储根（验证点 8 换根跑，残留目录会污染下次运行的落盘断言）
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(TEST_SAVE_ROOT + "_artifact"))
 	# 排行榜测试隔离目录清理（_fail 路径也会走到这里，防跨运行残留污染）

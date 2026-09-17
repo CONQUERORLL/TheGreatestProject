@@ -1,11 +1,23 @@
 extends Node
-## 三槽自动存档：v2 始终保存下一波开场快照；v1 商店检查点仅保留兼容读取。
+## 单档自动存档（S4.5 · §10.1）：**唯一档** `user://save_run.json`，
+## 菜单「继续游戏」直读这一份，不再有存档栏；存档时机 = 通过波次、进入商店时。
 ## 每次写入先落临时文件并保留上一版备份，避免截断正式存档后写入失败。
+##
+## ⚠️ 唯一档文件名**刻意复用 v1 的单槽文件名** `save_run.json` ——
+##    于是 v1 老玩家的档「原地」就是新唯一档，一格字节都不用搬；需要搬迁的是三槽那一批。
+##    历史布局（`migrate_legacy_if_needed` 合并，取 `saved_at` 最新的一份）：
+##      v1 = 单槽 `save_run.json`（无 `checkpoint` 键 → 一律按商店恢复）
+##      v2 = 三槽 `save_slot_1..3.json`（自动档写槽 1）
 
 const VERSION := 2
 const COMPATIBLE_VERSIONS := [1, 2]
-const SLOT_COUNT := 3
-const LEGACY_PATH := "user://save_run.json"
+## 唯一档只有 1 个。**保留 `slot` 形参**是为了让调用方继续用同一套「按槽寻址」API，
+## 而不是把 `slot_path` 拆成两套函数 —— 槽数由本常量单点控制（§13-28 断言它 == 1）。
+const SLOT_COUNT := 1
+## 唯一档文件名（= v1 的单槽文件名，见文件头）
+const SAVE_FILE := "save_run.json"
+## 旧三槽布局的文件名：**只在迁移时读取**，合并完即删除
+const LEGACY_SLOT_FILES := ["save_slot_1.json", "save_slot_2.json", "save_slot_3.json"]
 const DEFAULT_STORAGE_ROOT := "user://"
 const CHECKPOINT_SHOP := "shop"
 const CHECKPOINT_WAVE_START := "wave_start"
@@ -13,16 +25,15 @@ const CHECKPOINT_WAVE_START := "wave_start"
 var restored_checkpoint := CHECKPOINT_SHOP
 var current_run_owns_slot := false
 var _storage_root := DEFAULT_STORAGE_ROOT
-var _legacy_path := LEGACY_PATH
 
 func migrate_legacy_if_needed(allow_test_storage := false) -> void:
 	if _storage_root == DEFAULT_STORAGE_ROOT or allow_test_storage:
-		_migrate_legacy()
+		_migrate_old_layout()
 
 func slot_path(slot: int) -> String:
 	if slot < 1 or slot > SLOT_COUNT:
 		return ""
-	return _storage_root.path_join("save_slot_%d.json" % slot)
+	return _storage_root.path_join(SAVE_FILE)
 
 func exists(slot: int) -> bool:
 	return not _read(slot).is_empty()
@@ -36,16 +47,18 @@ func any_exists() -> bool:
 ## 仅供自动化测试隔离 user:// 正式存档。
 func set_storage_root_for_tests(path: String) -> void:
 	_storage_root = path.trim_suffix("/")
-	_legacy_path = _storage_root.path_join("save_run.json")
 
 func reset_storage_root_after_tests() -> void:
 	_storage_root = DEFAULT_STORAGE_ROOT
-	_legacy_path = LEGACY_PATH
 
-## 保存当前局到当前槽。checkpoint 表示恢复后进入商店还是直接重打该波。
+## 保存当前局到唯一档。`checkpoint` 决定**恢复后从哪儿接上**：
+##   `shop`（默认 = 本项目的存档时机口径）= 刚打完第 `next_wave - 1` 波、正要进商店
+##          → 恢复后直接开商店（不重打该波，见 main.gd 的 restored_checkpoint 分支）
+##   `wave_start` = 即将从 `next_wave` 开场起跑：新局第 1 波（第 1 波之前没有商店）、
+##          以及「通关转无尽」这种直接开波的切换
 ## 无尽模式波次上限放宽到 ENDLESS_MAX_WAVE。
 ## 每日挑战不落盘（slot 0 / 全服同局，不存档），直接返回 true 跳过。
-func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_START) -> bool:
+func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_SHOP) -> bool:
 	if GameState.daily:
 		return true
 	var wave_max := Config.ENDLESS_MAX_WAVE if GameState.endless \
@@ -89,6 +102,9 @@ func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_STA
 			"weapons": player.weapons.map(func(w: Dictionary) -> Dictionary:
 				return { "type": w.type }),
 			"items_owned": player.items_owned.duplicate(),
+			# 升级记账（第 7 轮新增）：金/红升级「本局唯一」的唯一依据。
+			# 不落盘的话续档后 upgrades_owned 归空 → 同一张金升级能再刷一遍，唯一性静默失效
+			"upgrades_owned": player.upgrades_owned.duplicate(),
 			# 法宝必须连叠层一起存：叠层属性已含在 stats 里，但层数记录丢了
 			# 会让 _set_artifact_stacks 的 cur 归零，下次叠层重复加成
 			"artifacts_owned": player.artifacts_owned.duplicate(),
@@ -100,7 +116,7 @@ func save(next_wave: int, player: Node, checkpoint: String = CHECKPOINT_WAVE_STA
 		current_run_owns_slot = true
 	return saved
 
-## 恢复当前槽并返回波次；restored_checkpoint 告知调用方恢复到商店或波次开始。
+## 恢复唯一档并返回波次；restored_checkpoint 告知调用方恢复到商店或波次开始。
 func restore(player: Node) -> int:
 	var data := _read(GameState.slot_id)
 	if data.is_empty():
@@ -110,6 +126,11 @@ func restore(player: Node) -> int:
 	restored_checkpoint = String(data.get("checkpoint", CHECKPOINT_SHOP))
 	if restored_checkpoint not in [CHECKPOINT_SHOP, CHECKPOINT_WAVE_START]:
 		restored_checkpoint = CHECKPOINT_SHOP
+	# 第 1 波之前没有商店：`shop` 档的波号至少是 2（存档点 = 打完 n-1 波、正要进商店）。
+	# 手改或半损坏的档若写成「wave 1 + shop」，按原样恢复会去开一个不存在的「第 0 波商店」，
+	# 所以这里降级为「从第 1 波起跑」—— 与 `save()` 的新局口径对齐。
+	if wave <= 1:
+		restored_checkpoint = CHECKPOINT_WAVE_START
 	var character_id := String(run.get("character_id", "potato"))
 	if not Registry.characters.has(character_id):
 		character_id = "potato"
@@ -154,7 +175,9 @@ func restore(player: Node) -> int:
 		if Registry.weapons.has(weapon_id):
 			player.weapons.append({ "type": weapon_id, "cd": 0.3 })
 	if player.weapons.is_empty():
-		player.weapons = [{ "type": "pistol", "cd": 0.3 }]
+		# 存档里所有武器都读不出（旧档记着已冻结的武器 / 对应工坊包被停用）时的兜底。
+		# 用 Config.FALLBACK_WEAPON，不再硬编码 "pistol" —— 后者已在 S2 迁入工坊包。
+		player.weapons = [{ "type": Config.FALLBACK_WEAPON, "cd": 0.3 }]
 	player.load_family_synergy_snapshot()   # 存档 stats 已含共鸣，只记录不重算
 	player.items_owned = {}
 	for id: String in pl.items_owned:
@@ -162,6 +185,14 @@ func restore(player: Node) -> int:
 			var count := int(pl.items_owned[id])
 			if count > 0:
 				player.items_owned[id] = count
+	# 升级记账：只恢复「当前 Registry 里还存在」的条目（mod 卸载后存档里的升级失效，
+	# 静默丢弃，与 items_owned 同款处理）。旧档没有这个键 → pl.get 取 {}，原地升级，
+	# 唯一性从空集开始（唯一性只能往后保证，旧档无法追溯）。
+	player.upgrades_owned = {}
+	var saved_up: Dictionary = pl.get("upgrades_owned", {})
+	for uid: String in saved_up:
+		if Registry.upgrades.has(uid):
+			player.upgrades_owned[uid] = int(saved_up[uid])
 	# 法宝：stats 已随存档恢复（叠层加成已含在其中），这里只恢复持有表与层数记录。
 	# 刻意不调 _set_artifact_stacks / apply_artifact：前者会把已入账的属性再加一遍，
 	# 后者会重复发 artifact_acquired 与图鉴解锁
@@ -300,6 +331,12 @@ func _read_path(path: String) -> Dictionary:
 		"on_hit_burn": Vector2(0.0, 1.0), "on_hit_poison": Vector2(0.0, 1.0),
 		"on_hit_freeze": Vector2(0.0, 1.0), "on_hit_slow": Vector2(0.0, 1.0),
 		"on_hit_stun": Vector2(0.0, 1.0), "on_hit_bleed": Vector2(0.0, 1.0),
+		# 元素同化度（五行体系 §7）：缺失按默认值恢复（旧档没有这 5 键），
+		# 出现时严格校验 —— 上限与 Registry.STAT_LIMITS 对齐到 2.0，
+		# 这里不外扩：存档恢复走的是「玩家实际值」而非 mod 余量。
+		"assim_metal": Vector2(0.0, 2.0), "assim_wood": Vector2(0.0, 2.0),
+		"assim_water": Vector2(0.0, 2.0), "assim_fire": Vector2(0.0, 2.0),
+		"assim_earth": Vector2(0.0, 2.0),
 	}
 	for key in stat_limits:
 		# 旧版本存档没有状态字段：缺失按默认值恢复，出现时仍严格校验
@@ -320,6 +357,10 @@ func _read_path(path: String) -> Dictionary:
 	for id in pl.items_owned:
 		if typeof(id) != TYPE_STRING or String(id).is_empty() or String(id).length() > 128 \
 				or not _integer_in_range(pl.items_owned[id], 1, 1_000_000):
+			return {}
+	for uid in pl.get("upgrades_owned", {}):
+		if typeof(uid) != TYPE_STRING or String(uid).is_empty() or String(uid).length() > 128 \
+				or not _integer_in_range(pl.upgrades_owned[uid], 1, 1_000_000):
 			return {}
 	for aid in pl.get("artifacts_owned", {}):
 		if typeof(aid) != TYPE_STRING or String(aid).is_empty() \
@@ -350,6 +391,15 @@ func _sanitize_stats(stats: Dictionary) -> void:
 	stats.status_dmg_mult = maxf(0.0, float(stats.status_dmg_mult))
 	stats.status_dur_mult = maxf(0.0, float(stats.status_dur_mult))
 	stats.status_spread = clampf(float(stats.status_spread), 0.0, 1.0)
+	# 投掷类加成（第 8 轮）：与 player._sanitize_stats 保持一致。
+	# ⚠️ 不加这行也不会报错（这两键不在上面的 stat_limits 校验表里），
+	#    但读档后会把负数原样恢复 —— 那等于「穿甲正数变负数」的同类静默坑。
+	stats.throw_speed_bonus = maxf(0.0, float(stats.throw_speed_bonus))
+	stats.throw_range_bonus = maxf(0.0, float(stats.throw_range_bonus))
+	# 元素同化度（五行体系 §7）：与 player._sanitize_stats 的副本保持一致
+	for eid in Config.ELEMENTS:
+		var assim_key := "assim_" + String(eid)
+		stats[assim_key] = clampf(float(stats.get(assim_key, 0.0)), 0.0, 2.0)
 	for sid in Config.STATUS:
 		var status_key := "on_hit_" + String(sid)
 		stats[status_key] = clampf(float(stats.get(status_key, 0.0)), 0.0, 1.0)
@@ -438,15 +488,45 @@ func _integer_in_range(value: Variant, minimum: int, maximum: int) -> bool:
 func _number_in_range(value: Variant, minimum: float, maximum: float) -> bool:
 	return _is_finite_number(value) and float(value) >= minimum and float(value) <= maximum
 
-func _migrate_legacy() -> void:
-	if not FileAccess.file_exists(_legacy_path) or exists(1):
+## 旧布局 → 唯一档合并（§10.1）。幂等；**没有旧三槽文件时一个字节都不动**。
+##
+## 步骤：
+##   1. 收集候选 = 三个旧槽文件（唯一档自身**不需要**参与合并：它就在目标路径上，
+##      本来就是「已经到位」的那一份，见下面第 3 步的比较）；
+##   2. 只有能通过 `_read_path` 校验的才算候选 —— **坏档不参与竞争，也不删**，
+##      否则一个损坏的 `save_slot_3.json` 就能把有效的好档顶掉；
+##   3. 取 `saved_at` 最新的一份写进唯一档；唯一档若已不比它旧，则只清理旧文件、不覆盖。
+##
+## ⚠️ `saved_at` 用字符串比较即可：`Time.get_datetime_string_from_system(false, true)`
+##    输出 ISO 风格 "2026-09-16T19:01:17"，字典序 == 时间序。
+## ⚠️ 不要写成「先 legacy 再三槽」的两段式定序 —— v1 单槽档与三槽档**可能同时残留**
+##    （v1→三槽的那次迁移中断过），按文件名/先后顺序选会静默选错版本。
+##    取最新 `saved_at` 与顺序无关，两种布局合流也安全。
+func _migrate_old_layout() -> void:
+	var target := slot_path(1)
+	var valid: Array = []
+	for name in LEGACY_SLOT_FILES:
+		var p := _storage_root.path_join(String(name))
+		if not FileAccess.file_exists(p):
+			continue
+		var d := _read_path(p)
+		if d.is_empty():
+			push_warning("SaveRun: 旧槽档无效，已保留原文件 " + p)
+			continue
+		valid.append({ "path": p, "at": String(d.get("saved_at", "")), "data": d })
+	if valid.is_empty():
 		return
-	var data := _read_path(_legacy_path)
-	if data.is_empty():
-		push_warning("SaveRun: 旧单槽存档无效，已保留原文件")
-		return
-	data["version"] = VERSION
-	data["checkpoint"] = String(data.get("checkpoint", CHECKPOINT_SHOP))
-	data["saved_at"] = String(data.get("saved_at", "（迁移档）"))
-	if _write_json_atomic(slot_path(1), data):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(_legacy_path))
+	var best: Dictionary = valid[0]
+	for e in valid:
+		if String(e.at) > String(best.at):
+			best = e
+	var cur := _read_path(target)
+	var cur_at := String(cur.get("saved_at", "")) if not cur.is_empty() else ""
+	var merged := false
+	if cur_at < String(best.at):
+		merged = _write_json_atomic(target, best.data)
+		if not merged:
+			return          # 写失败：旧档一个都别删，下次启动再试
+	if merged or cur_at >= String(best.at):
+		for e2 in valid:
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(String(e2.path)))

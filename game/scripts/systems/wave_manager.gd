@@ -3,7 +3,7 @@ extends Node
 ## 普通波：intro 横幅 → 按 interval 刷怪（受 cap 限制；高难度按 elite_chance 混入精英）
 ##   → waveTimer 到 → 敌人 flee 消散 + 清空敌方子弹 → 清场后进入商店
 ##   （场上掉落由 main 在波末自动回收结算，不再跨波滞留）
-## BOSS 波：标准=第 10 波；无尽炼狱=每 10 波。开场即刷 BOSS（不死不休），
+## BOSS 波：标准=第 20 波（`Config.BOSS_WAVE`）；无尽炼狱=每 10 波。开场即刷 BOSS（不死不休），
 ##   持续刷混合干扰怪；无尽下 BOSS 击破 → 退场进商店 → 继续下一波
 
 const EnemyScene := preload("res://scenes/enemies/enemy.tscn")
@@ -25,13 +25,33 @@ var _hunt_elites_total := 0   # 精英狩猎：本场精英总数（奖励基数
 func _ready() -> void:
 	EventBus.boss_killed.connect(_on_boss_killed)
 
+## BOSS 击破后的**波次收尾**。
+## ⚠️ 分叉口（第 9 轮 · 需求 4）：**只有最终 BOSS 不做收尾** ——
+##    它由 `main._on_boss_killed` 走通关结算（VICTORY）。这里若也发 wave_ended，
+##    就会在通关面板底下再开一次商店（读档会落到"第 21 波商店"，极难查）。
+##    中间 BOSS（W4/8/12/16）与无尽 BOSS 一律走收尾 → 商店 → 下一波。
+## ⚠️ `ending_started` 必须一起置位：中间 BOSS 的限时倒计时也在 `_physics_process` 里，
+##    它以 `ending_started` 作为"只收尾一次"的闸门；不置位的话 BOSS 死了倒计时还在跑，
+##    时限一到会**再发一次 wave_ended**（商店被反复 open，界面一直闪）。
 func _on_boss_killed() -> void:
 	boss = null
-	if not GameState.endless:
+	if Config.is_final_boss_wave(wave):
 		return
-	# 无尽：BOSS 击破 → 积分入账 → 干扰怪退场 → 进商店 → 挑战更深的波次
 	boss_dead = true
-	GameState.add_score(Config.boss_kill_score(wave))
+	ending_started = true
+	if GameState.endless:
+		GameState.add_score(Config.boss_kill_score(wave))
+	else:
+		# 中间 BOSS：法宝盒子 +1（波末开盒三选一，见 main._open_boss_box）。
+		#
+		# ⚠️ **必须在这里发，不能在 main._on_boss_killed 里发** ——
+		#    `boss_killed` 的监听顺序里 wave_manager 先于 main（子节点 _ready 早于父节点），
+		#    而本函数紧接着就要 emit wave_ended（→ 商店 → 存档 → 进化流程）。
+		#    放在 main 那侧等于"波末流程全跑完之后才拿到盒子"：本波末不会开盒，
+		#    要等到下一波末才弹，而且横幅会盖在商店上。
+		GameState.boss_boxes += 1
+		EventBus.banner_requested.emit("BOSS 击破！",
+			"获得法宝盒子 ×1 · 波末开箱三选一", 2.6)
 	for e in get_tree().get_nodes_in_group("enemies"):
 		if e.flee <= 0.0:
 			e.start_flee()
@@ -50,20 +70,34 @@ func start_wave(n: int) -> void:
 	spawn_t = 0.6
 	wave_timer = Config.wave_duration(wave) * RunRules.wave_duration_mult()
 	_clear_projectiles()
-	# 地图主题（Phase 5）：由波次推导，波 1-3 竹林 / 4-6 古庙 / 7-10 幽冥，
-	# 无尽按主题表循环。障碍物与氛围粒子由 main 在 wave_started 里按此重建
+	# 地图主题（Phase 5 / S3.5）：由**区块**推导（Config.map_theme_for_wave），
+	# 5 区块 = 幽篁竹林 / 荒古废庙 / 幽冥鬼域 / 万剑归墟 / 归元道场，
+	# 无尽按区块号自然循环。氛围粒子由 main 在 wave_started 里按此切换
 	var prev_theme := GameState.map_theme
 	GameState.map_theme = Config.map_theme_for_wave(wave)
+	# 区域元素（§5.5.3 · S3.5）：玩家相关，随区块轮转。写进 GameState 供
+	# 横幅 / 区块偏置 / BOSS 元素 / 出怪加权共用一处真值
+	GameState.area_element = _area_element()
 	# 玩家回到世界中心（原型 startWave 同款）
 	player.global_position = Vector2(Config.WORLD.w, Config.WORLD.h) / 2.0
 	player.velocity = Vector2.ZERO
 	var is_boss_wave := Config.is_boss_wave(wave)
 	intro_t = 2.6 if is_boss_wave else 2.2
+	# 中间 BOSS 限时（第 9 轮 · 需求 4）：「时间结束没有击杀则不掉落」的前提是有倒计时。
+	# ⚠️ 只有**中间** BOSS 覆盖 wave_timer。最终 BOSS 不限时（打不过就一直打，它是通关条件）；
+	#    无尽 BOSS 同样不限时（既有口径：不死不休、击杀即进下一波）。
+	if Config.is_mid_boss_wave(wave):
+		wave_timer = Config.midboss_duration(wave) * RunRules.wave_duration_mult()
 	GameState.set_phase(GameState.Phase.INTRO)
-	# 换景提示：只在主题真的变了的那一波播报，避免每波刷屏
+	# 换景提示：只在区块真的变了的那一波播报，避免每波刷屏。
+	# ⚠️ 「本区元素」每波都拼进 note，但 note 本身只在换区时非空 ——
+	#    否则玩家进了新区却只看到「第 5 波」，不知道这一区是什么属性。
 	var theme_note := ""
 	if GameState.map_theme != prev_theme:
 		theme_note = " · " + Config.map_theme_name(GameState.map_theme)
+		if GameState.area_element != "":
+			theme_note += " · %s境" % String(Config.ELEMENT_NAME.get(
+				GameState.area_element, GameState.area_element))
 	if is_boss_wave:
 		var bid := _pick_boss_id()
 		spawn(bid)
@@ -109,6 +143,7 @@ func _roll_event_wave() -> void:
 	event_kind = String(GameRng.weighted_pick([
 		{ "item": "treasure", "w": 0.34 }, { "item": "hunt", "w": 0.33 },
 		{ "item": "meteor", "w": 0.33 }]))
+	BalanceLog.note_event(event_kind)   # 逐波平衡日志：本波是哪种事件波
 	match event_kind:
 		"treasure":
 			EventBus.banner_requested.emit("第 %d 波 · 🎁 宝箱守卫" % wave,
@@ -146,11 +181,16 @@ func _physics_process(delta: float) -> void:
 			_alive_t = 0.12
 			_alive_cache = _alive_count(false)
 		var alive := _alive_cache
-		# 同屏上限 = 波次曲线 × 难度倍率，且不超过性能护栏
-		var cap := mini(int(float(Config.wave_cap(wave)) * float(diff.spawn_mult)),
-			Config.ENEMY_HARD_CAP)
+		# 同屏上限 = 波次曲线 × 难度倍率 × 出怪总量倍率，且不超过性能护栏
+		# ⚠️ 顺序要紧：`ENEMY_HARD_CAP` 必须夹在**最后**（它是护栏，不是缩放项），
+		#    否则难度倍率会把护栏顶穿。
+		var cap := mini(int(float(Config.wave_cap(wave)) * float(diff.spawn_mult)
+			* Config.SPAWN_CAP_MULT), Config.ENEMY_HARD_CAP)
 		if wave_timer > 0.0 and spawn_t <= 0.0 and alive < cap:
-			spawn_t = Config.wave_interval(wave) / float(diff.spawn_mult)
+			# 出怪间隔 ÷(难度 × 出怪频率倍率)：2026-09-17 第 7 轮用户要求「出怪速度增加两倍」
+			# （中文口径 = 3 倍频率）。⚠️ 倍率乘在**分母**上 —— 乘到分子会让怪变慢。
+			spawn_t = Config.wave_interval(wave) \
+				/ (float(diff.spawn_mult) * Config.SPAWN_RATE_MULT)
 			var pick_id := _pick_spawn_id(diff)
 			# 必须紧跟 _pick_spawn_id 读取：_picked_elite 是单次调用的伴随标志位
 			spawn(pick_id, _picked_elite)
@@ -171,6 +211,34 @@ func _physics_process(delta: float) -> void:
 			EventBus.wave_ended.emit(wave)
 	else:
 		# BOSS 波：混合干扰怪持续刷新（BOSS 击破后停止），BOSS 不死不休
+		#
+		# ⚠️ 2026-09-17（第 7 轮）：这里的 2.4s / 上限 16 **刻意不吃**
+		#    `Config.SPAWN_RATE_MULT` / `SPAWN_CAP_MULT`。原因：
+		#      · 本条路的产出物是「BOSS 之外的干扰怪」，它的密度本来就是给
+		#        「一边躲 BOSS 弹幕一边清小怪」配的节奏，翻 3 倍会让 BOSS 战从
+		#        「看弹幕」变成「被小怪推平」，且 16 这个数还是 `_alive_count(true)`
+		#        **全量遍历**换来的，抬到 48 会明显加重 BOSS 战的每帧开销。
+		#      · 用户要求的是**常规出怪**的密度，不是 BOSS 战。
+		#    → 若实机觉得 BOSS 波偏轻，先单独调这个 2.4 / 16，别去动全局倍率。
+		# 中间 BOSS 限时（第 9 轮 · 需求 4）：时间到未击杀 → BOSS 与干扰怪一起退场、
+		# **不掉落**（用户明确要求），本波照常收尾进商店。
+		# ⚠️ `ending_started` 是"只收尾一次"的唯一闸门：BOSS 被击杀时 `_on_boss_killed`
+		#    已把它置位，所以击杀后这里的倒计时不会再补发一次 wave_ended。
+		# ⚠️ `boss_dead = true` 不是装饰：它同时负责"停止补刷干扰怪"——
+		#    少了它，时限到之后干扰怪会继续刷进商店界面。
+		if Config.is_mid_boss_wave(wave) and not ending_started:
+			wave_timer -= delta
+			if wave_timer <= 0.0:
+				ending_started = true
+				boss_dead = true
+				for e in get_tree().get_nodes_in_group("enemies"):
+					if e.flee <= 0.0:
+						e.start_flee()
+				_clear_projectiles()
+				_alive_cache = 0
+				EventBus.banner_requested.emit("时间到",
+					"BOSS 未在时限内被击破 · 本次没有法宝盒子", 2.6)
+				EventBus.wave_ended.emit(wave)
 		spawn_t -= delta
 		if not boss_dead and spawn_t <= 0.0 and _alive_count(true) < 16:
 			spawn_t = 2.4
@@ -200,13 +268,31 @@ func _pick_spawn_id(diff: Dictionary) -> String:
 				_hunt_elites_total += 1
 				_picked_elite = true
 				return elite
-			return String(GameRng.weighted_pick(Registry.wave_composition(wave)))
-	var pick_id := String(GameRng.weighted_pick(Registry.wave_composition(wave)))
+			return String(GameRng.weighted_pick(_spawn_pool()))
+	var pick_id := String(GameRng.weighted_pick(_spawn_pool()))
 	var elite_ch := float(diff.get("elite_chance", 0.0))
 	if elite_ch > 0.0 and wave >= 4 and GameRng.chance(elite_ch):
 		pick_id = String(GameRng.weighted_pick(Config.ELITE_POOL))
 		_picked_elite = true
 	return pick_id
+
+## 出怪池（§8.4 第三层 + §9.2 元素闸门）：在波次基础池上叠加**区块加权** ——
+## 本区区域元素的那只元素怪权重翻倍，「这块地出这种怪」的体感来源。
+## player 为空（冒烟/无玩家场景）时回落到基础池，自然降级。
+##
+## ⚠️ 必须带上 `GameState.difficulty_id`：S4 的元素闸门就在这条路上生效。
+##    漏传 = 三档难度的「元素出场节奏」**静默失效**（血量/伤害倍率照旧生效，
+##    所以玩起来只是"难度好像没差别"，不会报任何错）。
+func _spawn_pool() -> Array:
+	if player == null or not is_instance_valid(player):
+		return Registry.wave_composition(wave, GameState.difficulty_id, "")
+	return Config.compose_pool(wave, String(player.element), GameState.difficulty_id)
+
+## 本波的区域元素（玩家相关，§5.5.3）。player 为空时返回 ""。
+func _area_element() -> String:
+	if player == null or not is_instance_valid(player):
+		return ""
+	return Config.wave_area_element(String(player.element), wave)
 
 ## 流星砸落点：70% 砸玩家附近（半径 120-320 随机），30% 全场随机
 func _spawn_meteor() -> void:
@@ -231,7 +317,8 @@ func _settle_event_wave() -> void:
 			for it in Registry.item_list():
 				var r := String(it.get("rarity", "common"))
 				if r in ["epic", "mythic", "legendary"] \
-						and Config.entry_weapon_relevant(it, player.weapons):
+						and Config.entry_weapon_relevant(it, player.weapons) \
+						and Config.unique_pool_ok(it, player.items_owned):
 					pool.append({ "item": it, "w": Config.rarity_weight(r, wave) * 6.0 })
 			if not pool.is_empty():
 				var loot: Dictionary = GameRng.weighted_pick(pool)
@@ -266,8 +353,28 @@ func spawn(type: String, is_elite: bool = false) -> void:
 	if not Registry.enemies.has(type):
 		push_warning("WaveManager: 未知敌人 ID，跳过生成：" + type)
 		return
+	BalanceLog.note_spawn()   # 逐波平衡日志（第 8 轮）：本波出怪数
 	var e := EnemyScene.instantiate()
+	# ---- 区块偏置（§5.5.3）：本区主元素的怪 R +0.10 ----
+	# ⚠️ 必须在 `setup()` **之前**写：setup 里就会算一次 element_resist。
+	#    setup 之后当然也能走 `refresh_element_resist()`，但那是给「运行中改属性」的口，
+	#    出怪路径用前置写入更直接，也少一次重算。
+	var area := GameState.area_element
+	if area != "" and String(Registry.enemies[type].get("element", "")) == area:
+		e.block_bias = Config.RESIST_BLOCK_BIAS
 	e.setup(type, wave)
+	# ---- BOSS 元素 = 当前区块的区域元素（§5.5.4）----
+	# BOSS 属性不是「随机抽奖」，而是区块主题的一部分：玩家进这一区就知道
+	# BOSS 会是什么属性，能提前备战（「这一区是火域 → 火怪多 → 你拿到火同化度
+	# → 火属性 BOSS 也在这里」一条线贯穿）。
+	# ⚠️ 只能在 setup 之后改：setup 已用内容表元素做过快照，改完必须
+	#    `refresh_element_resist()` 重算 —— 同属性 BOSS 的 90% cap 由
+	#    `_resist_cap()` 决定，而它读的是 `_aura_self_active`（依赖玩家元素），
+	#    下一次 `_refresh_boss_aura` 扫描时自会提升，这里先按保守档。
+	if e.is_boss() and area != "":
+		e.element = area
+		e.block_bias = Config.RESIST_BLOCK_BIAS
+		e.refresh_element_resist()
 	e.elite = is_elite
 	var view := get_viewport().get_visible_rect().size
 	var base_r := maxf(view.x, view.y) * 0.62

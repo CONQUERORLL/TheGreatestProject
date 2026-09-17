@@ -52,11 +52,11 @@ const RULES := [
 	{ "key": "elite_chance", "name": "精英概率", "group": "难度", "min": 0.0, "max": 0.5,
 		"step": 0.05, "default": 0.0, "fmt": "pct" },
 	{ "key": "waves", "name": "波次总数", "group": "节奏", "min": 5, "max": 30,
-		"step": 1, "default": 10, "fmt": "int" },
+		"step": 1, "default": 20, "fmt": "int" },
 	{ "key": "wave_time", "name": "波次时长", "group": "节奏", "min": 0.5, "max": 2.0,
 		"step": 0.1, "default": 1.0, "fmt": "mul" },
 	{ "key": "weapon_slots", "name": "武器槽位", "group": "经济", "min": 4, "max": 8,
-		"step": 1, "default": 6, "fmt": "int" },
+		"step": 1, "default": 5, "fmt": "int" },   # ⚠️ 必须与 Config.WEAPON_SLOTS 一致（否则开规则局白得 1 槽）
 	{ "key": "materials", "name": "材料掉落", "group": "经济", "min": 0.5, "max": 3.0,
 		"step": 0.1, "default": 1.0, "fmt": "mul" },
 	{ "key": "shop_price", "name": "商店价格", "group": "经济", "min": 0.5, "max": 2.0,
@@ -157,9 +157,13 @@ func difficulty_rating() -> float:
 	score += (get_value("enemy_dmg") - 1.0) * 1.0
 	score += (get_value("spawn_density") - 1.0) * 0.7
 	score += (get_value("elite_chance") - 0.0) * 3.0
-	score += (get_value("waves") - 10.0) * 0.06
+	# ⚠️ 基准 20 不是 10：标准局已改为 20 波（§8），评分必须以**新基准**为零点，
+	#    否则「没改任何规则」也会白背 +0.60 分，rating_stars 直接虚高一颗星。
+	score += (get_value("waves") - 20.0) * 0.06
 	score += (get_value("wave_time") - 1.0) * 0.4
-	score += (get_value("weapon_slots") - 6.0) * -0.18
+	# ⚠️ 基准 5 不是 6：内置槽位已从 6 改为 5（S8），评分零点必须跟着走，
+	#    否则「没改任何规则」也会白背 +0.18 分（与上面 waves 基准 20 是同一个坑）。
+	score += (get_value("weapon_slots") - 5.0) * -0.18
 	score += (get_value("materials") - 1.0) * -0.35
 	score += (get_value("shop_price") - 1.0) * -0.5
 	if get_bool("no_reroll"):
@@ -197,9 +201,17 @@ func base_difficulty() -> Dictionary:
 	var id := base_difficulty_id if base_difficulty_id in BUILTIN_DIFF_IDS else "normal"
 	return Registry.get_difficulty(id)
 
+## 难度档位序号：简单 = 1 / 困难 = 2 / 噩梦 = 3。非内置（含自定义 "custom"）返回 **0**。
+## 唯一真值就是 `BUILTIN_DIFF_IDS` 的顺序 —— 不另写一份 `{id: 序号}` 表，
+## 否则改一次顺序就要同步两处（铁律 1）。
+## 用途：通关时写 `CodexData.set_stat_max("clear_" + 角色id, 本值)`（§9.4）。
+## 自定义局返回 0 且 `set_stat_max` 只增不减 → 天然不推进解锁（§14-Q4 的「不计」口径）。
+func difficulty_index(id: String) -> int:
+	return BUILTIN_DIFF_IDS.find(id) + 1
+
 ## 基准难度的显示名（UI 用）
 func base_difficulty_name() -> String:
-	return String(base_difficulty().get("name", "普通"))
+	return String(base_difficulty().get("name", "简单"))
 
 ## 把当前规则写成 Registry 里的一个"custom"难度条目。
 ## **方案 A**：难度组三项以基准难度为底做叠乘（基准 × 规则倍率）；
@@ -210,8 +222,8 @@ func inject_difficulty() -> Dictionary:
 	var base := base_difficulty()
 	var d := {
 		"id": CUSTOM_DIFF_ID,
-		"name": "自定义 · %s" % String(base.get("name", "普通")),
-		"desc": "以「%s」为基准，叠加自定义规则" % String(base.get("name", "普通")),
+		"name": "自定义 · %s" % String(base.get("name", "简单")),
+		"desc": "以「%s」为基准，叠加自定义规则" % String(base.get("name", "简单")),
 		# 倍率叠乘：规则值 1.0 = 完全沿用基准难度。精英概率是百分比，用加法
 		"hp_mult": float(base.get("hp_mult", 1.0)) * get_value("enemy_hp"),
 		"dmg_mult": float(base.get("dmg_mult", 1.0)) * get_value("enemy_dmg"),

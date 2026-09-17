@@ -88,41 +88,24 @@ static func enemies_near(center: Vector2, radius: float) -> Array:
 					result.append(enemy)
 	return result
 
+## 最近的、可攻击的敌人（跳过正在退场 flee 的）。
+##
+## ⚠ 这里刻意保留 flee 过滤：合并前存在两个「找最近敌人」的实现 ——
+##   nearest_enemy 不过滤 flee、nearest_enemy_visible 过滤 flee，而玩家索敌用的是后者。
+##   合并成一个函数时若丢掉 flee 条件，武器会去锁定正在逃跑的敌人（永远打不到的靶子）。
+## 障碍物与「视线遮挡优先」分支已随地形系统一并移除（2026-09-14），本函数回到纯距离择优。
 static func nearest_enemy(from: Vector2) -> Node2D:
 	_ensure_index()
 	var best: Node2D = null
 	var best_d_sq := INF
 	for enemy in _enemies:
-		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion():
+		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion() or enemy.flee > 0.0:
 			continue
 		var d_sq := from.distance_squared_to(enemy.global_position)
 		if d_sq < best_d_sq:
 			best_d_sq = d_sq
 			best = enemy
 	return best
-
-## 最近的、且视线未被地图障碍物挡住的敌人（Phase 5）。
-## 全部被挡住时退回最近的敌人，保证任何情况下都不会「有敌人在场却不开火」。
-## 障碍物为空时 Obstacles.has_los 立即返回 true，等于退化成 nearest_enemy，零额外开销。
-static func nearest_enemy_visible(from: Vector2, projectile_radius: float = 4.0) -> Node2D:
-	_ensure_index()
-	var best_vis: Node2D = null
-	var best_vis_d := INF
-	var best_any: Node2D = null
-	var best_any_d := INF
-	for enemy in _enemies:
-		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion() or enemy.flee > 0.0:
-			continue
-		var d_sq := from.distance_squared_to(enemy.global_position)
-		if d_sq < best_any_d:
-			best_any_d = d_sq
-			best_any = enemy
-		# 只有比当前最优可视目标更近时才做遮挡查询，正常情况每帧只查少数几次
-		if d_sq < best_vis_d \
-				and Obstacles.has_los(from, enemy.global_position, projectile_radius):
-			best_vis_d = d_sq
-			best_vis = enemy
-	return best_vis if best_vis != null else best_any
 
 static func first_enemy_hit_on_segment(from: Vector2, to: Vector2, projectile_radius: float) -> Dictionary:
 	var midpoint := (from + to) * 0.5
@@ -146,11 +129,11 @@ static func first_enemy_on_segment(from: Vector2, to: Vector2, projectile_radius
 	return hit.get("enemy") as Node2D
 
 ## 返回线段首次进入圆的参数 t（0..1）；不相交返回 INF。
+## 用途：弹丸扫掠命中敌人（first_enemy_hit_on_segment）。
 ##
-## ⚠ 等价性契约：Obstacles._segment_circle_entry_t 是本函数的刻意副本
-##   （Obstacles.has_los ← 本文件的 nearest_enemy_visible，反向调用会形成
-##   class_name 循环依赖，故只能各留一份）。两者必须永远返回相同结果。
-##   改这里就改那边；smoke_test 的「线段求交等价性」断言会守住这条约束。
+## 历史上这里挂着一份「等价性契约」：Obstacles 曾持有本函数的刻意副本以规避
+## class_name 循环依赖，靠 smoke_test 的随机用例钉住两边一致。地形系统移除后
+## 副本已删，本函数重新成为唯一实现，那份约束也随之作废。
 static func segment_circle_entry_t(from: Vector2, to: Vector2, center: Vector2, radius: float) -> float:
 	var delta := to - from
 	var rel := from - center

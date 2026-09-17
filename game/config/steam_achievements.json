@@ -47,11 +47,21 @@
       "id": "clear_10",
       "api_name": "ACH_CLEAR_10",
       "name": "通关达人",
-      "description": "推进到第 10 波（标准通关线）",
+      "description": "推进到第 10 波（第 3 区块）",
       "stat": "best_wave",
       "target": 10,
       "hidden": false,
       "icon": "achievement_clear_10"
+    },
+    {
+      "id": "clear_20",
+      "api_name": "ACH_CLEAR_20",
+      "name": "通关大师",
+      "description": "通关标准模式（20 波）",
+      "stat": "victories",
+      "target": 1,
+      "hidden": false,
+      "icon": "achievement_clear_20"
     },
     {
       "id": "boss_hunter",

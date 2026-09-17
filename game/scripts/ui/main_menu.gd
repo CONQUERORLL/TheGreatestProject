@@ -1,20 +1,22 @@
 extends Control
-## 主菜单 + 开局向导（分步）：开始游戏 → ① 角色 → ② 初始武器 → ③ 初始道具 → ④ 难度 → ⑤ 模式 → 进入游戏
+## 主菜单 + 开局向导（3 步，S4.5 §10.2）：开始游戏 → ① 角色 → ② 初始武器 → ③ 难度 → 进入游戏
+## （已删：初始道具步、模式步；无尽炼狱改由首页独立入口进，见 `_home_specs`）
+## 存档为**唯一档**：首页「继续游戏」直读，不再有选槽弹窗（§10.1）
 ## 选项全部来自 Registry 注册表（创意工坊内容自动出现）；鼠标 + 手柄均可操作
-## Esc / 手柄 B：向导内返回上一步，首页退出；首页含无尽炼积分排行榜入口
+## Esc / 手柄 B：向导内返回上一步，首页退出；首页含无尽炼狱积分排行榜入口
 
 var _g_diff := ButtonGroup.new()
 var _g_char := ButtonGroup.new()
 var _g_weapon := ButtonGroup.new()
-var _g_item := ButtonGroup.new()
-var _g_mode := ButtonGroup.new()
 
 # 缓存向导每步选中 id（ButtonGroup 按钮跨步骤被释放后 get_pressed_button 返回 null）
 var _sel_char := "potato"
-var _sel_weapon := "pistol"
-var _sel_item := ""
+# 初始武器缺省 = 开局池第一把。刻意不写死 "pistol"：它已在 S2 迁入工坊包，
+# 停用那个包后会让向导第 2 步的首选项指向不存在的武器（已注册表里没有 → 选中态丢失）。
+var _sel_weapon := Config.FALLBACK_WEAPON
+var _sel_item := ""   # S4.5：向导已无道具步 → 恒为空串（字段保留，存档字段语义不变）
 var _sel_diff := "normal"
-var _sel_endless := false   # 第 5 步：标准模式 / 无尽炼狱
+var _sel_endless := false   # 首页两个入口分别置位：开始游戏 = 标准 / 无尽炼狱 = 无尽
 
 # 紧凑排布开关：跑在「铺满屏幕 + 内部滚动」的页面上（手机 / 小屏窗口）。
 # 判定从「是不是移动平台」改成「实际可用空间够不够」—— 由 UiMetrics 按屏幕物理尺寸算，
@@ -30,12 +32,11 @@ var _next_btn: Button
 var _step := 0
 var _back_press_ms := 0   # 首页返回键上次按下时刻（双击回桌面防误触）
 var _back_hint: PanelContainer
-var _slots_panel: Control     # 选槽弹窗（开始新局 / 继续共用）
-var _slots_title: Label
-var _slots_tip: Label
-var _slot_btns: Array = []    # 3 个槽位 Button（下标 0~2 = 槽 1~3）
-var _slots_mode := "new"      # "new" = 开始新局（有档需覆盖确认）| "continue" = 读取
-var _confirm_slot := 0        # 覆盖确认态的槽号（0 = 无）
+# S4.5 §10.1：**选槽弹窗整体删除** —— 存档降为唯一档 `user://save_run.json`，
+# 「继续游戏」直读、「开始游戏」直进向导，不再有「第几槽 / 覆盖确认」这一层交互。
+# 删掉的是 `_slots_panel` / `_slots_title` / `_slots_tip` / `_slot_btns` / `_slots_mode` / `_confirm_slot`
+# 六个字段与对应的 5 个函数（原 `_build_slots_panel` / `_open_slots` / `_close_slots` /
+# `_refresh_slots` / `_slot_label` / `_on_slot_pressed`）。
 var _lb_panel: Control        # 无尽炼狱排行榜弹窗
 var _lb_rows: VBoxContainer
 var _lb_mode := "endless"     # 排行榜标签：endless 无尽总榜 / daily 今日榜
@@ -45,7 +46,8 @@ var _lb_btn_daily: Button
 var _talent_panel: Control    # 天赋树弹窗
 var _talent_essence: Label    # 精华余额
 var _talent_rows: VBoxContainer
-var _daily_panel: Control     # 每日挑战详情弹窗
+var _daily_panel: Control     # 每日挑战详情弹窗（❄ 已冻结：入口摘除，面板保留备解冻）
+var _daily_info: Label        # 今日阵容文案（**打开面板时才填**，见 _daily_text）
 var _codex                   # 图鉴（scripts/ui/codex.gd，动态引用避免跨脚本静态类型）
 
 # ---- 自定义开局规则面板 ----
@@ -61,8 +63,19 @@ var _rules_base_group := ButtonGroup.new()
 var _rules_base_btns: Array = []
 var _rules_preview: Label
 
-const TOTAL_STEPS := 5
-const STEP_TITLES := ["选择角色", "选择初始武器", "选择初始道具", "选择难度", "选择模式"]
+## ---- 首页按钮区排版（第 9 轮）----
+## 这三个常量是「首页能不能一列装下」与「按钮实际排布」的**同一份真值** ——
+## 第 9 轮之前，判据与布局各写一套（都硬编 46/10），任何一处改了都会让分列判断静默失真。
+const HOME_BTN_H := 46.0        # 桌面按钮高（10 个 × 46 + 9 × 10 = 550，720 画布刚好装下）
+const HOME_BTN_GAP := 10.0      # 桌面按钮间距
+const HOME_RESERVE_H := 140.0   # 标题 + 副标题 + 间隔 + 上下边距 + 底部保险
+
+## 开局向导步数（S4.5 §10.2）：**3 步**，与沧溟的流程一致 —— 角色 → 初始武器 → 难度。
+## 被删掉的两步：**初始道具**（流程里没有这一步 → 开局默认不带道具）与
+## **模式（标准/无尽）**（移到首页独立入口，见 `_home_specs`）。
+## ⚠️ 守门断言 §13-31：`TOTAL_STEPS == 3` 且第 3 步标题为「选择难度」（防道具步/模式步回潮）。
+const TOTAL_STEPS := 3
+const STEP_TITLES := ["选择角色", "选择初始武器", "选择难度"]
 
 ## 向导面板尺寸（与 _build_wizard 里的 PanelContainer 一致）
 const WIZARD_W := 1000.0
@@ -95,10 +108,24 @@ func _ready() -> void:
 	bg.color = Color("101218")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
+	# §15 菜单五行生克循环动画（背景层）已于 2026-09-17 从首页**移除**（用户反馈：
+	# 「先去初始动画背景，因为会影响菜单的其他页面显示」）。
+	# ⚠️ 根因：MenuElementLoop 的 `_process` 只被 `home.visible` **定格**（不推进时间轴），
+	#    但 `queue_redraw()` + `_draw()` **从不停止** → 在所有非首页面板（向导 / 图鉴 /
+	#    排行榜 / 天赋 / 每日 / 规则）背后照样看得见那个五边形，压在这些页面的底图上。
+	#    「不挡输入」这条它做到了（Node2D + Label MOUSE_FILTER_IGNORE），但**看得见**这条没做到。
+	#
+	# ⚠️ `MenuElementLoop` 类本身**保留**：`game/tests/smoke_test.gd` 的 §S7 用例
+	#    （`MenuElementLoop.spawn` → 默认 paused / 生克链长 5 / 子 Label 不挡输入）
+	#    是直接实例化测它的，不依赖 main_menu。要恢复首页动画，把下面这段放回
+	#    `_build_home()` **之前**即可（必须早于 _home，否则会盖住首页按钮）：
+	#      var vp := get_viewport().get_visible_rect().size
+	#      var loop := MenuElementLoop.spawn(self, vp, null)
+	#      loop.paused = false
+	#      loop.set_radius(minf(vp.x, vp.y) * 0.30)
 	_build_home()
 	_build_wizard()
 	_build_back_hint()
-	_build_slots_panel()
 	_build_leaderboard_panel()
 	_build_talent_panel()
 	_build_daily_panel()
@@ -111,6 +138,10 @@ func _ready() -> void:
 ## 返回键大提示卡（首页双击回桌面用）：醒目大字号，手机小屏也清晰可见
 func _build_back_hint() -> void:
 	_back_hint = PanelContainer.new()
+	# 纯提示，不该吃掉底下按钮的点击：它出现的 2 秒里正好压在首页中下部按钮上
+	# （桌面收紧后按钮区约 y 29~691，提示卡覆盖 570~646）。PanelContainer 默认 STOP，
+	# 会把这一段按钮变成「看得见点不着」—— 双保险，显式忽略鼠标。
+	_back_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.07, 0.08, 0.11, 0.94)
 	sb.border_color = Color("e8b84b")
@@ -140,130 +171,14 @@ func _build_back_hint() -> void:
 	_back_hint.visible = false
 	add_child(_back_hint)
 
-# ---------------- 存档槽选择弹窗 ----------------
+# ---------------- 继续游戏（单档直读，S4.5 §10.1） ----------------
 
-func _build_slots_panel() -> void:
-	var overlay := Control.new()
-	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	overlay.visible = false
-	add_child(overlay)
-	_slots_panel = overlay
-	var dim := ColorRect.new()
-	dim.color = Color(0.0, 0.0, 0.0, 0.65)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(dim)
-	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(center)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 12)
-	center.add_child(box)
-	_slots_title = Label.new()
-	_slots_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_slots_title.add_theme_font_size_override("font_size", 24)
-	_slots_title.add_theme_color_override("font_color", Color("e8b84b"))
-	box.add_child(_slots_title)
-	_slots_tip = Label.new()
-	_slots_tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_slots_tip.add_theme_font_size_override("font_size", 13)
-	_slots_tip.add_theme_color_override("font_color", Color("9aa3b2"))
-	box.add_child(_slots_tip)
-	for i in range(1, SaveRun.SLOT_COUNT + 1):
-		var b := Button.new()
-		b.custom_minimum_size = Vector2(460, 76)
-		b.add_theme_font_size_override("font_size", 16)
-		b.pressed.connect(_on_slot_pressed.bind(i))
-		box.add_child(b)
-		_slot_btns.append(b)
-	var cancel := Button.new()
-	cancel.text = "取　消"
-	cancel.custom_minimum_size = Vector2(460, 46)
-	cancel.pressed.connect(_close_slots)
-	box.add_child(cancel)
-
-## 打开选槽：mode = "new"（开始新局，有档覆盖需确认）| "continue"（读取有档槽）
-func _open_slots(mode: String) -> void:
-	Haptics.rumble(0.2, 0.0, 0.08)
-	_slots_mode = mode
-	_confirm_slot = 0
-	_slots_panel.visible = true
-	_home.visible = false
-	if mode == "new":
-		_slots_title.text = "选 择 存 档 槽"
-		_slots_tip.text = "选空槽直接开始 · 点已有进度槽并再次点击确认覆盖"
-	else:
-		_slots_title.text = "继 续 游 戏"
-		_slots_tip.text = "选择要继续的存档槽（空槽不可用）"
-	_refresh_slots()
-	# 焦点给第一个可用槽
-	for b in _slot_btns:
-		if not b.disabled:
-			b.grab_focus()
-			break
-
-func _close_slots() -> void:
-	_slots_panel.visible = false
-	_home.visible = true
-	for c in _home.get_child(0).get_children():
-		if c is Button:
-			c.grab_focus()   # 焦点回首页第一个按钮
-			break
-
-func _refresh_slots() -> void:
-	for i in range(1, SaveRun.SLOT_COUNT + 1):
-		var b: Button = _slot_btns[i - 1]
-		var has := SaveRun.exists(i)
-		if _slots_mode == "continue":
-			b.disabled = not has
-			b.text = _slot_label(i) if has else "第 %d 槽 · 空（不可用）" % i
-			continue
-		b.disabled = false
-		if _confirm_slot == i:
-			b.text = "⚠ 覆盖第 %d 槽？再点一次确认" % i
-			b.add_theme_color_override("font_color", Color("e0644f"))
-		else:
-			var info := _slot_label(i)
-			b.text = info + "\n（开始新局将覆盖此进度）" if has else info
-			b.remove_theme_color_override("font_color")
-
-## 槽位显示文本：槽号 · 波次 · 角色名 · 保存时间（无尽档带 🔥 与积分）
-func _slot_label(i: int) -> String:
-	var s := SaveRun.summary(i)
-	if s.is_empty():
-		return "第 %d 槽 · 空" % i
-	var ch: Dictionary = Registry.get_character(String(s.get("character_id", "potato")))
-	if ch.is_empty():
-		ch = Registry.get_character("potato")
-	var when := String(s.get("saved_at", ""))
-	if when != "":
-		when = "\n" + when
-	if bool(s.get("endless", false)):
-		return "第 %d 槽 · 🔥 第 %d 波 %s · 积分 %d%s" % [i, int(s.get("wave", 1)),
-			String(ch.get("name", "")), int(s.get("score", 0)), when]
-	return "第 %d 槽 · 第 %d 波 %s%s" % [i, int(s.get("wave", 1)), String(ch.get("name", "")), when]
-
-func _on_slot_pressed(i: int) -> void:
-	if _slots_mode == "continue":
-		_do_continue(i)
-		return
-	# 开始新局：已有进度的槽需要一次覆盖确认（再点一次）
-	if SaveRun.exists(i) and _confirm_slot != i:
-		_confirm_slot = i
-		_refresh_slots()
-		return
-	_do_new(i)
-
-## 开新局先绑定槽位并进入向导；最终确认前不清旧档，允许安全取消
-func _do_new(slot: int) -> void:
-	GameState.slot_id = slot
-	GameState.continue_pending = false
-	SaveRun.current_run_owns_slot = false
-	_slots_panel.visible = false
-	_open_wizard()
-
-## 读取指定槽继续：置标志 → main._ready 消费并恢复
-func _do_continue(slot: int) -> void:
-	GameState.slot_id = slot
+## 「继续游戏」：**不再弹选槽弹窗**，直接把唯一档交给 main 恢复。
+## 置 `continue_pending` → main._ready 消费并 `SaveRun.restore()`；
+## 档无效时 main 自己回落成正常开局（不会卡住）。
+## 恢复后进哪儿由存档里的 `checkpoint` 决定：`shop` = 直接开商店（不重打该波）。
+func _continue_run() -> void:
+	GameState.slot_id = 1
 	GameState.continue_pending = true
 	SaveRun.current_run_owns_slot = false
 	Haptics.rumble(0.3, 0.0, 0.1)
@@ -272,35 +187,41 @@ func _do_continue(slot: int) -> void:
 # ---------------- 首页 ----------------
 
 func _build_home() -> void:
-	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(center)
-	_home = center
-	# 首页 = 大标题 + 副标题 + 最多 10 个按钮。桌面 720 单位高放得下；
-	# 手机横屏按物理尺寸推算只有约 400 单位（见 UiMetrics），10×52 必然溢出屏幕 ——
-	# 旧版只是把字号从 46 缩到更小、按钮 52 不变，仍会切掉底部按钮。
-	# 现在小屏改成「安全区内铺满 + 纵向滚动 + 按可用宽度自适应列数」。
+	# 首页 = 大标题 + 副标题 + 最多 10 个按钮（有唯一档时多一个「继续游戏」）。
+	#
+	# ⚠️ 2026-09-17（第 8 轮）用户反馈「菜单页全屏看不到退出」。实测（一次性探针）：
+	#    桌面 10 按钮时 VBox 内容高 **770** 单位（标题 66 + 副标题 16 + 10×52 + 12×14），
+	#    而 16:9 全屏（canvas_items + aspect=expand）画布高度恒为 **720** —— CenterContainer
+	#    居中后最后一个「退出」被切掉 25px，正好压在屏幕最下沿。比 16:9 **更高**的屏
+	#    （16:10 / 4:3）会把高度 expand 出去，反而装得下 —— 所以只有全屏 16:9 暴露此 bug。
+	#
+	# 两层修法：
+	#   ① 桌面收紧排版：间距 14→10、按钮高 52→46 → 总高 **662**（720 内余 46）
+	#   ② 桌面也套 ScrollContainer（原先只有小屏套）—— 装得下时视觉不变（居中），
+	#      装不下（未来加按钮 / 更扁的屏）时能滚到「退出」，不再出现「切一半且点不到」
+	# 小屏仍是「安全区内铺满 + 纵向滚动 + 按可用宽度自适应列数」（原逻辑不变）。
 	var full := UiMetrics.prefers_full_page()
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", int(UiMetrics.dp(5.0)) if full else 14)
-	if full:
-		var m := UiMetrics.margin()
-		var scroll := ScrollContainer.new()
-		scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
-		scroll.offset_left = m.x
-		scroll.offset_right = -m.x
-		scroll.offset_top = m.y
-		scroll.offset_bottom = -m.y
-		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED   # 只纵向滚动，杜绝横向溢出
-		add_child(scroll)
-		# 内容不满一屏时居中（消除底部留白），超出则正常滚动
-		var wrap := CenterContainer.new()
-		wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		scroll.add_child(wrap)
-		wrap.add_child(box)
-	else:
-		center.add_child(box)
+	box.add_theme_constant_override("separation", int(UiMetrics.dp(5.0)) if full else 10)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var m := UiMetrics.margin() if full else Vector2(10.0, 6.0)
+	scroll.offset_left = m.x
+	scroll.offset_right = -m.x
+	scroll.offset_top = m.y
+	scroll.offset_bottom = -m.y
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED   # 只纵向滚动，杜绝横向溢出
+	add_child(scroll)
+	# 内容不满一屏时居中（消除底部留白），超出则正常滚动
+	# ⚠️ `_home` 必须落在 **box 的父节点** 上：多处 `_home.get_child(0).get_children()`
+	#    靠这个关系找按钮（`_close_wizard` / `_close_daily` / `_close_talents` …），
+	#    若改成挂 scroll 会让它取到 wrap，按钮逐个拿不到焦点。
+	var wrap := CenterContainer.new()
+	wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.add_child(wrap)
+	wrap.add_child(box)
+	_home = wrap
 	var title := Label.new()
 	title.text = "🥔 土豆兄弟 LITE"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -315,8 +236,12 @@ func _build_home() -> void:
 	box.add_child(sub)
 	box.add_child(Control.new())   # 间隔
 	var specs := _home_specs()
-	# 按钮宿主：桌面单列 VBox（保持原样），小屏按可用宽度自适应多列网格 ——
-	# 单列在 925×400 的单位空间里会拉成又长又窄的一条，双列更接近手机原生观感
+	# 按钮宿主（第 9 轮重做）——三档，判据全部来自 HOME_* 常量，不再硬编码：
+	#   ① 桌面且一列装得下 → 单列 VBox（现状不变，垂直居中）
+	#   ② 桌面但一列装不下 → **平均分两列**（用户明确要求）
+	#      为什么不是「继续往下滚」：滚动条要玩家自己「意识到下面还有按钮」，
+	#      而这正是第 7 轮「全屏看不到退出」的成因；分列是把信息一次摆完。
+	#   ③ 小屏 → 按可用宽度自适应多列（原逻辑不变）
 	var host: Container = box
 	var btn_w := 220.0
 	if full:
@@ -331,6 +256,13 @@ func _build_home() -> void:
 		grid.add_theme_constant_override("v_separation", int(UiMetrics.dp(6.0)))
 		box.add_child(grid)
 		host = grid
+	elif not _home_one_column_fits(specs.size()):
+		var grid2 := GridContainer.new()
+		grid2.columns = 2   # 平均分两列：10 个按钮 → 5 + 5
+		grid2.add_theme_constant_override("h_separation", int(HOME_BTN_GAP))
+		grid2.add_theme_constant_override("v_separation", int(HOME_BTN_GAP))
+		box.add_child(grid2)
+		host = grid2
 	var start_btn: Button = null
 	for spec in specs:
 		var b := Button.new()
@@ -340,7 +272,10 @@ func _build_home() -> void:
 			b.add_theme_font_size_override("font_size", int(UiMetrics.dp(13.0)))
 			b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		else:
-			b.custom_minimum_size = Vector2(spec[1], 52.0)
+			# 高 52→46 / 间距 14→10：10 按钮总高 770 → 662，16:9 全屏的 720 单位画布
+			# 才装得下（详见 `_build_home` 抬头注释）。别再调回去。
+			# 第 9 轮：改读 HOME_BTN_H —— 与「一列装不下吗」的判据共用同一份真值
+			b.custom_minimum_size = Vector2(spec[1], HOME_BTN_H)
 			b.add_theme_font_size_override("font_size", 19)
 		b.pressed.connect(spec[2])
 		host.add_child(b)
@@ -348,14 +283,33 @@ func _build_home() -> void:
 			start_btn = b
 	start_btn.grab_focus()   # “开始游戏”默认焦点（手柄直达）
 
-## 首页按钮清单：任一槽有档时头部插入"继续游戏"（进选槽弹窗）
+## 首页按钮区「一列装得下吗」：判据与 HOME_BTN_H / HOME_BTN_GAP 同源。
+## ⚠️ 刻意保守：宁可早一点分成两列，也不要出现「最后一行被切一半还点不到」。
+func _home_one_column_fits(n: int) -> bool:
+	if n <= 0:
+		return true
+	var need := HOME_BTN_H * float(n) + HOME_BTN_GAP * float(maxf(0.0, float(n - 1)))
+	return need <= _home_avail_h()
+
+## 按钮区可用高度 = 可见视口高度 − HOME_RESERVE_H（标题/副标题/边距/底部保险）。
+## 用 `viewport_units()` 而不是 `available()`：后者已扣安全区，而首页的标题与边距
+## 是自己排的，再扣一次安全区会把可用高度算短、提前分列。
+func _home_avail_h() -> float:
+	return maxf(UiMetrics.viewport_units().y - HOME_RESERVE_H, 200.0)
+
+## 首页按钮清单（S4.5 §10.2）：
+##   · 有唯一档时头部插入「继续游戏」→ **直接进局**（不再弹选槽弹窗）
+##   · 「开始游戏」= 标准模式 · 「无尽炼狱」= 独立入口 —— 模式步已移出向导，
+##     但两者仍走同一套 3 步（角色 → 武器 → 难度），只有 `_sel_endless` 不同
+##   · 「每日挑战」**入口已摘除**（§3.2.5 整体冻结，守门断言 50b）——
+##     面板与 `_open_daily` 刻意保留，解冻时把这一行加回来即可
 func _home_specs() -> Array:
 	var specs: Array = []
 	if SaveRun.any_exists():
-		specs.append(["继 续 游 戏", 220.0, func() -> void: _open_slots("continue")])
-	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_slots("new")])
+		specs.append(["继 续 游 戏", 220.0, func() -> void: _continue_run()])
+	specs.append(["开 始 游 戏", 220.0, func() -> void: _open_wizard(false)])
+	specs.append(["无 尽 炼 狱", 220.0, func() -> void: _open_wizard(true)])
 	specs.append(["自 定 义 规 则", 220.0, func() -> void: _open_rules()])
-	specs.append(["每 日 挑 战", 220.0, func() -> void: _open_daily()])
 	specs.append(["排 行 榜", 220.0, func() -> void: _open_leaderboard()])
 	specs.append(["天 赋 树", 220.0, func() -> void: _open_talents()])
 	specs.append(["图　　鉴", 220.0, func() -> void: _open_codex()])
@@ -441,7 +395,15 @@ func _wizard_margin() -> Vector2:
 		return Vector2.ZERO
 	return UiMetrics.margin()
 
-func _open_wizard() -> void:
+## 打开 3 步向导（§10.2）。`endless = true` 来自首页「无尽炼狱」入口。
+## 同时接管原 `_do_new(槽)` 的职责 —— 单档化后不再有槽位可选：
+## 绑定唯一档、清掉继续标志、放开「本局是否拥有存档」。
+## **刻意不清旧档**：玩家随时可以取消向导，旧档一直保留到本局真正落盘为止。
+func _open_wizard(endless := false) -> void:
+	GameState.slot_id = 1
+	GameState.continue_pending = false
+	SaveRun.current_run_owns_slot = false
+	_sel_endless = endless
 	Haptics.rumble(0.2, 0.0, 0.08)
 	_home.visible = false
 	_wizard.visible = true
@@ -590,54 +552,26 @@ func _build_step() -> void:
 					String(wid) == _sel_weapon, Config.rarity_color("common"), "",
 					locked, Unlocks.unlock_hint("weapon", String(wid)), fit1.size))
 		2:
-			# 道具步张数多（1 空手 + 白名单），卡片走较小尺寸、按列铺满后靠滚动查看更多
-			var item_count := 1
-			for itid in Config.LOADOUT_ITEMS:
-				if Registry.items.has(itid):
-					item_count += 1
-			var fit2 := _fit_grid(item_count)
+			# S4.5：**难度步从第 4 步挪到第 3 步**（道具步与模式步已删，见 TOTAL_STEPS 注释）
+			var fit2 := _fit_grid(Registry.difficulties.size())
 			_options.columns = int(fit2.cols)
-			_options.add_child(_make_card(_g_item, "", "✖", "不带道具", "空手开局",
-				_sel_item == "", Color("5a6270"), "", false, "", fit2.size))
-			# 开局道具只开放前期过渡档（LOADOUT_ITEMS），并按当前角色+武器的构筑亲和排序，
-			# 相关道具优先展示 —— 不全部开放，避免开局就拿到神器直接降低难度
-			var aff: Array = Config.affinity_tags(_sel_char, [_sel_weapon], {})
-			var sorted_items: Array = []
-			for itid in Config.LOADOUT_ITEMS:
-				if not Registry.items.has(itid):
-					continue
-				var it: Dictionary = Registry.items[itid]
-				sorted_items.append({ "it": it,
-					"aff": Config.affinity_mult(Config.entry_tags(it), aff) })
-			sorted_items.sort_custom(func(a, b): return float(a["aff"]) > float(b["aff"]))
-			for e in sorted_items:
-				var it: Dictionary = e.it
-				_options.add_child(_make_card(_g_item, it.id,
-					it.ico, it.name, it.desc, it.id == _sel_item,
-					Config.rarity_color(it.get("rarity", "common")), "", false, "", fit2.size))
-		3:
-			var fit3 := _fit_grid(Registry.difficulties.size())
-			_options.columns = int(fit3.cols)
+			# 进本步先把选择夹回「该角色已解锁」的范围：换角色后可能停在一张只剩灰态的卡上，
+			# 不夹回的话 `_sel_diff` 会静默停用一个未解锁难度（卡面全灰但开局照用）
+			_sel_diff = _clamp_diff(_sel_diff)
 			# 自定义规则启用时，这一步选的是「基准难度」—— 规则里难度组四项
 			# 是叠乘在它之上的倍率（见 RunRules 文件头「方案 A」）
 			var diff_note := "\n\n⚠ 已启用自定义规则：此难度作为基准，规则倍率叠加其上" \
 				if RunRules.active else ""
 			for d: Dictionary in Registry.difficulties.values():
+				var did := String(d.id)
+				var locked := not _diff_unlocked(_sel_char, did)
 				_options.add_child(_make_card(_g_diff, d.id,
 					"⚔", d.name, "%s\n敌人血量 x%.1f · 伤害 x%.1f\n刷怪密度 x%.1f%s" % [
 						d.get("desc", ""), float(d.hp_mult), float(d.dmg_mult),
 						float(d.spawn_mult), diff_note],
-					d.id == _sel_diff,
-					Config.DIFFICULTY_COLORS.get(d.id, Color("e8b84b")), "", false, "", fit3.size))
-		4:
-			var fit4 := _fit_grid(2)
-			_options.columns = int(fit4.cols)
-			_options.add_child(_make_card(_g_mode, "standard", "🥔", "标准模式",
-				"10 波通关挑战\n击败最终 BOSS 即胜利",
-				not _sel_endless, Color("7ec850"), "", false, "", fit4.size))
-			_options.add_child(_make_card(_g_mode, "endless", "🔥", "无尽炼狱",
-				"波次无上限 · 每 10 波一轮 BOSS\n击杀累计积分 · 冲击排行榜",
-				_sel_endless, Color("e0564f"), "", false, "", fit4.size))
+					did == _sel_diff,
+					Config.DIFFICULTY_COLORS.get(d.id, Color("e8b84b")), "", locked,
+					_diff_lock_hint(_sel_char, did), fit2.size))
 	# 焦点：已选中的卡片，否则第一张可用卡（跳过锁定/禁用卡）
 	var focus_target: Button = null
 	for b in _options.get_children():
@@ -652,17 +586,59 @@ func _build_step() -> void:
 	if focus_target:
 		focus_target.grab_focus()
 
-## 角色卡描述：特性置顶 + 玩法定位。
+## 角色卡描述：特性置顶 + 玩法定位 +（已通关时）**最高通关难度**。
 ## 特性是"为什么要选这个角色"的唯一答案，必须第一眼可见 ——
 ## 只写属性取舍（攻速 +50%、伤害 -30%）玩家根本感受不到角色差异。
 ## 注意：两段都要短 —— 卡片是网格布局，长文本会把内容挤出卡外（见 _fit_grid 的高度下限）
 func _character_card_desc(c: Dictionary) -> String:
 	var t: Dictionary = c.get("trait", {})
 	var role := String(c.get("desc", ""))
-	if t.is_empty():
-		return role
-	return "⚡【%s】%s\n%s" % [
+	var head := role if t.is_empty() else "⚡【%s】%s\n%s" % [
 		String(t.get("name", "")), String(t.get("desc", "")), role]
+	# S4.5 §10.2：通关记录来自 `CodexData.stats["clear_<角色>"]`（0 = 未通关），
+	# 与难度卡的解锁判据同源 —— 卡面写「已通关简单」时，困难档必然已经可选
+	var cleared := CodexData.stat("clear_" + String(c.get("id", "")))
+	if cleared <= 0:
+		return head
+	return "%s\n🏆已通关：%s" % [head, _difficulty_name_by_index(cleared)]
+
+## 难度是否对该角色解锁（§9.4）：第 k 档可选 ⟺ k == 1 或 `clear_<角色>` >= k - 1。
+## 非内置难度（`RunRules.difficulty_index` 返回 0，例如规则面板注入的 "custom"）一律放行 ——
+## 那是规则面板自己造的条目，不该被通关记录卡住。
+func _diff_unlocked(char_id: String, diff_id: String) -> bool:
+	var idx := RunRules.difficulty_index(diff_id)
+	if idx <= 1:
+		return true
+	return CodexData.stat("clear_" + char_id) >= idx - 1
+
+## 把难度夹回「该角色已解锁的最高一档」。
+## 换角色后 `_sel_diff` 可能停在一张只剩灰态的卡上（`_make_card` 会让它 `button_pressed = false`），
+## 不夹回的话 `_start()` 会拿着这个未解锁的难度直接开局。
+func _clamp_diff(diff_id: String) -> String:
+	if _diff_unlocked(_sel_char, diff_id):
+		return diff_id
+	var best := "normal"
+	for did in RunRules.BUILTIN_DIFF_IDS:
+		if _diff_unlocked(_sel_char, String(did)):
+			best = String(did)
+	return best
+
+## 难度档位序号（1 = 简单 / 2 = 困难 / 3 = 噩梦）→ 显示名；越界返回空串。
+## 序号 ↔ id 的映射唯一真值仍是 `RunRules.BUILTIN_DIFF_IDS`，这里只做一次查表翻译。
+func _difficulty_name_by_index(idx: int) -> String:
+	if idx < 1 or idx > RunRules.BUILTIN_DIFF_IDS.size():
+		return ""
+	return String(Registry.get_difficulty(
+		String(RunRules.BUILTIN_DIFF_IDS[idx - 1])).get("name", ""))
+
+## 难度卡锁定提示：说清「用谁、通关哪一档」才能解锁（`_make_card` 的 lock_hint 参数）
+func _diff_lock_hint(char_id: String, diff_id: String) -> String:
+	var idx := RunRules.difficulty_index(diff_id)
+	if idx <= 1:
+		return ""
+	var ch: Dictionary = Registry.get_character(char_id)
+	return "用「%s」通关「%s」后解锁" % [
+		String(ch.get("name", char_id)), _difficulty_name_by_index(idx - 1)]
 
 ## 选项卡片：暗底 + 稀有度/角色/难度色描边，大图标 + 色名 + 描述；选中即确认
 ## 前三步自动进入下一步，最后一步聚焦"开始游戏"防误触
@@ -757,12 +733,11 @@ func _make_card(group: ButtonGroup, id: String, ico: String, title_text: String,
 	b.pressed.connect(func() -> void:
 		# pressed 在已选中的单选卡上也会触发，因此默认卡可直接确认。
 		b.button_pressed = true
+		# S4.5：3 步 = 角色 / 武器 / 难度（道具步与模式步已删）
 		match _step:
 			0: _sel_char = id
 			1: _sel_weapon = id
-			2: _sel_item = id
-			3: _sel_diff = id
-			4: _sel_endless = id == "endless"
+			2: _sel_diff = id
 		Haptics.rumble(0.15, 0.0, 0.05)
 		if _step < TOTAL_STEPS - 1:
 			_next()
@@ -832,14 +807,6 @@ func _handle_back() -> bool:
 	if _lb_panel.visible:
 		_close_leaderboard()
 		return true
-	# 选槽弹窗：先退出覆盖确认态，再按才关弹窗
-	if _slots_panel.visible:
-		if _confirm_slot != 0:
-			_confirm_slot = 0
-			_refresh_slots()
-		else:
-			_close_slots()
-		return true
 	# 向导：回上一步（第 1 步再按 = 关向导回首页）
 	if _wizard.visible:
 		_prev()
@@ -903,19 +870,16 @@ func _build_daily_panel() -> void:
 	title.add_theme_font_size_override("font_size", 26)
 	title.add_theme_color_override("font_color", Color("e8b84b"))
 	box.add_child(title)
-	var setup: Dictionary = Config.daily_setup(Time.get_date_string_from_system())
-	var ch: Dictionary = Registry.get_character(String(setup.character_id))
-	var diff: Dictionary = Registry.get_difficulty(String(setup.difficulty_id))
-	var boss_name: String = Registry.enemies.get(String(setup.boss_id), {}).get("name", "?")
-	var info := Label.new()
-	info.text = "今日阵容全服一致：\n\n%s %s ｜ %s 难度 ｜ 最终 BOSS：%s\n\n同种子同商店序列 · 死亡/通关记入今日榜" % [
-		ch.get("ico", "🧑"), ch.get("name", "?"), diff.get("name", "?"), boss_name]
-	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	info.add_theme_font_size_override("font_size", 15)
-	info.add_theme_color_override("font_color", Color("d8dde6"))
-	info.custom_minimum_size = Vector2(480.0, 0.0)
-	info.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(info)
+	# ⚠️ 冻结期**不在这里读** `Config.daily_setup()`：本函数在 `_ready` 每次构建菜单时都会跑，
+	#    读它就等于「入口冻了、池子照抽」（守门断言 50b）。文案改为打开面板时才填充 → `_daily_text()`
+	_daily_info = Label.new()
+	_daily_info.text = ""
+	_daily_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_daily_info.add_theme_font_size_override("font_size", 15)
+	_daily_info.add_theme_color_override("font_color", Color("d8dde6"))
+	_daily_info.custom_minimum_size = Vector2(480.0, 0.0)
+	_daily_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(_daily_info)
 	var start := Button.new()
 	start.text = "开始今日挑战（不占存档槽）"
 	start.custom_minimum_size = Vector2(480.0, 46.0)
@@ -928,7 +892,20 @@ func _build_daily_panel() -> void:
 	cancel.pressed.connect(_close_daily)
 	box.add_child(cancel)
 
+## 今日阵容文案 —— **全项目唯一读取 `Config.daily_setup()` 的 UI 处**（即唯一会去抽
+## `DAILY_CHARACTERS` 的地方）。冻结期首页没有入口 → 本函数不可达；
+## 解冻时只需把 `_home_specs()` 里那一行加回来。
+func _daily_text() -> String:
+	var setup: Dictionary = Config.daily_setup(Time.get_date_string_from_system())
+	var ch: Dictionary = Registry.get_character(String(setup.character_id))
+	var diff: Dictionary = Registry.get_difficulty(String(setup.difficulty_id))
+	var boss_name: String = Registry.enemies.get(String(setup.boss_id), {}).get("name", "?")
+	return "今日阵容全服一致：\n\n%s %s ｜ %s 难度 ｜ 最终 BOSS：%s\n\n同种子同商店序列 · 死亡/通关记入今日榜" % [
+		ch.get("ico", "🧑"), ch.get("name", "?"), diff.get("name", "?"), boss_name]
+
 func _open_daily() -> void:
+	# ❄ 冻结期入口已从首页摘除 → 正常玩法下本函数不可达（保留以便解冻）
+	_daily_info.text = _daily_text()
 	Haptics.rumble(0.2, 0.0, 0.08)
 	_daily_panel.visible = true
 	_home.visible = false

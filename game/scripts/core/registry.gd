@@ -43,8 +43,16 @@ const STAT_LIMITS := {
 	"on_hit_stun": Vector2(0.0, 1.0), "on_hit_bleed": Vector2(0.0, 1.0),
 	# 武器行为加成（角色特性 / 道具 / 升级共用；加成语义）
 	"bullet_speed_bonus": Vector2(0.0, 10.0), "bullet_range_bonus": Vector2(0.0, 10.0),
+	"throw_speed_bonus": Vector2(0.0, 10.0), "throw_range_bonus": Vector2(0.0, 10.0),
 	"melee_range_bonus": Vector2(0.0, 10.0), "aoe_radius_bonus": Vector2(0.0, 10.0),
 	"low_hp_dmg_bonus": Vector2(0.0, 5.0), "momentum_dmg_bonus": Vector2(0.0, 5.0),
+	# 元素同化度（五行体系 §7）：0 = 无亲和，1.0 = 满。上限 2.0 是给 mod 的余量，
+	# 游戏内实际由 §7.2 的分档上限约束（角色/道具各自有更严的口径）。
+	# ⚠️ 这 5 键必须同时存在于 player._sanitize_stats 与 save_run 的两份表中，
+	#    否则会出现「注册通过但存/读档判非法」→ 整档被拒（SaveRun.restore 返回 {}）。
+	"assim_metal": Vector2(0.0, 2.0), "assim_wood": Vector2(0.0, 2.0),
+	"assim_water": Vector2(0.0, 2.0), "assim_fire": Vector2(0.0, 2.0),
+	"assim_earth": Vector2(0.0, 2.0),
 }
 const EFFECT_LIMITS := {
 	"max_hp": 10000.0, "regen": 1000.0, "armor": 1000.0, "dodge": 0.95,
@@ -55,7 +63,10 @@ const EFFECT_LIMITS := {
 	"status_spread": 1.0, "on_hit_burn": 1.0, "on_hit_poison": 1.0,
 	"on_hit_freeze": 1.0, "on_hit_slow": 1.0, "on_hit_stun": 1.0, "on_hit_bleed": 1.0,
 	"bullet_speed_bonus": 10.0, "bullet_range_bonus": 10.0, "melee_range_bonus": 10.0,
+	"throw_speed_bonus": 10.0, "throw_range_bonus": 10.0,
 	"aoe_radius_bonus": 10.0, "low_hp_dmg_bonus": 5.0, "momentum_dmg_bonus": 5.0,
+	# S5 元素同化度（§7）：5 个扁平键，单条效果上限与 STAT_LIMITS 一致（2.0）
+	"assim_metal": 2.0, "assim_wood": 2.0, "assim_water": 2.0, "assim_fire": 2.0, "assim_earth": 2.0,
 }
 
 ## 角色专属特性的实现类别（未知 kind 直接拒登，防 mod 写错字后静默无效）
@@ -70,23 +81,55 @@ const TRAIT_KINDS := ["stats", "aura", "thorns", "momentum"]
 ## 刻意与 Config.WEAPONS 数值表分开放 —— 数值表只管平衡，美术表现集中一处便于统一调整。
 ## 武器配色走 status（火焰长剑橙、毒牙匕首绿、霜冻法杖冰蓝），所以同一外观族也能一眼区分元素。
 ## 缺失 / 未知 fx 由 bullet/slash 按 attack_type 兜底：外观错误不该让武器失效
+##
+## ⚠️ 本表只列**当前会出现的 id**：内置 5 把五行武器 + 5 个进化形态，
+##    外加**已停用**的工坊包那 23 把旧武器（见下方 `FROZEN_PACK_WEAPONS`）。
+##    （S2 前这里列的是内置表全量；内容迁出后同步跟过去，否则工坊包那 23 把会全部
+##    退回按 attack_type 兜底的普通外观 —— 不报错，但外观静默劣化。）
 const WEAPON_FX := {
+	# ---- 内置：5 把五行武器 ----
+	"knife": "slash",          # 金剑
+	"flamethrower": "flame",   # 喷火枪
+	"frost_staff": "frost",    # 水枪
+	"thunder_gong": "thunder", # 土质炸弹
+	"blight_bow": "bolt",      # 木弓
+	# ---- 内置：五行武器的进化形态（S8 补做）—— 沿用基础体的外观族，只换色/尺寸 ----
+	"knife_ex": "slash", "flamethrower_ex": "flame", "frost_staff_ex": "frost",
+	"thunder_gong_ex": "thunder", "blight_bow_ex": "bolt",
+	# ---- 工坊包 brotato_lite_core：枪械 / 弹道 ----
 	"pistol": "bolt", "smg": "bolt", "pistol_ex": "bolt", "smg_ex": "bolt",
-	"gatling": "bolt", "blight_bow": "bolt", "gold_bell": "bell",
+	"gatling": "bolt", "gold_bell": "bell",
 	"shotgun": "pellet", "shotgun_ex": "pellet",
-	"flamethrower": "flame", "ember_fan": "flame",
+	# ---- 工坊包：元素 / 爆炸 ----
+	"ember_fan": "flame",
 	"rocket": "rocket", "grenade": "rocket",
 	"sniper": "lance", "railgun": "lance",
-	"frost_staff": "frost", "frost_nova": "frost",
-	"thunder_gong": "thunder", "gold_scepter": "thunder",
+	"frost_nova": "frost",
+	"gold_scepter": "thunder",
 	"vine_lash": "vine",
-	"knife": "slash", "blade": "slash", "blade_ex": "slash",
+	# ---- 工坊包：近战 ----
+	"blade": "slash", "blade_ex": "slash",
 	"venom_dagger": "slash", "flame_jian": "slash",
 	"tar_whip": "whip",
 	"chaos_hammer": "smash", "frost_hammer": "smash",
 }
 const WEAPON_FX_KINDS := ["bolt", "pellet", "flame", "rocket", "lance",
 	"frost", "thunder", "vine", "bell", "slash", "whip", "smash"]
+
+## **已停用**的官方工坊包（`game/mods_disabled/brotato_lite_core/manifest.json`）里的
+## 23 把武器 id。存在的唯一理由是给 `WEAPON_FX` 里那 23 条**刻意保留**的映射当白名单 ——
+## 它们是「外观族表保留全量」这条设计的合法条目，不是写错的幽灵 id。
+##
+## ⚠️ 2026-09-17（第 7 轮）：包按用户要求从 `game/mods/` 移出（`registry.gd:146` 只扫
+##    `res://mods` / `user://mods`）→ 这 23 把不再注册，`WEAPON_FX` 立刻出现 23 条"孤儿"。
+##    冒烟的「孤儿映射」断言必须能区分「合法冻结条目」与「幽灵 id」，故需要这份清单。
+##
+## ⚠️⚠️ 移动 / 增删工坊包时**必须同步这里**：少写一个 → 合法的冻结条目会被判成幽灵而报红；
+##    多写一个 → 等于给一个不存在的武器开了后门。冒烟有一条计数断言双向钉住这一点。
+const FROZEN_PACK_WEAPONS := ["pistol", "smg", "shotgun", "rocket", "sniper", "blade",
+	"venom_dagger", "tar_whip", "ember_fan", "vine_lash", "gold_bell", "frost_nova",
+	"flame_jian", "chaos_hammer", "railgun", "frost_hammer", "gold_scepter",
+	"pistol_ex", "smg_ex", "shotgun_ex", "blade_ex", "gatling", "grenade"]
 
 ## 五行反应：type 取值 + 各 type 允许的 effect 键
 ## 未知键直接拒登，防 mod 写错字后静默无效
@@ -132,10 +175,14 @@ func boss_id() -> String:
 	return "boss"
 
 ## 某波刷怪组合：覆盖表仍做最终防御检查，异常时回退内置曲线。
-func wave_composition(w: int) -> Array:
+## 出怪表（S4 元素闸门 §9.2）：`difficulty_id` 为空 = **不设闸门**（图鉴 / 存档校验用）。
+## ⚠️ mod 覆盖的 `spawn_table` 也走 `Config.gate_pool` —— 否则工坊包只要覆盖一张波次表，
+##    三档难度的元素节奏就被整条绕过，而且**不报错**（只表现为「简单难度怎么还有金怪」）。
+func wave_composition(w: int, difficulty_id: String = "", player_element: String = "") -> Array:
 	if spawn_table.has(w) and _valid_spawn_entries(spawn_table[w]):
-		return spawn_table[w]
-	return Config.wave_composition(w)
+		return Config.gate_pool(spawn_table[w], difficulty_id, player_element,
+			Config.block_of(w))
+	return Config.wave_composition(w, difficulty_id, player_element)
 
 # ------------------------------------------------------------
 # 查询便捷 API（游戏逻辑用）
@@ -150,7 +197,7 @@ func get_difficulty(id: String) -> Dictionary:
 	if difficulties.has(id):
 		return difficulties[id]
 	return difficulties.get("normal",
-		{ "id": "normal", "name": "普通", "hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0 })
+		{ "id": "normal", "name": "简单", "hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0 })
 
 func item_list() -> Array:
 	return items.values()   # GDScript Dictionary 保持插入序
@@ -268,8 +315,10 @@ func shop_weapon_pool() -> Array:
 		var weight := float(weapons[id].get("shop_weight", 1.0))
 		if weight > 0.0:
 			pool.append({ "item": id, "w": weight })
-	if pool.is_empty() and weapons.has("pistol"):
-		pool.append({ "item": "pistol", "w": 1.0 })
+	if pool.is_empty() and weapons.has(Config.FALLBACK_WEAPON):
+		# 理论上到不了这里（内置 5 把 shop_weight > 0）。留着是防「内置全被 mod 覆盖成
+		# shop_weight = 0」的极端情况 —— 兜底值取开局池第一把，与 player/save_run 一致。
+		pool.append({ "item": Config.FALLBACK_WEAPON, "w": 1.0 })
 	return pool
 
 func weapon_price(id: String) -> int:
@@ -320,6 +369,12 @@ func _valid_character_trait(data: Dictionary) -> bool:
 	if t.has("sigil"):
 		if typeof(t["sigil"]) != TYPE_STRING or not Config.sigil_valid(String(t["sigil"])):
 			return _reject("角色特性", data, "未知印记 id：%s" % str(t["sigil"]))
+	# 五行归属：可选。显式空串合法（= 刻意「无属性」）。
+	# 写错必须拒登 —— 否则角色会静默落回「推断」路径，拿到与作者意图不同（甚至相反）的五行。
+	if t.has("element"):
+		var el := String(t["element"])
+		if typeof(t["element"]) != TYPE_STRING or (el != "" and not Config.ELEMENTS.has(el)):
+			return _reject("角色特性", data, "未知五行 element：%s" % str(t["element"]))
 	if String(t.kind) == "stats":
 		# effects 是「增量」语义，必须走 EFFECT_LIMITS：
 		# STAT_LIMITS 描述的是角色 stats 的绝对值区间（crit_mult 下限 1.0），
@@ -350,10 +405,23 @@ func register_weapon(data: Dictionary) -> bool:
 		"bspeed": 540.0, "pellets": 1, "arc": 0.0, "spread": 0.0, "splash": 0.0,
 		"bullet_life": 1.1, "shake": 0.0, "price": 30, "shop_weight": 1.0,
 		"status": "", "status_chance": 1.0, "status_stacks": 1, "status_duration": 0.0,
+		# 五行归属（五行体系 §2.5）：武器自带元素**覆盖**角色归属元素，
+		# 决定输出侧关系（角色元素 vs 武器元素，§2.3-A）与受击侧的「来袭元素」。
+		# 缺省 "" = 不声明 → 沿用角色归属（白板角色因此仍是白板，不吃任何修正）。
+		"element": "",
 		# fx 缺省为空：mod 武器不写外观族时，由弹丸/挥砍按 attack_type 兜底成普通弹/刀光
 		"fx": ""})
 	if not _string_fields(data, ["id", "name", "ico", "desc", "rarity", "sfx", "attack_type"]):
 		return _reject("武器", data, "文本字段类型非法")
+	# 五行归属：非法值**拒登**（而非静默清空）。
+	# ⚠️ 这里是刻意与 fx 的「未知值降级」相反的处置 —— 外观写错只是不好看，
+	#    而元素写错会让这把武器默默变成白板，玩家看到的伤害数字与内容表对不上，
+	#    属于"内容表里有、游戏里没有"那一类最难查的静默失效。宁可拒登。
+	if typeof(data.element) != TYPE_STRING:
+		return _reject("武器", data, "element 必须是字符串")
+	if String(data.element) != "" and not Config.ELEMENTS.has(String(data.element)):
+		return _reject("武器", data, "element 五行非法：%s（应为 %s 之一，或空串）"
+			% [data.element, ", ".join(Config.ELEMENTS)])
 	# 外观族：未知值只提示并回退默认，不拒登 —— 外观写错不该让整把武器不可用
 	if data.has("fx"):
 		if typeof(data.fx) != TYPE_STRING:
@@ -441,9 +509,13 @@ func register_enemy(data: Dictionary) -> bool:
 		return false
 	_apply_defaults(data, {"xp": 1, "mat": 1, "color": "#d9534f",
 		"shape": "circle", "ai": "chaser", "heart_chance": Config.HEAL_DROP_CHANCE,
-		"status_resist": 0.0})
-	if not _string_fields(data, ["id", "name", "color", "shape", "ai"]):
+		"status_resist": 0.0, "element": ""})
+	if not _string_fields(data, ["id", "name", "color", "shape", "ai", "element"]):
 		return _reject("敌人", data, "文本字段类型非法")
+	# 五行体系 §12-S1：element 必须合法或为空。空串 = 无属性（不吃元素修正）。
+	# ⚠️ 这里不做「无属性自动推断」—— 元素是设计常量，从命名猜会埋雷（如 blood → metal）。
+	if String(data.element) != "" and not Config.ELEMENTS.has(String(data.element)):
+		return _reject("敌人", data, "element 必须是合法五行或空串")
 	if data.has("is_boss") and typeof(data.is_boss) != TYPE_BOOL:
 		return _reject("敌人", data, "is_boss 必须是布尔值")
 	var ai: String = data.ai
@@ -469,6 +541,25 @@ func register_enemy(data: Dictionary) -> bool:
 			return _reject("敌人", data, "%s 必须是有限数值" % key)
 	if not _number_in_range(data.get("status_resist"), 0.0, 0.95):
 		return _reject("敌人", data, "status_resist 必须是 0~0.95 的数值")
+	# ---- 五行机制字段（§12-S3）：护盾 / 穿甲 / 回血 / 死亡分裂 ----
+	#
+	# ⚠️ 为什么必须在这里显式校验：`_valid()` 只检查「必需字段是否存在」，
+	#    **不拒绝未知字段** —— 所以一个写错的机制字段会**静默注册成功**，
+	#    然后以「内容表里有、游戏里没效果」的面目出现。这正是最难查的一类问题。
+	#    校验的目的不是"拦住 mod"，而是让错值变成一条**明确的 warning**。
+	if data.has("shield") and not _number_in_range(data.get("shield"), 0.0, 5000.0):
+		return _reject("敌人", data, "shield 必须是 0~5000 的数值")
+	if data.has("shield_resist") and not _number_in_range(data.get("shield_resist"), 0.0, 0.95):
+		return _reject("敌人", data, "shield_resist 必须是 0~0.95 的数值")
+	if data.has("armor_pierce") and not _number_in_range(data.get("armor_pierce"), 0.0, 1.0):
+		return _reject("敌人", data, "armor_pierce 必须是 0~1 的数值")
+	if data.has("regen") and not _number_in_range(data.get("regen"), 0.0, 50.0):
+		return _reject("敌人", data, "regen 必须是 0~50 的数值（HP/秒）")
+	if data.has("regen_delay") and not _number_in_range(data.get("regen_delay"), 0.0, 10.0):
+		return _reject("敌人", data, "regen_delay 必须是 0~10 的数值（秒）")
+	if data.has("split_on_death") and not _valid_split(data.get("split_on_death"), String(data.id)):
+		return _reject("敌人", data, "split_on_death 必须是 {type, count, hp_pct}，"
+			+ "且 type 为已注册敌人或其自身")
 	# BOSS 允许超高血量（无尽后期/自定义数值）；普通敌人维持 5000 上限
 	var hp_max := 1.0e9 if ai == "boss" else 5000.0
 	if float(data.hp) <= 0.0 or float(data.hp) > hp_max \
@@ -496,6 +587,25 @@ func register_enemy(data: Dictionary) -> bool:
 		if data.has("skills") and not _valid_boss_skills(data.skills):
 			return _reject("敌人", data, "BOSS 技能配置非法")
 	enemies[String(data.id)] = data
+	return true
+
+## 死亡分裂配置校验（§5.3）。`type` 必须是**已注册敌人**或**其自身**。
+##
+## ⚠️ 必须放行「自身」：`water_splitter` 的分裂目标就是它自己，
+##    而校验发生在 `enemies[id] = data` **之前** → 只查 `enemies.has(t)` 会把
+##    内置的分裂水灵自己判为非法（表现为"内容表里有、游戏里没有"，且 warning 看着像写错了）。
+##    自引用的**递归护栏**不在这里管 —— 那是运行期的事（`Enemy._split_gen`）。
+func _valid_split(v: Variant, self_id: String = "") -> bool:
+	if typeof(v) != TYPE_DICTIONARY:
+		return false
+	var d: Dictionary = v
+	var t := String(d.get("type", ""))
+	if t.is_empty() or (t != self_id and not enemies.has(t)):
+		return false
+	if not _number_in_range(d.get("count", 3), 1, 8):
+		return false
+	if not _number_in_range(d.get("hp_pct", 0.5), 0.05, 1.0):
+		return false
 	return true
 
 ## BOSS 技能白名单校验：type 必须是已实现形态，cd/count 等参数在合理区间。
@@ -541,8 +651,11 @@ func _valid_boss_skills(skills: Variant) -> bool:
 func register_difficulty(data: Dictionary) -> bool:
 	if not _valid(data, "难度", ["id", "name"]):
 		return false
+	# resist_mult：元素抗性的难度系数（五行体系 §5.5.2）——
+	#   简单 0.45 / 困难 0.60 / 噩梦 0.75，是怪物同化度 R 的加数项之一。
+	# ⚠️ 必须在 _apply_defaults 里给出，否则 mod / 内置表里的该键会被静默丢弃。
 	_apply_defaults(data, {"desc": "", "hp_mult": 1.0, "dmg_mult": 1.0,
-		"spawn_mult": 1.0, "elite_chance": 0.0})
+		"spawn_mult": 1.0, "elite_chance": 0.0, "resist_mult": 0.45})
 	if not _string_fields(data, ["id", "name", "desc"]):
 		return _reject("难度", data, "文本字段类型非法")
 	if String(data.id).strip_edges().is_empty() or String(data.name).strip_edges().is_empty():
@@ -554,6 +667,9 @@ func register_difficulty(data: Dictionary) -> bool:
 		return _reject("难度", data, "spawn_mult 必须在 [0.2, 5]")
 	if not _number_in_range(data.elite_chance, 0.0, 1.0):
 		return _reject("难度", data, "elite_chance 必须在 [0, 1]")
+	# 上限 0.75：§5.5.1 规定普通怪的减伤极限就是 75%，难度系数不得单独突破它
+	if not _number_in_range(data.resist_mult, 0.0, 0.75):
+		return _reject("难度", data, "resist_mult 必须在 [0, 0.75]")
 	difficulties[String(data.id)] = data
 	return true
 
@@ -857,6 +973,25 @@ func _enemy_is_boss(data: Dictionary) -> bool:
 func _register_builtin() -> void:
 	# 内置角色：stats 仅覆盖差异项（其余沿用 Config.PLAYER）
 	characters = {
+		# ============================================================
+		# 内置角色池：**只启用 6 个**（五行体系 §3.2.5 第 5 轮定稿）
+		#
+		# 沧溟原话：「我只要我自己预设的 6 个角色和五种武器，其他武器后续增加」
+		#
+		#   potato（白板）+ 5 个元素修士（金/木/水/火/土）
+		#
+		# 被冻结的 11 个（berserker/ranger/farmer/vampire/guardian/pyromancer/
+		# druid/swordmaster/tidecaller/gunner/warlord）与 23 把旧武器原先放在官方工坊包
+		# `game/mods/brotato_lite_core/manifest.json`，但那份清单只带 characters/weapons，
+		# 而 `_load_mod_dir`（`registry.gd:146`）**无条件扫 `res://mods`** →
+		# 它们会跟着"内置内容"一起进角色选择页与商店武器池。
+		#
+		# ⚠️ 2026-09-17（第 7 轮）用户反馈「角色没删干净 / 其他武器还能选到」→
+		#    该目录已整体**搬到 `game/mods_disabled/brotato_lite_core/`**（文件保留，未删）。
+		#    要重新启用：把目录移回 `game/mods/` 即可（代码零改动），
+		#    但**必须同步改回 `smoke_test.gd` 的两组断言**（内置内容计数 + 印记分支），
+		#    否则会把"包回来了"判绿。
+		# ============================================================
 		"potato": {
 			"id": "potato", "name": "土豆勇者", "ico": "🥔",
 			"desc": "均衡的冒险家，各项属性标准，适合任何构筑",
@@ -864,209 +999,126 @@ func _register_builtin() -> void:
 			"stats": {},
 			"trait": {
 				"id": "even_keel", "name": "均衡之道", "ico": "✨",
-				"desc": "伤害 / 攻速 / 移速 +5%，材料获取 +10%：没有短板，但也不走极端",
+				"desc": "伤害 +5% / 攻速 +2.5% / 移速 +5%，材料获取 +10%：没有短板，但也不走极端",
 				"kind": "stats",
 				# 显式声明「无印记」：均衡之道刻意不带任何元素 / 风格倾向。
 				# 不写的话会被 effects 里的 speed_mult 推导成「疾风」，与角色定位矛盾
 				"sigil": "",
-				"effects": { "dmg_mult": 0.05, "as_mult": 0.05, "speed_mult": 0.05,
+				# ⚠️ 显式声明「无元素」，这是**刻意**的：白板角色是五行体系的对照组，
+				#    攻守两侧都不参与任何元素修正（§2.3 的 element_relation 遇空串返回 other/0）。
+				#    不写这一条虽然也会被推导成 ""（sigil 是空串 → 推导链落空），
+				#    但那样是「碰巧对」—— 一旦哪天给均衡之道补了 status 类效果，
+				#    就会莫名变成元素角色。显式声明把语义钉死。
+				"element": "",
+				"effects": { "dmg_mult": 0.05, "as_mult": 0.025, "speed_mult": 0.05,
 					"harvesting": 0.10 },
 			},
 			"skill": {
-				"name": "丰收鼓舞", "ico": "✨", "desc": "8 秒内伤害 +25%、攻速 +25%、移速 +15%", "cd": 15.0,
+				"name": "丰收鼓舞", "ico": "✨", "desc": "8 秒内伤害 +25%、攻速 +12.5%、移速 +15%", "cd": 15.0,
 				"kind": "buff", "duration": 8.0,
-				"effects": { "dmg_mult": 0.25, "as_mult": 0.25, "speed_mult": 0.15 },
+				"effects": { "dmg_mult": 0.25, "as_mult": 0.125, "speed_mult": 0.15 },
 			},
 		},
-		"berserker": {
-			"id": "berserker", "name": "狂战士", "ico": "🪓",
-			"desc": "嗜血近战：生命与伤害极高、自带护甲，但攻速与移速略降",
-			"color": "#d9534f",
-			"stats": { "max_hp": 130.0, "armor": 3.0, "dmg_mult": 1.25,
-				"as_mult": 0.95, "speed_mult": 0.92, "crit_ch": 0.03 },
-			"trait": {
-				"id": "blood_rage", "name": "血怒", "ico": "🩸",
-				"desc": "生命越低伤害越高，濒死时最高 +70%：厚血反打的核心",
-				"kind": "stats",
-				"effects": { "low_hp_dmg_bonus": 0.70 },
-			},
-			"skill": {
-				"name": "血怒斩", "ico": "🪓", "desc": "对周围敌人造成高额伤害（生命越低越痛）", "cd": 12.0,
-				"kind": "burst_damage", "radius": 210.0, "mult": 3.0,
-			},
-		},
-		"ranger": {
-			"id": "ranger", "name": "游侠", "ico": "🏹",
-			"desc": "远程赌命流：高暴击高机动、闪避与材料加成，放风筝打法，身板脆弱",
-			"color": "#3bbfae",
-			"stats": { "crit_ch": 0.20, "crit_mult": 2.6, "dodge": 0.15,
-				"speed_mult": 1.10, "harvesting": 0.20, "max_hp": 72.0, "armor": -1.0 },
-			"trait": {
-				"id": "eagle_eye", "name": "鹰眼", "ico": "🎯",
-				"desc": "子弹速度 +50%、射程 +35%、暴击伤害 +40%：远距离几乎不需要预判",
-				"kind": "stats",
-				"effects": { "bullet_speed_bonus": 0.50, "bullet_range_bonus": 0.35, "crit_mult": 0.40 },
-			},
-			"skill": {
-				"name": "疾风步", "ico": "💨", "desc": "6 秒内暴击率 +20%、移速 +30%", "cd": 14.0,
-				"kind": "buff", "duration": 6.0,
-				"effects": { "crit_ch": 0.20, "speed_mult": 0.30 },
-			},
-		},
-		"farmer": {
-			"id": "farmer", "name": "收获者", "ico": "🌾",
-			"desc": "经济流：材料获取 +60%、超大拾取范围，用钱滚雪球碾压商店",
-			"color": "#7ec850",
-			"stats": { "harvesting": 0.60, "pickup_range": 260.0,
-				"max_hp": 95.0, "dmg_mult": 0.92, "speed_mult": 1.02 },
-			"trait": {
-				"id": "fertile_soil", "name": "沃土", "ico": "🌱",
-				"desc": "材料获取 +30%、拾取范围 +100：滚雪球的核心",
-				"kind": "stats",
-				"effects": { "harvesting": 0.30, "pickup_range": 100.0 },
-			},
-			"skill": {
-				"name": "丰收", "ico": "🌾", "desc": "立即获得 60 材料", "cd": 18.0,
-				"kind": "grant_materials", "materials": 60,
-			},
-		},
-		"vampire": {
-			"id": "vampire", "name": "血族", "ico": "🧛",
-			"desc": "续航之王：击杀回血 + 持续回复 + 护甲，越战越勇，但生命上限较低",
-			"color": "#b05ae0",
-			"stats": { "lifesteal": 2.0, "regen": 2.0, "armor": 2.0, "dodge": 0.08,
-				"max_hp": 82.0, "dmg_mult": 0.95, "speed_mult": 1.06 },
-			"trait": {
-				"id": "blood_mist", "name": "血雾领域", "ico": "🦇",
-				"desc": "周身血雾：范围内敌人持续流血，抵消你贴近战斗的代价",
-				"kind": "aura", "status": "bleed", "radius_mult": 1.05,
-				"interval": 0.7, "dmg": 3.0, "power": 20.0, "stacks": 1,
-			},
-			"skill": {
-				"name": "血宴", "ico": "🩸", "desc": "立即回复 35% 生命，并眩晕周围敌人 1 秒", "cd": 16.0,
-				"kind": "self_heal", "heal_pct": 0.35, "stun_radius": 200.0, "stun_dur": 1.0,
-			},
-		},
-		"guardian": {
-			"id": "guardian", "name": "铁卫", "ico": "🐢",
-			"desc": "不动如山：超高生命、护甲与回复，异常命中 +10%，攻速补偿，代价是移速大幅降低",
-			"color": "#5a6dbf",
-			"stats": { "max_hp": 165.0, "armor": 6.0, "regen": 0.5, "status_chance": 0.10,
-				"speed_mult": 0.82, "dodge": 0.0, "as_mult": 1.08 },
-			"trait": {
-				"id": "thorn_mail", "name": "荆棘重铠", "ico": "🌵",
-				"desc": "每次受击对周围 155 范围内所有敌人造成反击伤害：越被围越强",
-				"kind": "thorns", "dmg": 22.0, "radius": 155.0,
-			},
-			"skill": {
-				"name": "铁壁", "ico": "🛡", "desc": "6 秒内护甲 +10、闪避 +20%", "cd": 16.0,
-				"kind": "buff", "duration": 6.0,
-				"effects": { "armor": 10.0, "dodge": 0.20 },
-			},
-		},
-		# ---- Phase 2 五行门派修士（5 个，每人专精一个五行状态） ----
-		"pyromancer": {
-			"id": "pyromancer", "name": "焚天祭司", "ico": "🔥",
-			"desc": "火系爆发：状态伤害 +35%，异常持续 +25%，命中率 +10%；代价是血薄甲脆",
-			"color": "#ff7a3c",
-			"stats": { "status_dmg_mult": 0.35, "status_dur_mult": 0.25, "status_chance": 0.10,
-				"max_hp": 85.0, "armor": -1.0, "dmg_mult": 0.95 },
-			"trait": {
-				"id": "ember_field", "name": "焚天领域", "ico": "🔥",
-				"desc": "周身烈焰：范围内敌人持续燃烧，与冰/水构筑自动触发五行反应",
-				"kind": "aura", "status": "burn", "radius_mult": 1.0,
-				"interval": 0.6, "dmg": 2.0, "power": 18.0, "stacks": 1,
-			},
-			"skill": {
-				"name": "焚天烈焰", "ico": "🔥", "desc": "对周围敌人施加 3 层燃烧并造成伤害", "cd": 12.0,
-				"kind": "nova_status", "status": "burn", "stacks": 3, "radius": 220.0, "dmg": 12.0, "power": 25.0,
-			},
-		},
-		"druid": {
-			"id": "druid", "name": "青囊药王", "ico": "🌿",
-			"desc": "毒扩散流：异常命中 +20%、持续 +35%、中毒扩散 +60%、状态伤害 +30%",
-			"color": "#7ec850",
-			"stats": { "status_chance": 0.20, "status_dur_mult": 0.35, "status_spread": 0.60,
-				"status_dmg_mult": 0.30, "max_hp": 90.0, "dmg_mult": 0.92, "harvesting": 0.15 },
-			"trait": {
-				"id": "miasma", "name": "瘴气领域", "ico": "🧪",
-				"desc": "周身瘴气：范围内敌人持续中毒（按最大生命比例掉血），对厚血敌人尤其致命",
-				"kind": "aura", "status": "poison", "radius_mult": 1.05,
-				"interval": 0.7, "dmg": 1.5,
-			},
-			"skill": {
-				"name": "毒雾爆发", "ico": "☠", "desc": "对周围敌人施加 3 层中毒", "cd": 13.0,
-				"kind": "nova_status", "status": "poison", "stacks": 3, "radius": 230.0,
-			},
-		},
-		"swordmaster": {
-			"id": "swordmaster", "name": "太白剑客", "ico": "⚔",
-			"desc": "剑道宗师 + 疾风身法：暴击 +12%、暴伤 +230%、攻速 +12%、闪避 +12%、移速 +8%",
+		# ============================================================
+		# 五元素修士（§3.2）
+		#
+		# 「元素亲和」的完整定义（§3.2 已澄清）：**本系双向 ±10%**，
+		# 不是独立机制 —— 它就是 §2.3 两张表里「同属性」那一行的取值：
+		#     本元素**造成**的伤害 +10% → 落在 §2.3-A「同属 +10%」的 out 列
+		#     本元素**受到**的伤害 −10% → 落在 §2.3-B「同属 −10%」的 hit 基数
+		# 数值已定稿 10%（沧溟 2026-09-14 确认，规格 3 原话的 25% 作废）：
+		# 同属减伤要从基础 −10% 被同化度一路推到 −90% cap，基础用小值才留出成长空间。
+		#
+		# ⚠️ 因此这 5 个角色的 stats **不需要**任何元素加成字段 —— 亲和由
+		#    `trait.element` + §2.3 关系表自动生效。写进 stats 反而会双重计算。
+		#    这里只做「同其他角色等量级」的常规属性补正。
+		#
+		# ⚠️ 每个角色**必须**显式写 `trait.element`（`element_for_character` 第 1 步），
+		#    否则会退到「五行印记 → 技能状态 → 特性状态」的推导链，
+		#    那条链会拿 attr 去反推元素，语义上属于"碰巧"而非"声明"。
+		# ============================================================
+		"metal_adept": {
+			"id": "metal_adept", "name": "鎏金修士", "ico": "⚔",
+			"desc": "金系：本系伤害 +10%、受本系伤害 -10%。攻速与暴击见长，克制木属性敌人",
 			"color": "#dfe6f0",
-			"stats": { "crit_ch": 0.12, "crit_mult": 2.3, "as_mult": 1.12, "dmg_mult": 1.10,
-				"dodge": 0.12, "speed_mult": 1.08, "status_chance": 0.08, "max_hp": 80.0 },
+			# ⚠️ `crit_mult` 在角色 stats 里是**倍率**（`dmg *= stats.crit_mult`，基线 1.0，
+			#    `player.gd:651` 有 `maxf(1.0, ...)` 下限），不是"增量百分比"。
+			#    写 0.15 会被 clamp 到 1.0 = **完全没有加成且不报错**（静默失效）。
+			#    +15% 暴伤 ⇒ 2.15。对照：ranger 2.6 / swordmaster 2.3（纯暴击定位更高）。
+			"stats": { "crit_ch": 0.03, "crit_mult": 2.15, "as_mult": 1.03, "max_hp": 95.0 },
 			"trait": {
-				"id": "sword_intent", "name": "剑意", "ico": "⚔",
-				"desc": "斩击范围 +35%、暴击伤害 +80%：剑势所及，一刀两断",
-				"kind": "stats",
-				"effects": { "melee_range_bonus": 0.35, "crit_mult": 0.80 },
+				"id": "metal_affinity", "name": "金之亲和", "ico": "⚔",
+				"desc": "金系伤害 +10%、受金系伤害 -10%（同属性双向亲和，见 §3.2）",
+				"kind": "stats", "element": "metal",
+				"effects": { "crit_ch": 0.02 },
 			},
 			"skill": {
-				"name": "剑气纵横", "ico": "⚔", "desc": "对周围敌人造成一次高额剑气伤害", "cd": 12.0,
-				"kind": "burst_damage", "radius": 260.0, "mult": 4.0,
+				"name": "金锋斩", "ico": "⚔", "desc": "对周围敌人造成 1.6 倍伤害并施加 2 层流血", "cd": 13.0,
+				"kind": "nova_status", "status": "bleed", "stacks": 2, "radius": 215.0, "dmg": 26.0,
 			},
 		},
-		"tidecaller": {
-			"id": "tidecaller", "name": "沧海鲛人", "ico": "💧",
-			"desc": "冰控场：异常命中 +15%，异常持续 +30%，移速 +8%，护甲 +1。血薄",
+		"wood_adept": {
+			"id": "wood_adept", "name": "青囊修士", "ico": "🌿",
+			"desc": "木系：本系伤害 +10%、受本系伤害 -10%。持续伤害与回复见长，克制土属性敌人",
+			"color": "#7ec850",
+			"stats": { "status_dmg_mult": 0.25, "status_dur_mult": 0.20, "regen": 0.3, "max_hp": 92.0 },
+			"trait": {
+				"id": "wood_affinity", "name": "木之亲和", "ico": "🌿",
+				"desc": "木系伤害 +10%、受木系伤害 -10%（同属性双向亲和，见 §3.2）",
+				"kind": "stats", "element": "wood",
+				"effects": { "status_dmg_mult": 0.15 },
+			},
+			"skill": {
+				"name": "青囊回春", "ico": "🌿", "desc": "立即回复 30% 生命，并给周围敌人施加 2 层中毒", "cd": 14.0,
+				"kind": "self_heal", "heal_pct": 0.30, "stun_radius": 200.0, "stun_dur": 0.0,
+			},
+		},
+		"water_adept": {
+			"id": "water_adept", "name": "玄水修士", "ico": "💧",
+			"desc": "水系：本系伤害 +10%、受本系伤害 -10%。控场与机动见长，克制火属性敌人",
 			"color": "#8fd8ff",
-			"stats": { "status_chance": 0.15, "status_dur_mult": 0.30, "speed_mult": 1.08,
-				"armor": 1.0, "max_hp": 82.0 },
+			"stats": { "status_chance": 0.15, "status_dur_mult": 0.25, "speed_mult": 1.06, "max_hp": 90.0 },
 			"trait": {
-				"id": "cold_tide", "name": "寒潮领域", "ico": "❄",
-				"desc": "周身寒潮：范围内敌人持续减速，走位压力大幅降低",
-				"kind": "aura", "status": "slow", "radius_mult": 1.15,
-				"interval": 0.6, "dmg": 4.0,
+				"id": "water_affinity", "name": "水之亲和", "ico": "💧",
+				"desc": "水系伤害 +10%、受水系伤害 -10%（同属性双向亲和，见 §3.2）",
+				"kind": "stats", "element": "water",
+				"effects": { "status_dur_mult": 0.15 },
 			},
 			"skill": {
-				"name": "寒潮", "ico": "❄", "desc": "对周围敌人施加 2 层冰冻", "cd": 14.0,
-				"kind": "nova_status", "status": "freeze", "stacks": 2, "radius": 210.0,
+				"name": "玄水凝霜", "ico": "💧", "desc": "对周围敌人施加 3 层减速并造成伤害", "cd": 12.0,
+				"kind": "nova_status", "status": "slow", "stacks": 3, "radius": 225.0, "dmg": 18.0,
 			},
 		},
-		# ---- 进阶角色：每个都有专属机制与主动技能 ----
-		"gunner": {
-			"id": "gunner", "name": "弹雨枪手", "ico": "🎯",
-			"desc": "弹幕压制 + 火力覆盖：攻速 +50%、爆炸范围加成、移速 +5%，代价是单发伤害 -25%",
+		"fire_adept": {
+			"id": "fire_adept", "name": "赤焰修士", "ico": "🔥",
+			"desc": "火系：本系伤害 +10%、受本系伤害 -10%。爆发与异常命中见长，克制金属性敌人",
+			"color": "#ff7a3c",
+			"stats": { "status_dmg_mult": 0.30, "status_chance": 0.12, "dmg_mult": 1.04, "max_hp": 88.0, "armor": -1.0 },
+			"trait": {
+				"id": "fire_affinity", "name": "火之亲和", "ico": "🔥",
+				"desc": "火系伤害 +10%、受火系伤害 -10%（同属性双向亲和，见 §3.2）",
+				"kind": "stats", "element": "fire",
+				"effects": { "status_dmg_mult": 0.20 },
+			},
+			"skill": {
+				"name": "赤焰焚天", "ico": "🔥", "desc": "对周围敌人造成伤害并施加 3 层燃烧", "cd": 12.0,
+				"kind": "nova_status", "status": "burn", "stacks": 3, "radius": 220.0, "dmg": 22.0,
+			},
+		},
+		"earth_adept": {
+			"id": "earth_adept", "name": "厚土修士", "ico": "🪨",
+			"desc": "土系：本系伤害 +10%、受本系伤害 -10%。厚血高甲见长，克制水属性敌人",
 			"color": "#ffd24a",
-			"stats": { "as_mult": 1.50, "dmg_mult": 0.75, "speed_mult": 1.05,
-				"crit_ch": 0.03, "max_hp": 92.0 },
+			"stats": { "max_hp": 135.0, "armor": 4.0, "dmg_mult": 1.05, "speed_mult": 0.94 },
 			"trait": {
-				"id": "fire_cover", "name": "火力覆盖", "ico": "💥",
-				"desc": "子弹速度 +60%、爆炸范围 +40%：让弹幕真正追上敌人，还覆盖半个屏幕",
-				"kind": "stats",
-				"effects": { "bullet_speed_bonus": 0.60, "aoe_radius_bonus": 0.40 },
+				"id": "earth_affinity", "name": "土之亲和", "ico": "🪨",
+				"desc": "土系伤害 +10%、受土系伤害 -10%（同属性双向亲和，见 §3.2）",
+				"kind": "stats", "element": "earth",
+				"effects": { "armor": 2.0 },
 			},
 			"skill": {
-				"name": "弹幕风暴", "ico": "🌪", "desc": "8 秒内攻速 +60%、子弹速度 +40%", "cd": 15.0,
-				"kind": "buff", "duration": 8.0,
-				"effects": { "as_mult": 0.60, "bullet_speed_bonus": 0.40 },
-			},
-		},
-		"warlord": {
-			"id": "warlord", "name": "百战军侯", "ico": "🛡",
-			"desc": "力战不退：生命 150、护甲 +5、伤害 +12%，代价是攻速 -14%、移速 -12%",
-			"color": "#993c1d",
-			"stats": { "max_hp": 150.0, "armor": 5.0, "dmg_mult": 1.12,
-				"as_mult": 0.86, "speed_mult": 0.88 },
-			"trait": {
-				"id": "battle_momentum", "name": "战意", "ico": "🔺",
-				"desc": "本波每击杀 8 名敌人伤害 +4%（最高 +50%），每波开始重置：越战越勇",
-				"kind": "momentum", "per_kills": 8, "per_stack": 0.04, "max_bonus": 0.50,
-			},
-			"skill": {
-				"name": "战吼", "ico": "🔺", "desc": "立即获得 5 层战意，8 秒内伤害 +20%", "cd": 16.0,
-				"kind": "buff", "duration": 8.0, "momentum_stacks": 5,
-				"effects": { "dmg_mult": 0.20 },
+				"name": "厚土镇岳", "ico": "🪨", "desc": "对周围敌人造成高额伤害并施加 2 层眩晕", "cd": 15.0,
+				"kind": "nova_status", "status": "stun", "stacks": 2, "radius": 200.0, "dmg": 30.0,
 			},
 		},
 	}
@@ -1088,6 +1140,14 @@ func _register_builtin() -> void:
 		register_upgrade(d2)
 	enemies = {}
 	# AI 行为类型：chaser 追击 / runner 抖动冲刺 / shooter 风筝射击 / boss 环形弹幕
+	#
+	# ⚠️⚠️ `ai_map` 是**历史遗留的并行表**，同时它也是**兜底表**：
+	#     `Config.ENEMIES[id].ai` 显式声明优先，本表只在没写时兜底。
+	#     曾经的写法是 `e["ai"] = ai_map.get(id2, "chaser")` —— 那会**无条件覆盖**内容表里
+	#     写的 ai，把「赤焰法师 ai=shooter」静默改成 chaser：怪不再风筝，反而贴脸冲，
+	#     同时 `keep_dist` / `shoot_cd` / `bspeed` 三个字段全部变成死数据，**全程无报错**。
+	#     这正是「内容表里有、游戏里没效果」那一类问题，别再退回旧写法。
+	#     （后续可把 ai 全量迁进 Config.ENEMIES 并删掉本表，属独立小重构，不在 S3 范围内。）
 	var ai_map := { "grunt": "chaser", "runner": "runner", "tank": "chaser",
 		"shooter": "shooter", "boss": "boss", "boss_spiral": "boss", "boss_summoner": "boss",
 		"swarm": "chaser", "bomber": "runner", "wizard": "shooter",
@@ -1098,21 +1158,31 @@ func _register_builtin() -> void:
 		"metal_puppet": "chaser", "blade_monk": "runner",
 		"water_nymph": "shooter", "ice_witch": "shooter",
 		"earth_golem": "chaser", "stone_titan": "chaser",
-		"boss_phoenix": "boss", "boss_leviathan": "boss", "boss_titan": "boss" }
+		"boss_phoenix": "boss", "boss_leviathan": "boss", "boss_titan": "boss",
+		# ---- 五行基础怪（§12-S3）：只有赤焰法师是远程，其余贴脸 ----
+		"metal_guard": "chaser", "wood_healer": "chaser", "water_splitter": "chaser",
+		"fire_caster": "shooter", "earth_bulwark": "chaser" }
 	for id2 in Config.ENEMIES:
 		var e: Dictionary = Config.ENEMIES[id2].duplicate()
 		e["id"] = id2
-		e["ai"] = ai_map.get(id2, "chaser")
+		e["ai"] = String(Config.ENEMIES[id2].get("ai", ai_map.get(id2, "chaser")))
 		if ai_map.get(id2, "") == "boss":
 			e["is_boss"] = true
 		register_enemy(e)
 	difficulties = {
-		"normal": { "id": "normal", "name": "普通", "desc": "标准挑战",
-			"hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0, "elite_chance": 0.0 },
+		# ⚠️ 只改 `name`（显示名），**id 一律不动** —— `Config.DIFFICULTY_COLORS` /
+		#    `RunRules.BUILTIN_DIFF_IDS` / 存档 / 每日挑战的 difficulty_id 全按 id 写，
+		#    改 id 会全线崩（§9.1）。
+		# S4 起「难度」的首要含义是**元素出场节奏**（§9.2 闸门），数值只是第二重。
+		"normal": { "id": "normal", "name": "简单", "desc": "教学 · 危险元素最晚出现",
+			"hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0, "elite_chance": 0.0,
+			"resist_mult": 0.45 },
 		"hard": { "id": "hard", "name": "困难", "desc": "敌人更硬更痛，刷怪更密，混入精英怪",
-			"hp_mult": 1.5, "dmg_mult": 1.3, "spawn_mult": 1.25, "elite_chance": 0.10 },
+			"hp_mult": 1.5, "dmg_mult": 1.3, "spawn_mult": 1.25, "elite_chance": 0.10,
+			"resist_mult": 0.60 },
 		"nightmare": { "id": "nightmare", "name": "噩梦", "desc": "精英成群，为成型的构筑准备",
-			"hp_mult": 2.2, "dmg_mult": 1.6, "spawn_mult": 1.5, "elite_chance": 0.20 },
+			"hp_mult": 2.2, "dmg_mult": 1.6, "spawn_mult": 1.5, "elite_chance": 0.20,
+			"resist_mult": 0.75 },
 	}
 	reactions = {}
 	_reaction_keys = {}

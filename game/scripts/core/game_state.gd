@@ -22,7 +22,7 @@ var slot_id := 1
 ## 局外 run 配置（主菜单选择；Registry 注册表 id）
 var difficulty_id := "normal"
 var character_id := "potato"
-var loadout_weapon := "pistol"   # 初始武器（"" = 用角色默认）
+var loadout_weapon := Config.FALLBACK_WEAPON   # 初始武器（"" = 用角色默认）
 var loadout_item := ""           # 开局道具（"" = 无）
 
 var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，TouchControls 写入）
@@ -39,10 +39,28 @@ var event_card_cap := 4      # 本局上限（reset_run 时在 EVENT_CARD_MIN~MA
 var events_seen: Array = []  # 本局已出现过的卡 id（不重复抽，保证 10 张都能见到）
 var next_wave_elite := 0     # 下一波开始时额外生成的精英数量（事件风险选项写入）
 
+## ---- 法宝盒子（第 9 轮 · 需求 4）----
+## 中间 BOSS（W4/8/12/16）击破 +1，波末由 main 开盒三选一；开一个 -1。
+## ⚠️ 刻意**不落存档**：它的消费点（开盒）被安排在"最后一次写档之前"（见 main._finish_evolve_flow），
+##    所以正常情况下不存在"盒子里还留着东西就存档"的时刻。若玩家在开盒界面直接退出，
+##    因为这次存档根本没发生，读档会回到本波开始 —— 盒子跟着重新拿，不会丢。
+var boss_boxes := 0
+
 ## 当前地图主题（Phase 5，Config.MAP_THEMES 的键）
 ## 刻意不落存档：主题是波次的纯函数（Config.map_theme_for_wave），
 ## 读档恢复 wave 时主题自然一致，避免为一个可推导的值改存档格式
 var map_theme := "bamboo"
+
+## ---- 区块与区域元素（五行体系 §5.5.3 · S3.5）----
+## 本区区域元素（玩家相关：Config.wave_area_element(player.element, wave)）。
+## 同样不落存档 —— 它是「波次 + 玩家元素」的纯函数，读档恢复 wave 后自然一致。
+## 用途：横幅显示、区块偏置、BOSS 元素、出怪加权。
+var area_element := ""
+## 已经发过区域加成的区块号（1 起；0 = 一个都还没发）。
+## ⚠️ 必须有这个护栏：区域加成是「进新区一次性 +同化度」，而读档会重新走
+##    `start_wave(restored_wave)`。没有它，反复读同一档就能反复白拿同化度。
+##    不落存档，由 main 在 _ready 里按 restored_wave 反推（见 main._ready）。
+var area_bonus_block := 0
 
 func add_score(v: int) -> void:
 	score = maxi(0, score + v)
@@ -88,6 +106,7 @@ func reset_run() -> void:
 	event_card_cap = GameRng.range_i(Config.EVENT_CARD_MIN, Config.EVENT_CARD_MAX)
 	events_seen = []
 	next_wave_elite = 0
+	boss_boxes = 0
 
 func start_run() -> void:
 	reset_run()

@@ -162,13 +162,20 @@ func current_source() -> String:
 func volume_db() -> float:
 	return _player.volume_db if _player != null else 0.0
 
-## 波次 → 曲目：1-4 战斗 / 5-7 中盘 / 8+ 终盘 / BOSS 波 BOSS 曲
+## 波次 → 曲目：按**区块**升级（§8 二十波制）——
+##   区块 1 = battle / 区块 2 = battle_mid / 区块 3 及之后 = battle_late，BOSS 波专属曲。
+##
+## ⚠️ 阈值刻意由 `Config.block_of` 推导，而不是写死 5 / 8：
+##    写死那版是按 10 波制调的；`BOSS_WAVE` 改成 20 之后 `is_boss_wave(10)` 不再成立，
+##    「W10 → boss」这条映射直接失效（冒烟当场报红）。由区块推导后，
+##    波次结构再调整时这里会**自动跟着走**，不会留下一处静默错配的阈值。
 func track_for_wave(w: int) -> String:
 	if Config.is_boss_wave(w):
 		return "boss"
-	if w >= 8:
+	var block := Config.block_of(w)
+	if block >= 3:
 		return "battle_late"
-	if w >= 5:
+	if block == 2:
 		return "battle_mid"
 	return "battle"
 

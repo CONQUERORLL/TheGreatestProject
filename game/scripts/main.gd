@@ -62,6 +62,13 @@ var evolve_choose_ui: Control = null
 var _pending_evolve_choices: Array = []   # 待选择的进化选项队列（逐个弹出）
 var _pending_evolve_wave := 0             # 进化流程结束后要写入存档的波次（0 = 无）
 
+## 法宝盒子三选一（第 9 轮 · 需求 4）：中间 BOSS 的战利品
+var boss_box_ui: Control = null
+var _box_choices: Array = []      # 当前盒子的候选法宝 id（测试观测用）
+
+## 场景属性地形区域（第 9 轮 · 需求 4）：每波重建一片圆形地形，见 fx/terrain_zone.gd
+var _terrain_zone: Node2D = null
+
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
 	for arg in OS.get_cmdline_user_args():
@@ -113,6 +120,11 @@ func _ready() -> void:
 	evolve_choose_ui = preload("res://scenes/ui/evolve_choose.tscn").instantiate()
 	$UI.add_child(evolve_choose_ui)
 	evolve_choose_ui.evolved.connect(_on_evolve_choice)
+	# 法宝盒子三选一（第 9 轮 · 需求 4）
+	boss_box_ui = preload("res://scenes/ui/boss_box.tscn").instantiate()
+	$UI.add_child(boss_box_ui)
+	boss_box_ui.player = player
+	boss_box_ui.picked.connect(_on_boss_box_pick)
 	# 开发者面板（F1 呼出）
 	var dev := preload("res://scenes/ui/dev_panel.tscn").instantiate()
 	$UI.add_child(dev)
@@ -128,16 +140,34 @@ func _ready() -> void:
 	mouse_move.name = "MouseMove"
 	$UI.add_child(mouse_move)
 	mouse_move.player = player
+	# 逐波平衡日志（第 8 轮需求 4）：续档接着写（保住前面几波的历史），新局清空重记。
+	# ⚠️ 必须在 `start_wave` 之前 —— `begin_wave` 的快照基线要取「本波尚未开始」时的计数。
+	BalanceLog.begin_run(restored_wave > 0)
 	if restored_wave > 0:
+		# 区域加成护栏（§5.5.3 · S3.5）：读档会重新走 `start_wave(restored_wave)`，
+		# 必须让**已经发过**的区块不再发一次，否则反复读同一档就能反复白拿同化度。
+		#
+		# 为什么一律是 `block_of(restored_wave) - 1`：
+		#   本项目的所有存档点（含初始档）都在**被命名的那一波开始之前**写入
+		#   （`save(w + 1, ...)` / `shop_ui.save(_wave + 1, ...)` / `start_wave(1)` 之前），
+		#   所以 `restored_wave` 这一波的区域加成**一定还没发**，
+		#   而它之前的所有区块都已经发过（且已烙进存档 stats）。
+		#   → 记为「上一区」，让紧接着的 start_wave 恰好补上本区那一次。
+		#   S4.5 起进度档的 checkpoint 是 `shop`（恢复后先开商店再开波），
+		#   但「restored_wave 这一波尚未开始」这个前提不变 —— 本行不用改。
+		GameState.area_bonus_block = maxi(0, Config.block_of(restored_wave) - 1)
 		if SaveRun.restored_checkpoint == SaveRun.CHECKPOINT_WAVE_START:
 			wave_manager.start_wave(restored_wave)
 		else:
 			shop_ui.open(restored_wave - 1)   # 商店档恢复：属性完整，货架重新生成
 	else:
 		GameState.start_run()
-		# 主菜单选定的开局道具（角色属性/初始武器已在 player._ready 应用）
+		# 主菜单选定的开局道具（角色属性/初始武器已在 player._ready 应用）。
+		# S4.5 起向导不再有道具步 → 正常流程下这里是空串；保留分支是为了兼容旧档字段
 		if GameState.loadout_item != "":
 			player.apply_item(GameState.loadout_item)
+		# ⚠️ 新局初始档**刻意**用 `wave_start`：第 1 波之前没有商店，
+		#    写 `shop` 会让恢复时去开一个「第 0 波商店」。进度档（wave >= 2）才用 `shop`。
 		var initial_save_ok := SaveRun.save(1, player, SaveRun.CHECKPOINT_WAVE_START)
 		wave_manager.start_wave(1)
 		if not initial_save_ok:
@@ -156,7 +186,25 @@ func _ready() -> void:
 	Nav.bind(self, _handle_back)
 	queue_redraw()
 
+## 底部操作提示 Label（`main.tscn` 的 `UI/Hint`）。
+## ⚠️ 2026-09-17（第 7 轮）用户反馈「最下面 wasd 的文字遮挡了 ui」。两层修法：
+##   ① `main.tscn` 里把它从 y∈[H-44, H-12]（正压在 `BottomLeft` 属性面板与武器槽行上）
+##      抬到 y∈[H-122, H-96]（HUD 底带上方，介于属性面板顶边与屏幕内容之间）；
+##   ② 这里再加一层 —— **只在 INTRO / PLAYING 显示**，商店 / 升级三选一 / 暂停 /
+##      结算 / 图鉴时自动隐藏，免得它再压到那些页面的底栏。
+## 用「每帧比较」而不是连 `phase_changed` 信号：相位在 main.gd / wave_manager.gd /
+## shop_ui.gd 里被改了十几处，信号漏接一处就会残留；每帧一次 bool 比较成本可忽略。
+var _hint_label: Label = null
+
 func _process(delta: float) -> void:
+	# 操作提示显隐：随阶段同步（只在真的变了时写，避免每帧触发重绘）
+	if _hint_label == null:
+		_hint_label = $UI.get_node_or_null("Hint") as Label
+	if _hint_label != null:
+		var hint_on := GameState.phase == GameState.Phase.PLAYING \
+			or GameState.phase == GameState.Phase.INTRO
+		if _hint_label.visible != hint_on:
+			_hint_label.visible = hint_on
 	# 相机震动（对应原型 cam.shake，衰减 22/s）
 	shake = maxf(0.0, shake - delta * 22.0)
 	camera.offset = Vector2.ZERO if shake <= 0.0 \
@@ -239,11 +287,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo and OS.is_debug_build():
 		if GameState.phase == GameState.Phase.PLAYING and event.ctrl_pressed:
 			match event.physical_keycode:
-				KEY_1: _debug_set_weapon("pistol")
-				KEY_2: _debug_set_weapon("smg")
-				KEY_3: _debug_set_weapon("shotgun")
-				KEY_4: _debug_set_weapon("knife")
-				KEY_5: _debug_set_weapon("rocket")
+				# Ctrl+1~5 = 五把五行武器，与开局池一一对应（每把恰好一个元素）。
+				# 刻意按 Config.LOADOUT_WEAPONS 顺序排：调试时顺手能轮一遍五个元素。
+				KEY_1: _debug_set_weapon("knife")        # 金
+				KEY_2: _debug_set_weapon("blight_bow")   # 木
+				KEY_3: _debug_set_weapon("frost_staff")  # 水
+				KEY_4: _debug_set_weapon("flamethrower") # 火
+				KEY_5: _debug_set_weapon("thunder_gong") # 土
 				KEY_6: wave_manager.spawn("shooter")
 				KEY_7: wave_manager.spawn("boss")
 		elif event.physical_keycode == KEY_R \
@@ -276,6 +326,17 @@ func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) ->
 	var reaction: Dictionary = Registry.get_reaction(reaction_id)
 	var accent := _reaction_color(reaction)
 	var overcome := String(reaction.get("type", "")) == "overcome"
+	# §7.4 五行反应：每触发一次，参与的两个元素（`from` / `to`）各 +3% 同化度。
+	# ⚠️ **必须放在下面「特效节流」的 early return 之前** —— 那段节流管的是打击感
+	#    （震屏 / 顿帧 / 中央提示），同化度是**玩法数值**，不该被视觉节流吃掉。
+	# ⚠️ 若 reaction 缺 `from`/`to`，这里会**静默什么都不加** —— 由冒烟断言兜底。
+	for r_el in [String(reaction.get("from", "")), String(reaction.get("to", ""))]:
+		if r_el == "":
+			continue
+		# ⚠️ 必须显式标 String：`r_el` 取自 Array 是 Variant，`"assim_" + r_el` 推不出类型
+		var r_key: String = "assim_" + r_el
+		player.stats[r_key] = float(player.stats.get(r_key, 0.0)) + Config.REACTION_ASSIM_GAIN
+	player._sanitize_stats()
 	# 相克爆发更猛（复用 Burst，无额外场景开销）
 	Burst.spawn(self, pos, accent, 22 if overcome else 12, 300.0 if overcome else 190.0)
 	var now := Time.get_ticks_msec()
@@ -488,77 +549,140 @@ func _ensure_codex() -> void:
 	$UI.add_child(_codex)
 	_codex.closed.connect(_on_codex_closed)
 
+## 暂停页的「图鉴」按钮（第 8 轮）。
+## ⚠️ 相位已经是 PAUSED了，**不要再压一层相位栈** ——
+##    直接把图鉴叠在暂停遮罩之上，关闭后自然回到暂停页。
+##    那么为什么 `_codex_phase_before = -1`？因为 -1 的语义就是「关闭时不还原相位」；
+##    若照拄 `_open_toast_target` 记成 PAUSED，关闭时会反复写同一个值（无害但误导）。
+func _open_codex_from_pause() -> void:
+	_ensure_codex()
+	if _codex == null:
+		return
+	_codex_phase_before = -1
+	HintBubble.hide_for($UI)
+	_codex.open()
+
+## 退出游戏（第 8 轮）：暂停页与结算页共用。
+## ⚠️ 不做任何存档动作。`SaveRun` 的存档点是「波末进商店」与「波开始」，
+##    战斗中退出用的是上一波快照 —— 与「返回主菜单」完全一致，不会丢整局进度。
+func _quit_game() -> void:
+	get_tree().quit()
+
 func _on_codex_closed() -> void:
 	if _codex_phase_before != -1:
 		GameState.set_phase(_codex_phase_before)
 		_codex_phase_before = -1
 	_next_toast()
 
-## 每波开始：BOSS 波切激烈曲，普通波切战斗曲；并按地图主题重建障碍物与氛围粒子
+## 每波开始：BOSS 波切激烈曲，普通波切战斗曲；并按地图主题切换氛围粒子
 func _on_wave_started(w: int) -> void:
+	BalanceLog.begin_wave(w)   # 逐波平衡日志（第 8 轮）：从本波起点开始累计增量
 	Music.play_track(Music.track_for_wave(w), 0.35)
 	_apply_map_theme(GameState.map_theme)
+	_grant_area_bonus(w)
+	_setup_terrain_zone(w)     # 场景属性地形区域（第 9 轮 · 需求 4）
 	if player != null and is_instance_valid(player):
 		player.on_wave_start()   # 角色特性：战意按"本波击杀"重新累积
 
+## 区域加成（§5.5.3 · S3.5）：**进入某区块的第一波**给玩家该元素同化度 +`AREA_BONUS`。
+##
+## 为什么是「进区一次性」而不是「每波都发」：同化度是**养成轴**（§7），
+## 每波都发会把它变成纯计时奖励；一次性发放才让它成为「选择在哪个区深耕」的取舍。
+##
+## ⚠️ 幂等护栏走 `GameState.area_bonus_block`（不落存档，由 _ready 按 restored_wave 反推）：
+##    没有它，读档重进同一波就会重复领取（`start_wave` 会被读档路径重新调用）。
+## ⚠️ 只在 `block > 已发区块` 时发 —— 用 `>` 而不是 `!=`，这样哪怕玩家因为某种
+##    异常路径回到更早的波次，也不会把已经到手的区块重新发一遍。
+func _grant_area_bonus(w: int) -> void:
+	var block := Config.block_of(w)
+	if block <= GameState.area_bonus_block:
+		return
+	GameState.area_bonus_block = block
+	var area := GameState.area_element
+	if area == "" or player == null or not is_instance_valid(player):
+		return
+	var key := "assim_" + area
+	player.stats[key] = float(player.stats.get(key, 0.0)) + Config.AREA_BONUS
+	player._sanitize_stats()   # 受 §7.2 上限约束
+	EventBus.banner_requested.emit(
+		"第 %d 区块 · %s" % [block, Config.map_theme_name(GameState.map_theme)],
+		"区域加成：%s同化度 +%d%%" % [String(Config.ELEMENT_NAME.get(area, area)),
+			int(round(Config.AREA_BONUS * 100.0))], 2.2)
+
+## 场景属性地形区域（第 9 轮 · 需求 4）：每波开始时按 `Config.terrain_zone_for_wave`
+## 重建一片圆形地形。换区（每 4 波）会换属性与位置；同一区块内四波位置不变。
+##
+## ⚠️ 销毁旧区必须**同步**撤销玩家身上的临时同化度（`zone.clear()`），不能只靠 `_exit_tree()`：
+##    `queue_free()` 的 `_exit_tree` 要等到本帧末才跑，而新区的第一次扫描可能在本帧内
+##    就把加成再写一遍 —— 旧区迟到的撤销会把新区的加成一并抹掉（表现为"站进区里没加成"）。
+##
+## ⚠️ 节点必须插成**第一个子节点**且 `z_index = 0`：它是地面装饰，
+##    必须压在敌人 / 掉落物 / 玩家之下（铁律 3：新视觉元素必须显式声明 z_index 与预算组）。
+##    它刻意不进 `fx` 组也不吃特效预算 —— 它是常驻地面，不是一次性特效。
+func _setup_terrain_zone(w: int) -> void:
+	_clear_terrain_zone()
+	if player == null or not is_instance_valid(player):
+		return
+	var z: Dictionary = Config.terrain_zone_for_wave(String(player.element), w)
+	if z.is_empty():
+		return
+	var zone: Node2D = TerrainZone.new()
+	zone.name = "TerrainZone"
+	zone.z_index = 0
+	zone.player = player
+	add_child(zone)
+	move_child(zone, 0)
+	if not zone.configure(z):
+		zone.queue_free()
+		return
+	_terrain_zone = zone
+
+## 撤掉当前地形区域：**同步**撤销它给玩家/怪物加的临时加成，然后销毁节点。
+## 消费点必须包含**所有"本波结束 / 即将写档"的路径**（main._on_wave_ended /
+## main._on_boss_killed / main._on_player_died）—— 少一处的后果是那片地的临时同化度
+## 被 `SaveRun.save()` 当成永久值写进档，**且完全不报错**。
+func _clear_terrain_zone() -> void:
+	if _terrain_zone == null or not is_instance_valid(_terrain_zone):
+		_terrain_zone = null
+		return
+	_terrain_zone.clear()
+	_terrain_zone.queue_free()
+	_terrain_zone = null
+
 # ------------------------------------------------------------
 # 地图主题化（Phase 5）
-# 主题由波次推导（Config.map_theme_for_wave），每波开始时应用到背景/障碍物/粒子。
-# 障碍物是「纯数据 + 手写判定」（见 systems/obstacles.gd），不是物理体
+# 主题由波次推导（Config.map_theme_for_wave），每波开始时应用到背景与氛围粒子。
+# 主题只影响观感（底色 / 网格 / 边框 / 粒子），不影响玩法。
 # ------------------------------------------------------------
 
 var _theme_fx: Node2D = null
-var obstacles_spawned := 0   # 测试观测：本波实际生成的障碍物数量
 
-## 应用地图主题：重建障碍物 → 换氛围粒子 → 重绘竞技场
+## §16.4 氛围粒子工厂：从 match 硬分支改为注册表。
+## 新增第 4 种粒子只需在此加一行；mod 亦可走同一张表注册。
+## 未知键：warn + 回落竹叶（与旧口径一致），不静默失败。
+## ⚠️ 必须是 var 而非 const：字典值是对 class_name 的引用，GDScript 不把 class 引用算作
+## 「常量表达式」，写成 const 会触发 "Assigned value for constant isn't a constant expression"。
+var AMBIENT_FX := {
+	"bamboo_leaf": BambooLeaf, "incense": Incense, "ghost_fire": GhostFire,
+}
+
+## 应用地图主题：换氛围粒子 → 重绘竞技场。
+##
+## 障碍物已整体移除（2026-09-14）。移除理由记录在此，避免以后有人不加思索地加回来：
+##   · 地形遮挡只对远程弹丸生效 —— 近战斩击、火焰喷射、光环/脉冲特性、主动技能
+##     全部不做遮挡查询，等于「玩家能隔墙打怪、怪却打不到玩家」，地形沦为单向掩体
+##   · 怪群一多，地形与怪群叠加把走位空间挤死，与「靠走位生存」的核心体验直接冲突
+## 场地因此回到纯开阔竞技场，主题只负责底色 / 网格 / 边框 / 氛围粒子。
 func _apply_map_theme(theme_id: String) -> void:
 	var theme := Config.map_theme(theme_id)
 	if theme.is_empty():
 		return
-	var target := GameRng.range_i(Config.OBSTACLE_MIN, Config.OBSTACLE_MAX)
-	# BOSS 波压缩障碍物：既给 BOSS 弹幕留出走位空间，也避免地形把 BOSS 卡在角落
-	if Config.is_boss_wave(wave_manager.wave):
-		target = mini(target, Config.OBSTACLE_BOSS_MAX)
-	obstacles_spawned = spawn_obstacles(theme_id, target)
-	_rebuild_theme_fx(String(theme.get("particle", "bamboo_leaf")))
+	# §16.2：优先用区块专属 ambient，空则回落主题默认 particle
+	var pk := String(theme.get("ambient", ""))
+	if pk == "":
+		pk = String(theme.get("particle", "bamboo_leaf"))
+	_rebuild_theme_fx(pk)
 	queue_redraw()
-
-## 生成本波障碍物并重建索引，返回实际数量。
-## 拒绝采样：避开玩家出生点（世界中心）安全半径与四周边界，且块与块之间留出通道。
-## 单点 12 次尝试失败就放弃该点，不做「强行塞到边上」的兜底——
-## 否则会在出生点或角落堆出无法通行的死角
-func spawn_obstacles(theme_id: String, count: int) -> int:
-	var theme := Config.map_theme(theme_id)
-	var kind := String(theme.get("obstacle", "bamboo"))
-	var r := Obstacle.radius(kind)
-	var wr := float(Config.WORLD.w)
-	var hr := float(Config.WORLD.h)
-	var origin := Vector2(wr, hr) * 0.5
-	var margin := r + 48.0
-	var min_gap := r * 2.0 + 56.0   # 块间最小间距：保证任何方向都走得过去
-	var entries: Array = []
-	for _i in count:
-		for _try in 12:
-			var p := Vector2(GameRng.range_f(margin, wr - margin),
-				GameRng.range_f(margin, hr - margin))
-			if p.distance_to(origin) < Config.OBSTACLE_SAFE_RADIUS + r:
-				continue
-			var blocked := false
-			for e in entries:
-				var ep: Vector2 = e.pos
-				if p.distance_to(ep) < min_gap:
-					blocked = true
-					break
-			if blocked:
-				continue
-			entries.append({ "pos": p, "kind": kind, "r": r })
-			break
-	# 这里生成的条目必然合法（坐标来自 GameRng、半径来自 Obstacle.radius），
-	# 但仍显式接收被拒数：一旦未来有人往 entries 里塞外部数据，警告会立刻冒出来而不是静默少块
-	var rejected := Obstacles.rebuild(entries)
-	if rejected > 0:
-		push_warning("[main] spawn_obstacles 有 %d 条障碍物条目被拒（请求 %d 块）" % [rejected, count])
-	return Obstacles.count()
 
 ## 换主题氛围粒子：同屏只留一套，切主题时销毁旧的
 ## 注意：未知 particle 键不静默失败 —— 与 Registry 对未知武器 fx 的处理口径一致（warn + 回落），
@@ -568,17 +692,12 @@ func _rebuild_theme_fx(particle_kind: String) -> void:
 		_theme_fx.queue_free()
 	_theme_fx = null
 	var world := Vector2(Config.WORLD.w, Config.WORLD.h)
-	match particle_kind:
-		"bamboo_leaf":
-			_theme_fx = BambooLeaf.spawn(self, world)
-		"incense":
-			_theme_fx = Incense.spawn(self, world)
-		"ghost_fire":
-			_theme_fx = GhostFire.spawn(self, world)
-		_:
-			push_warning("[main] 未知的氛围粒子键 %s，回落到竹叶；请检查 Config.MAP_THEMES 的 particle 字段"
-				% particle_kind)
-			_theme_fx = BambooLeaf.spawn(self, world)
+	var factory: GDScript = AMBIENT_FX.get(particle_kind, null)
+	if factory == null:
+		push_warning("[main] 未知的氛围粒子键 %s，回落到竹叶；请检查 Config.MAP_THEMES 的 particle / ambient 字段"
+			% particle_kind)
+		factory = BambooLeaf
+	_theme_fx = factory.spawn(self, world)
 
 # ------------------------------------------------------------
 # 江湖奇遇事件卡（Phase 4）
@@ -679,13 +798,16 @@ func _execute_event_effect(effect: Dictionary) -> void:
 ## 按品阶随机获得一件道具；该品阶无内容时退回全量加权池（mod 内容变动时不吞奖励）
 func _grant_random_item(rarity: String) -> void:
 	var pool: Array = []
+	# ⚠️ 金/红「唯一件」已持有的一律不进池 —— 否则「供奉兵器」这类选项会白吞一次奖励
 	for it in Registry.item_list():
 		if String(it.get("rarity", "common")) == rarity \
-				and Config.entry_weapon_relevant(it, player.weapons):
+				and Config.entry_weapon_relevant(it, player.weapons) \
+				and Config.unique_pool_ok(it, player.items_owned):
 			pool.append({ "item": it, "w": 1.0 })
 	if pool.is_empty():
 		for it2 in Registry.item_list():
-			if not Config.entry_weapon_relevant(it2, player.weapons):
+			if not Config.entry_weapon_relevant(it2, player.weapons) \
+					or not Config.unique_pool_ok(it2, player.items_owned):
 				continue
 			pool.append({ "item": it2,
 				"w": Config.rarity_weight(String(it2.get("rarity", "common")), wave_manager.wave) })
@@ -695,7 +817,11 @@ func _grant_random_item(rarity: String) -> void:
 	var id := String(picked.get("id", ""))
 	if id == "":
 		return
-	player.apply_item(id)
+	if not player.apply_item(id):
+		# 池已过滤，正常到不了这里；真撞上（同一件唯一件被别的路径先拿到）也不吞奖励，
+		# 转材料补偿（与法宝重复获得的处理同口径）
+		GameState.add_materials(Config.ARTIFACT_DUP_MATERIALS)
+		return
 	FloatingText.spawn(self, player.global_position + Vector2(0.0, -48.0),
 		"获得 %s %s" % [String(picked.get("ico", "")), String(picked.get("name", id))],
 		Color("ffd24a"))
@@ -743,6 +869,10 @@ func _on_enemy_killed(type: String) -> void:
 ## 波末自动回收场上全部掉落：经验/材料/红心直接结算，
 ## 升级选择若在此触发会积压 level_queue，下一波开始时补弹
 func _on_wave_ended(w: int) -> void:
+	# 地形区域必须在**任何存档/结算之前**撤掉（第 9 轮 · 需求 4）：
+	# 它是临时加成，而本波结束后的 `_finish_evolve_flow` 会把 stats 写进存档 ——
+	# 不撤的话这一片地会被**永久烙进存档**，且完全不报错。
+	_clear_terrain_zone()
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
 	shop_ui.open(w)
@@ -789,18 +919,70 @@ func _on_evolve_choice(weapon: String, target: String) -> void:
 		shop_ui._refresh()
 	_show_next_evolve_choice()
 
-## 进化流程收尾：所有进化处理完，写入存档
+## 进化流程收尾：所有进化处理完，写入存档。
+## S4.5：这里就是「第 w 波已打完 → 紧接着进商店」的落盘点，checkpoint 必须是 `shop`
+## （存档时机口径 = 通过波次、进入商店时）。原先写 `wave_start` 会让恢复后**把第 w+1 波重打一遍**。
+## `w + 1 >= 2` 是恒成立的（`_pending_evolve_wave` 只在本波结束后被赋值）→ 一定有前置商店。
 func _finish_evolve_flow() -> void:
+	# 法宝盒子（第 9 轮 · 需求 4）：中间 BOSS 给的盒子必须在**进化结算之后、写档之前**开完，
+	# 否则玩家选的那件法宝不会进档（读档后凭空消失，且不报错）。
+	# 这里不自增任何计数器，只是把"开盒"插进流程中间；开完会再次回到本函数。
+	if GameState.boss_boxes > 0:
+		_open_boss_box()
+		return
 	var w := _pending_evolve_wave
 	_pending_evolve_wave = 0
-	if w > 0 and not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+	if w > 0 and not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_SHOP):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
+	# 逐波平衡日志（第 8 轮需求 4）：与存档**同刻**落盘，所以「日志里的状态 == 读档得到的状态」。
+	# 这里也是「本波战斗数据」唯一完整的时刻 —— 掉落已回收（`_on_wave_ended`）、进化已结算。
+	# 商店里买的东西不算进本波（它属于下一波的起点），这样逐波曲线才读得干净。
+	if w > 0:
+		BalanceLog.commit(w, player, "shop")
+
+## 开一个法宝盒子（第 9 轮 · 需求 4）：3 件**未持有**法宝三选一。
+## 与武器进化流程同构（`_show_next_evolve_choice` → 玩家选择 → 回到收尾），
+## 所以两者可以叠加：先进化、再开盒、最后统一存档。
+##
+## 池空（15 件全持有）时**不弹空盒子**，直接折材料 —— 与 BOSS 直掉法宝的兜底同口径。
+func _open_boss_box() -> void:
+	if GameState.boss_boxes <= 0 or boss_box_ui == null:
+		GameState.boss_boxes = 0
+		_finish_evolve_flow()
+		return
+	var ids: Array = artifact_system.pick_artifact_choices(Config.BOSS_BOX_CHOICES)
+	if ids.is_empty():
+		var boxes: int = GameState.boss_boxes
+		GameState.boss_boxes = 0
+		var mat: int = Config.ARTIFACT_DUP_MATERIALS * Config.BOSS_BOX_CHOICES * boxes
+		GameState.add_materials(mat)
+		EventBus.banner_requested.emit("法宝已集齐",
+			"%d 个盒子折算为 %d ◆" % [boxes, mat], 2.6)
+		shop_ui._refresh()
+		_finish_evolve_flow()
+		return
+	_box_choices = ids
+	boss_box_ui.open(ids)
+
+## 玩家选定盒子里的一件法宝。`id == ""` = 放弃（当前 UI 不提供该入口，留作安全网）。
+func _on_boss_box_pick(id: String) -> void:
+	GameState.boss_boxes = maxi(0, GameState.boss_boxes - 1)
+	if id != "" and player != null and is_instance_valid(player):
+		player.apply_artifact(id)
+		Sfx.play("level_up")
+		shop_ui._refresh()
+	_open_boss_box()   # 还有盒子就接着开；开完自动回到 _finish_evolve_flow → 存档
 
 func _on_player_died() -> void:
+	_clear_terrain_zone()   # 同上：别把地形临时加成镀进逐波平衡日志
 	Music.play_track("defeat", 0.6)
 	CodexData.set_stat_max("best_score", GameState.score)
 	if SaveRun.current_run_owns_slot:
 		SaveRun.clear()   # 仅清除已由本局成功写入/恢复的槽
+	# 逐波平衡日志（第 8 轮）：阵亡也记一笔 —— 「死在第 N 波、什么构筑、最低血量多少」
+	# 正是平衡分析最想看的一组数。⚠️ 放在 `SaveRun.clear()` 之后：
+	# 存档该清就清，日志刻意留着（它是分析产物，不是进度）。
+	BalanceLog.commit(wave_manager.wave, player, "death")
 	GameState.set_phase(GameState.Phase.GAME_OVER)
 	EventBus.run_ended.emit(false)
 	# 局外成长：结算土豆精华（跨局永久；每日挑战不计精华——榜单才是它的奖励）
@@ -851,10 +1033,20 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 		"手柄 P%d 已%s" % [device + 1, "连接" if connected else "断开"], 1.5)
 
 func _on_boss_killed() -> void:
+	# 地形区域是**临时**加成，BOSS 一死本波就可能立刻结算/存档 → 先撤（第 9 轮 · 需求 4）
+	_clear_terrain_zone()
 	if GameState.endless:
 		# 无尽：积分与波次收尾由 wave_manager 处理（wave_ended → 商店 → 下一波）
 		EventBus.banner_requested.emit("BOSS 击破！",
 			"积分 +%d · 炼狱继续深入" % Config.boss_kill_score(wave_manager.wave), 2.2)
+		return
+	# 中间 BOSS（W4/8/12/16）：不通关，也不在这里发奖励。
+	# ⚠️ 这个 `return` 是阻止"第 4 波 BOSS 一死就通关"的唯一闸门 —— 少了它，
+	#    标准局会在 W4 直接进 VICTORY。
+	# ⚠️ 盒子的发放**不在这里**：本函数在 `boss_killed` 的监听顺序里晚于 wave_manager，
+	#    而后者已 emit 过 wave_ended（波末流程含存档）→ 在这里发会晚一整波。
+	#    真正的发放点是 `wave_manager._on_boss_killed`，见那里的注释。
+	if Config.is_mid_boss_wave(wave_manager.wave):
 		return
 	if GameState.daily:
 		# 每日挑战：通关结算入今日榜（BOSS 击破加分 ×2）
@@ -880,6 +1072,13 @@ func _on_boss_killed() -> void:
 		return
 	# 标准模式通关：存档保留到玩家作出选择（继续无尽会改写为无尽档）
 	CodexData.set_stat_max("best_score", GameState.score)
+	# 通关记录（§9.4）：写 `clear_<角色 id>` = max(旧值, 本局难度档位) → 解锁该角色的下一档难度。
+	# ⚠️ 只在**标准局通关**写这一处：每日挑战（上方分支）与自定义规则局都不写。
+	#    自定义局的 difficulty_id 是 "custom" → `difficulty_index` 返回 0，
+	#    而 set_stat_max 只增不减 → 天然是 no-op，不必再单独判一次 RunRules.
+	CodexData.set_stat_max("clear_" + GameState.character_id,
+		RunRules.difficulty_index(GameState.difficulty_id))
+	BalanceLog.commit(wave_manager.wave, player, "victory")   # 逐波平衡日志：通关也记一笔
 	GameState.set_phase(GameState.Phase.VICTORY)
 	EventBus.run_ended.emit(true)
 	# 局外成长：通关结算土豆精华（按波次折算）
@@ -892,7 +1091,7 @@ func _on_boss_killed() -> void:
 	_victory_continue.grab_focus()   # 继续无尽（默认焦点）
 
 ## 通关后继续：保留通关波的构筑与难度，从下一波进入无尽炼狱
-## （自定义规则局的"通关波"不一定是第 10 波，所以用 BOSS 波号 +1，而不是写死 11）
+## （自定义规则局的"通关波"不一定是第 20 波，所以用 BOSS 波号 +1，而不是写死 21）
 func _continue_endless() -> void:
 	if GameState.phase != GameState.Phase.VICTORY:
 		return
@@ -981,14 +1180,23 @@ func toggle_pause() -> void:
 	elif GameState.phase == GameState.Phase.PAUSED:
 		GameState.set_phase(_phase_before_pause)
 		_pause_overlay.visible = false
+		HintBubble.hide_for($UI)   # 关暂停页时收起悬浮说明
 
 func _draw() -> void:
 	var theme := Config.map_theme(GameState.map_theme)
 	var g := 64.0
 	var w := Config.WORLD.w
 	var h := Config.WORLD.h
-	# 主题底色（Phase 5）：氛围主要交给背景色，网格与边框取同系色保证可读性
+	# ---- ① bg_base：主题纯色底色（+ 可选元素染色 bg_tint）----
 	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("bg", "#101218"))), true)
+	var tint := String(theme.get("bg_tint", ""))
+	if tint != "":
+		var tc := Color(tint)
+		tc.a = 0.18
+		draw_rect(Rect2(0.0, 0.0, w, h), tc, true)
+	# ---- ② bg_decor：预留装饰层（§16.2）：默认空实现，未来美术在此叠加竹林剪影/残垣/鬼火地纹/视差 ----
+	_draw_bg_decor(theme)
+	# ---- ③ grid：64px 网格（可被主题关掉，见 grid 字段）----
 	var grid_color := Color(String(theme.get("grid", "#222730")))
 	var x := 0.0
 	while x <= w:
@@ -998,9 +1206,28 @@ func _draw() -> void:
 	while y <= h:
 		draw_line(Vector2(0.0, y), Vector2(w, y), grid_color, 1.0)
 		y += g
-	draw_rect(Rect2(0.0, 0.0, w, h), Color(String(theme.get("accent", "#4a5262"))), false, 4.0)
-	# 障碍物：与背景同一遍绘制（静态内容，由 CanvasItem 缓存，不产生逐帧开销）
-	Obstacles.draw_all(self)
+	# ---- ④ border：本区区域元素色强调边框（只读 Config，零判定，§5.5.3 · S3.5）----
+	# 为什么要叠这一层：换区横幅只闪 2.2s，而「这一区是什么属性」是**要玩家记住的
+	# 战术信息**（它决定本区主元素怪更多、更硬，也决定 BOSS 的属性）。
+	# 边框是唯一全程在线的载体，所以由它承担；内描边再加一圈纯元素色，
+	# 让玩家在弹幕里也能用余光认出属性。
+	# ⚠️ 铁律 2：这里只读 Config 的颜色表，零判定 —— 边框不参与碰撞、遮挡、索敌。
+	var accent := Color(String(theme.get("accent", "#4a5262")))
+	var area := GameState.area_element
+	if area != "":
+		var ecol := Color(String(Config.ELEMENT_COLOR.get(area, "#ffffff")))
+		draw_rect(Rect2(0.0, 0.0, w, h), accent.lerp(ecol, 0.55), false, 4.0)
+		var inner := ecol
+		inner.a = 0.35
+		draw_rect(Rect2(6.0, 6.0, w - 12.0, h - 12.0), inner, false, 2.0)
+	else:
+		draw_rect(Rect2(0.0, 0.0, w, h), accent, false, 4.0)
+
+## §16.2 预留的装饰层：当前不绘制任何内容（保持空实现，避免影响战斗可读性）。
+## 未来接视差背景 / 竹林剪影 / 残垣 / 鬼火地纹时，只需在此按 theme 的装饰字段绘制，
+## 不动 bg_base / grid / border 任一层。视觉层零判定（见 §16.5）。
+func _draw_bg_decor(theme: Dictionary) -> void:
+	pass
 
 # ---- 暂停 / 死亡 / 胜利 按钮菜单（代码构建，手柄可导航） ----
 
@@ -1040,10 +1267,19 @@ func _build_pause_menu() -> void:
 	var side_r := UiMetrics.dp(170.0) if compact_pause else 300.0
 	var act_w := UiMetrics.dp(180.0) if compact_pause else 220.0
 	var act_h := UiMetrics.touch_at_least(UiMetrics.dp(38.0)) if compact_pause else 44.0
-	# 左：角色属性面板
+	# 左：角色属性面板 —— 「固定视图 + 滚动条」（第 9 轮 · 用户要求）。
+	# 属性行数随道具 / 法宝 / 同化度增长，裸 VBox 超出面板高度只会被裁掉，
+	# 而且裁掉的部分**没有任何提示**（暂停页又正是玩家想核对属性的地方）。
 	_pause_left = VBoxContainer.new()
+	_pause_left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_pause_left.add_theme_constant_override("separation", 4)
-	hb.add_child(_mk_side_panel(side_l, _pause_left))
+	var pl_scroll := ScrollContainer.new()
+	pl_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pl_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pl_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	pl_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	pl_scroll.add_child(_pause_left)
+	hb.add_child(_mk_side_panel(side_l, pl_scroll))
 	# 中：标题 + 按钮
 	var center := VBoxContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1076,6 +1312,24 @@ func _build_pause_menu() -> void:
 	menu_btn.custom_minimum_size = Vector2(act_w, act_h)
 	menu_btn.pressed.connect(_goto_main_menu)
 	center.add_child(menu_btn)
+	# ---- 第 8 轮：暂停页补「图鉴」与「退出游戏」----
+	# 用户反馈「游戏中暂停看不到退出」。查证：这一页原本**只有**
+	# 「继续游戏 / 返回主菜单」—— 根本没有退出入口（不是被挡住）。
+	# 而回主菜单后，首页的「退出」在 16:9 全屏又会被切掉
+	# （见 `main_menu._build_home`）—— 两个 bug 叠起来就是「退不出去」。
+	# 图鉴按钮同样是用户要求：「需要暂停时可以看图鉴」。
+	var codex_btn := Button.new()
+	codex_btn.text = "图鉴"
+	codex_btn.custom_minimum_size = Vector2(act_w, act_h)
+	codex_btn.tooltip_text = "查看五行 / 武器 / 道具 / 法宝 / 敌人 / 奇遇 / 成就"
+	codex_btn.pressed.connect(_open_codex_from_pause)
+	center.add_child(codex_btn)
+	var quit_btn := Button.new()
+	quit_btn.text = "退出游戏"
+	quit_btn.custom_minimum_size = Vector2(act_w, act_h)
+	quit_btn.tooltip_text = "直接退出到桌面（本波进度 = 上一波进商店时的快照）"
+	quit_btn.pressed.connect(_quit_game)
+	center.add_child(quit_btn)
 	# 右：已购道具（只展示，不出售）
 	var rbox := VBoxContainer.new()
 	rbox.add_theme_constant_override("separation", 6)
@@ -1120,6 +1374,10 @@ func _pause_stat_row(name_text: String, value_text: String) -> HBoxContainer:
 	l.add_theme_font_size_override("font_size", 13)
 	l.add_theme_color_override("font_color", Color("9aa3b2"))
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 悬浮看该属性的具体含义（第 8 轮）。只把**这一个 Label** 置为 STOP，
+	# 整行仍是 IGNORE —— 不会挡住右侧数值。宿主用 `$UI`（气泡是 Control，
+	# 挂 CanvasLayer 下才能在整个酸盘层之上自由定位；挂 Node2D 上会跟着相机跑）。
+	HintBubble.attach_hover(l, name_text, EntryText.stat_help(name_text), $UI)
 	row.add_child(l)
 	var v := Label.new()
 	v.text = value_text
@@ -1131,6 +1389,7 @@ func _pause_stat_row(name_text: String, value_text: String) -> HBoxContainer:
 
 ## 打开暂停页时重建左右面板内容（数值/道具实时变化）
 func _refresh_pause_content() -> void:
+	HintBubble.hide_for($UI)   # 重建面板前先收起气泡，否则会留一张上次的旧卡
 	# 左：角色 + 全数值 + 特性
 	for c in _pause_left.get_children():
 		_pause_left.remove_child(c)
@@ -1163,6 +1422,29 @@ func _refresh_pause_content() -> void:
 	_pause_left.add_child(_pause_stat_row("回复", "%.1f / 秒" % float(s.regen)))
 	_pause_left.add_child(_pause_stat_row("收获率", "+%d%%" % roundi(float(s.harvesting) * 100.0)))
 	_pause_left.add_child(_pause_stat_row("吸血", "%.0f / 击杀" % float(s.lifesteal)))
+	# ---- 五行同化度（§6.2 / S5）----
+	# ⚠️ 2026-09-17（第 7 轮）用户问「角色同化度属性为什么没有显示在角色面板上」。
+	#    查证结论：在 game/scripts/ui/** 里 grep `assim` **零命中** —— 同化度此前只在
+	#    战斗计算（Config.hit_mult / out_mult）与存档里被读写，**界面层从不展示**。
+	#    这是「真缺失」而不是「显示错了」。
+	# 语义：assim_<元素> 是同一个数字的两个方向 —— 受击侧按 `hit_mult` 减伤（你就是
+	#    这种元素，挨打更不痛），输出侧按 `out_mult` 加伤（就是上面那「异常强化」一行
+	#    的位置，同化度走独立通道，不在那三个百分比里）。所以这里直接把双向含义写在表头。
+	# ⚠️ 只列 > 0 的元素：白板角色（potato）与未堆同化的局不开这一节，
+	#    免得 5 行 0% 白占版面；元素顺序走 Config.ELEMENTS（字母序，与图鉴一致）。
+	var assim_hdr := false
+	for assim_eid in Config.ELEMENTS:
+		var assim_key := "assim_" + String(assim_eid)
+		var assim_val := float(s.get(assim_key, 0.0))
+		if assim_val <= 0.0:
+			continue
+		if not assim_hdr:
+			assim_hdr = true
+			_pause_left.add_child(_pause_stat_row("五行同化",
+				"受到该元素伤害 ↓｜用该元素输出 ↑"))
+		_pause_left.add_child(_pause_stat_row(
+			"　%s同化" % String(Config.ELEMENT_NAME.get(String(assim_eid), String(assim_eid))),
+			"+%d%%" % roundi(assim_val * 100.0)))
 	var status_hit := 0.0
 	for sid in Config.STATUS:
 		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
@@ -1247,6 +1529,9 @@ func _refresh_pause_content() -> void:
 			l2.add_theme_color_override("font_color", Config.rarity_color(it.get("rarity", "common")))
 			l2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			row.add_child(l2)
+			# 点击道具名 → 加成 + 描述（第 8 轮）
+			HintBubble.attach_click(l2, func() -> Dictionary:
+				return EntryText.entry_detail(Registry.items.get(id, {}), "道具"), $UI)
 			var ct := Label.new()
 			ct.text = "x%d" % int(player.items_owned[id])
 			ct.add_theme_font_size_override("font_size", 13)
@@ -1291,6 +1576,8 @@ func _pause_artifact_rows() -> void:
 		nm.add_theme_color_override("font_color", Config.rarity_color(a.get("rarity", "common")))
 		nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(nm)
+		HintBubble.attach_click(nm, func() -> Dictionary:
+			return EntryText.entry_detail(Registry.get_artifact(aid), "法宝"), $UI)
 		var bits: Array[String] = []
 		var elem := String(a.get("element", ""))
 		if elem != "" and Config.ELEMENT_NAME.has(elem):
@@ -1329,6 +1616,12 @@ func _build_end_menus() -> void:
 	back_btn.custom_minimum_size = Vector2(200.0, 38.0)
 	back_btn.pressed.connect(_goto_main_menu)
 	dead_vbox.add_child(back_btn)
+	# 第 8 轮：结算页也得能退 —— 否则只能先回主菜单再找那个被切掉的「退出」
+	var dead_quit := Button.new()
+	dead_quit.text = "退出游戏"
+	dead_quit.custom_minimum_size = Vector2(200.0, 38.0)
+	dead_quit.pressed.connect(_quit_game)
+	dead_vbox.add_child(dead_quit)
 	_dead_menu = dead_vbox
 	# 胜利界面按钮：继续无尽 / 再来一局 / 返回主菜单
 	victory_label.text = "通关！"
@@ -1369,13 +1662,20 @@ func _build_end_menus() -> void:
 		_finish_victory_run()
 		_goto_main_menu())
 	vic_vbox.add_child(vic_back)
+	var vic_quit := Button.new()
+	vic_quit.text = "退出游戏"
+	vic_quit.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_quit.pressed.connect(_quit_game)
+	vic_vbox.add_child(vic_quit)
 	_victory_menu = vic_vbox
 
 func _goto_main_menu() -> void:
+	BalanceLog.close_run()   # 逐波平衡日志（第 8 轮）：回主菜单即停止累计（盘上日志保留）
 	Haptics.rumble(0.3, 0.0, 0.1)
-	# 商店是安全点，离开前保存；战斗/升级中保留波次开始快照，避免重复刷收益。
+	# 商店是安全点：离开前落盘，口径与其它存档点一致（S4.5 = 通过波次进商店，checkpoint `shop`）。
+	# 战斗/升级中不落盘 —— 保留上一波进商店时的快照，避免「退出重进刷本波收益」。
 	if GameState.phase == GameState.Phase.SHOP:
-		if not SaveRun.save(wave_manager.wave + 1, player, SaveRun.CHECKPOINT_WAVE_START):
+		if not SaveRun.save(wave_manager.wave + 1, player, SaveRun.CHECKPOINT_SHOP):
 			EventBus.banner_requested.emit("存档失败", "无法返回主菜单，请检查磁盘空间", 2.0)
 			return
 	get_tree().change_scene_to_file("res://scenes/ui/main_menu.tscn")

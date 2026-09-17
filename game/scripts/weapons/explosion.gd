@@ -53,7 +53,8 @@ func _process(delta: float) -> void:
 				if e.flee > 0.0:
 					continue
 				if global_position.distance_to(e.global_position) < max_r + e.radius:
-					e.take_damage(dmg, crit)
+					e.take_damage(dmg, crit, false, String(status_roll.get("element", "")),
+						String(status_roll.get("wtype", "")))
 					e.apply_hit_roll(status_roll)
 		# 迸发粒子与震屏按外观族区分：雷击明显更重，冰爆更"碎"
 		match fx:
@@ -66,6 +67,10 @@ func _process(delta: float) -> void:
 			"vine":
 				Burst.spawn(get_parent(), global_position, Color("8fe07a"), 14, 150.0)
 				EventBus.screen_shake.emit(3.5)
+			"flame":
+				# 高频小溅射专用：喷火枪 cd=0.10 → 每秒最多 10 次爆炸，若走默认分支会变成
+				# 「每秒 140 粒粒子 + 10 次震屏 5.0」，屏幕一直抖。故不震屏、粒子压到 6 粒。
+				Burst.spawn(get_parent(), global_position, col, 6, 120.0)
 			_:   # 原型 explode：橙色粒子迸发 14 粒 / 速度 200
 				Burst.spawn(get_parent(), global_position, col, 14, 200.0)
 				EventBus.screen_shake.emit(5.0)

@@ -157,6 +157,29 @@ func pick_artifact(boss: bool = false) -> String:
 		return ""
 	return String(GameRng.weighted_pick(pool))
 
+## 法宝盒子（第 9 轮 · 需求 4）：一次抽 `n` 件**互不相同**的未持有法宝给玩家三选一。
+## 与 `pick_artifact` 共用一个池（同样的亲和加权 / legendary ×BOSS 倍率）。
+## ⚠️ 候选之间必须互斥：把已选中的 id 也标进 `owned` 再抽下一次 ——
+##    否则同一件法宝可能占掉两个卡位，玩家实际只在两件里选（不报错，只是选择面缩水）。
+## 池不够 n 件时返回实际数量（调用方负责兜底），**不重复凑数**。
+func pick_artifact_choices(n: int = 3) -> Array:
+	var out: Array = []
+	if player == null or not is_instance_valid(player):
+		return out
+	var aff := Config.affinity_tags(GameState.character_id,
+		player.weapons, player.artifacts_owned)
+	var taken: Dictionary = player.artifacts_owned.duplicate()
+	for _i in maxi(0, n):
+		var pool := Registry.artifact_pool(taken, wave, true, aff)
+		if pool.is_empty():
+			break
+		var id := String(GameRng.weighted_pick(pool))
+		if id == "":
+			break
+		out.append(id)
+		taken[id] = 1
+	return out
+
 # ------------------------------------------------------------
 # 【2】信号回调（世界侧表现）
 # ------------------------------------------------------------
@@ -219,7 +242,7 @@ func _proc_bonus_damage(targets: Array, pos: Vector2, pct: float) -> bool:
 		if t == null or not is_instance_valid(t) or t.is_queued_for_deletion() \
 				or float(t.hp) <= 0.0:
 			continue
-		t.take_damage(dmg, false, false)
+		t.take_damage(dmg, false, false, "fire", "artifact")   # 焚天印是火属性法宝（五行 §12-S1）
 		hit += 1
 	if hit == 0:
 		return false
@@ -366,6 +389,12 @@ func _on_run_started() -> void:
 ## 且结算时 GameState 可能已切到 VICTORY（is_running() 为假）。
 func _on_boss_killed() -> void:
 	if player == null or not is_instance_valid(player) or float(player.hp) <= 0.0:
+		return
+	# 无尽前的**中间** BOSS（W4/8/12/16）只掉「法宝盒子」，三选一在波末（main._open_boss_box）。
+	# 直掉一件 + 再开盒子 = 一次 BOSS 拿两件法宝，与用户口径「无尽前只掉落法宝盒子」不符。
+	# ⚠️ 最终 BOSS（W20）与无尽 BOSS 保持直掉：前者随即通关（盒子没处开），
+	#    后者是无尽的既有保底渠道（用户只说了"无尽前"）。
+	if Config.is_mid_boss_wave(wave):
 		return
 	var id := pick_artifact(true)
 	if id == "":

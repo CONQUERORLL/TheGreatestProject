@@ -8,3 +8,8 @@ export/
 # git 灾难抢救时的临时备份目录 + 诊断输出（事后清理，绝不入版）
 _backup_before_git_repair_*/
 tmp_*.txt
+
+# 测试 / 工具的运行日志（每次跑都会重写，不含有效信息）
+smoke_run.log
+# 通配覆盖：import_gate / parse_gate / smoke 等所有工具运行日志
+game/tools/_*.log

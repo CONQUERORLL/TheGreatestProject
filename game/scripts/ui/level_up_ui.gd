@@ -6,6 +6,7 @@ extends Control
 
 var player  # characters/player.gd 引用，由 main 注入
 var _choices: Array = []   # 当前三张升级卡（Registry.upgrades 元素）
+var _merged := 1            # 本次选择合并了几级收益（连升合并，见 open/_choose）
 
 ## 卡阵参数（桌面设计尺寸；小屏由 UiMetrics.card_grid 压缩/换行，见 _build_cards）
 const CARD_WANT := Vector2(200.0, 220.0)
@@ -42,6 +43,10 @@ func _on_phase_changed(new_phase: int) -> void:
 func open() -> void:
 	GameState.set_phase(GameState.Phase.LEVEL_UP)
 	_choices = []
+	# 连升合并（第 9 轮）：积压的 N 级合并成**一次**选择，选中的那张生效 N 次。
+	# 上限对齐 Config.LEVEL_MERGE_CAP，超出的级数在 _choose 里折成材料。
+	# ⚠️ 这里只定「这一次代表几级」，**不动 level_queue** —— 队列一律由 _choose 清零。
+	_merged = clampi(maxi(GameState.level_queue, 1), 1, Config.LEVEL_MERGE_CAP)
 	# 构筑亲和：与当前角色 / 武器相关的升级更容易出现（近战角色更容易刷到开刃等）
 	var wps: Array = []
 	var arts: Dictionary = {}
@@ -49,8 +54,15 @@ func open() -> void:
 		wps = player.weapons
 		arts = player.artifacts_owned
 	var aff := Config.affinity_tags(GameState.character_id, wps, arts)
+	# 金/红升级 = 「唯一件」：已获得过的不再出现在三选一里
+	# （闸门本体在 player.apply_upgrade，这里只是不把它摆到台面上）
+	var up_owned: Dictionary = {}
+	if player != null and is_instance_valid(player):
+		up_owned = player.upgrades_owned
 	var weighted: Array = []
 	for u in Registry.upgrade_list():
+		if not Config.unique_pool_ok(u, up_owned):
+			continue
 		if not Config.entry_weapon_relevant(u, wps):
 			continue   # 过滤「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) \
@@ -69,7 +81,10 @@ func open() -> void:
 				break
 	# 终极兜底：加权池被过滤空（mod 构筑极端情况）时均匀补满三张，三选一永远有货
 	if _choices.is_empty():
-		var candidates: Array = Registry.upgrade_list().duplicate()
+		var candidates: Array = []
+		for u2 in Registry.upgrade_list():
+			if Config.unique_pool_ok(u2, up_owned):
+				candidates.append(u2)
 		while _choices.size() < 3 and not candidates.is_empty():
 			var idx := GameRng.range_i(0, candidates.size() - 1)
 			var e: Variant = candidates[idx]
@@ -78,6 +93,9 @@ func open() -> void:
 				_choices.append(e)
 	_ensure_affinity_choice(aff)
 	_title.text = "升级！Lv %d" % GameState.level
+	if _merged > 1:
+		# 必须让玩家看见「为什么只选一次」——否则会以为漏了两次升级
+		_title.text += "  ·  连升 %d 级（本次选择生效 ×%d）" % [_merged, _merged]
 	_build_cards()
 	visible = true
 	# 轻淡入过渡（0.1s，不阻塞选择）
@@ -122,8 +140,11 @@ func _ensure_affinity_choice(aff: Array) -> void:
 		taken[String(c2.get("id", ""))] = true
 	var pool: Array = []
 	var wps2: Array = player.weapons if player != null and is_instance_valid(player) else []
+	var up_owned2: Dictionary = player.upgrades_owned if player != null and is_instance_valid(player) else {}
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
+			continue
+		if not Config.unique_pool_ok(u, up_owned2):
 			continue
 		if not Config.entry_weapon_relevant(u, wps2):
 			continue
@@ -147,6 +168,10 @@ func _grab_first_card() -> void:
 
 func card_count() -> int:
 	return _choices.size()
+
+## 本次选择代表几级收益（连升合并后的级数；冒烟与 UI 文案都读它，不各自算一遍）
+func merged_count() -> int:
+	return _merged
 
 func _build_cards() -> void:
 	for c in _cards.get_children():
@@ -225,17 +250,24 @@ func _choose(i: int) -> void:
 	var uid := ""
 	if typeof(_choices[i]) == TYPE_DICTIONARY:
 		uid = String(_choices[i].get("id", ""))
+	# 连升合并（第 9 轮）：一次点击兑现 _merged 级的收益。
+	# ⚠️ 金/红「唯一件」的第二、三次会被 `player.apply_upgrade` 的硬闸门拒绝 ——
+	#    这是对的（唯一件本就不该叠加），所以这里不做任何补救，收益自然少算。
+	var times := maxi(1, _merged)
 	if player and uid != "":
-		player.apply_upgrade(uid)
+		for _t in times:
+			player.apply_upgrade(uid)
+	# 超出合并上限的级数折成材料 —— 避免「一次升 8 级」被一张卡白白吃掉
+	var overflow := GameState.level_queue - times
+	if overflow > 0:
+		GameState.add_materials(overflow * Config.LEVEL_MERGE_OVERFLOW_MAT)
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
-	GameState.level_queue = maxi(0, GameState.level_queue - 1)
+	# 队列一次清零：合并后不存在「还剩几级要补弹」，这是玩家少点几次的全部来源
+	GameState.level_queue = 0
+	_merged = 1
 	_choices = []
-	if GameState.level_queue > 0:
-		# 连升：为下一次升级重新抽取三张，避免空卡片锁死
-		open()
-	else:
-		visible = false
-		GameState.set_phase(GameState.Phase.PLAYING)
+	visible = false
+	GameState.set_phase(GameState.Phase.PLAYING)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible:

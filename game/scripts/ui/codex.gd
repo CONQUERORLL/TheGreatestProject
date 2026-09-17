@@ -1074,43 +1074,12 @@ func _detail_effects_entry(data: Dictionary, kind: String) -> void:
 				Color(String(st.get("color", "#e8b84b"))), String(st.get("desc", "")),
 				"命中 %d%%" % roundi(float(eff["on_hit_" + sid2]) * 100.0)))
 
-## effects 字典 → 中文效果行（图鉴/升级/道具共用）
+## effects 字典 → 中文效果行
+## ⚠️ 2026-09-17（第 8 轮）实现**搬到 `EntryText.effect_lines`**：商店与暂停面板的
+##    「点击看加成」要用同一份文案，三处各写一份必然会漏改（新增效果键只改一处）。
+##    这里保留同名薄封装 —— codex.gd 内部的调用点一行都不用改。
 func _effect_lines(effects: Dictionary) -> Array:
-	var out: Array = []
-	for k in effects:
-		var key := String(k)
-		var v := float(effects[k])
-		match key:
-			"max_hp": out.append("最大生命 +%.0f" % v)
-			"regen": out.append("生命回复 +%.1f / 秒" % v)
-			"armor": out.append("护甲 +%.0f" % v)
-			"dodge": out.append("闪避 +%d%%" % roundi(v * 100.0))
-			"dmg_mult": out.append("伤害 +%d%%" % roundi(v * 100.0))
-			"as_mult": out.append("攻速 +%d%%" % roundi(v * 100.0))
-			"crit_ch": out.append("暴击率 +%d%%" % roundi(v * 100.0))
-			"crit_mult": out.append("暴击伤害 +%d%%" % roundi(v * 100.0))
-			"speed_mult": out.append("移速 +%d%%" % roundi(v * 100.0))
-			"base_speed": out.append("基础移速 +%.0f" % v)
-			"pickup_range": out.append("拾取范围 +%.0f" % v)
-			"harvesting": out.append("收获率 +%d%%" % roundi(v * 100.0))
-			"lifesteal": out.append("击杀回复 +%.0f" % v)
-			"heal_flat": out.append("最大生命 +%.0f（并立即回复）" % v)
-			"heal_pct": out.append("立即回复最大生命 %d%%" % roundi(v * 100.0))
-			"status_chance": out.append("异常命中率 +%d%%" % roundi(v * 100.0))
-			"status_dmg_mult": out.append("状态伤害 +%d%%" % roundi(v * 100.0))
-			"status_dur_mult": out.append("异常时长 +%d%%" % roundi(v * 100.0))
-			"status_spread": out.append("中毒目标死亡时传染")
-			_:
-				if key.begins_with("on_hit_"):
-					var sid3 := key.trim_prefix("on_hit_")
-					var st2: Dictionary = Config.status_cfg(sid3)
-					if not st2.is_empty():
-						out.append("命中 %d%% 施加%s" % [roundi(v * 100.0), String(st2.get("name", sid3))])
-					else:
-						out.append("%s +%d%%" % [key, roundi(v * 100.0)])
-				else:
-					out.append("%s +%.2f" % [key, v])
-	return out
+	return EntryText.effect_lines(effects)
 
 # ---------------- 敌人详情 ----------------
 
@@ -1134,7 +1103,23 @@ func _detail_enemy(id: String) -> void:
 	_detail.add_child(_stat_row("红心掉率", "%d%%" % roundi(float(e.get("heart_chance", 0.0)) * 100.0)))
 	_detail.add_child(_stat_row("状态抗性", "%d%%" % roundi(float(e.get("status_resist", 0.0)) * 100.0)))
 	_detail.add_child(_section("出现波次"))
-	_detail.add_child(_stat_row("常规", _enemy_waves(id)))
+	# S4：元素闸门让出场波次**因难度而异** —— 例：金怪在简单档要到区块 5（第 17 波）才解禁，
+	# 困难/噩梦区块 2（第 5 波）就有。所以逐档列出；三档一致时塌成一行。
+	var diff_waves: Array = []
+	for diff_id in RunRules.BUILTIN_DIFF_IDS:
+		diff_waves.append(_enemy_waves(id, String(diff_id)))
+	var same_all := true
+	for s in diff_waves:
+		if String(s) != String(diff_waves[0]):
+			same_all = false
+	if same_all:
+		_detail.add_child(_stat_row("各难度一致", String(diff_waves[0])))
+	else:
+		for i in range(RunRules.BUILTIN_DIFF_IDS.size()):
+			var did := String(RunRules.BUILTIN_DIFF_IDS[i])
+			_detail.add_child(_stat_row(
+				String(Registry.get_difficulty(did).get("name", did)), String(diff_waves[i])))
+		_detail.add_child(_note("按木序基准推导（白板角色口径）；角色属性不同，被闸元素随之改变"))
 	if boss:
 		var btitle := String(Config.BOSS_TITLES.get(id, ""))
 		if btitle != "":
@@ -1143,26 +1128,51 @@ func _detail_enemy(id: String) -> void:
 func _enemy_is_boss(e: Dictionary) -> bool:
 	return bool(e.get("is_boss", false)) or String(e.get("ai", "")) == "boss"
 
-## 敌人出现波次：内置刷怪表 1~10 波 + 事件/BOSS/精英池兜底说明
-func _enemy_waves(id: String) -> String:
-	var waves: Array = []
+## 敌人出现波次：内置刷怪表覆盖的全部波次（S3.5 起为 20 波制）+ 事件/BOSS/精英池兜底说明。
+## ⚠️ **必须压缩成区间**：`grunt` 这类基础怪在 20 波制下会出现在 1~19 波，
+##    逐个列出会得到「第 1, 2, 3, …, 19 波」这种长到溢出卡片的字符串。
+## `difficulty_id` 为空 = **不设闸门**（三档并集口径，`wave_composition` 的默认行为）；
+##    传具体难度 id 才走元素闸门 —— 这是 S4 起「同一只怪在不同难度下出场波次不同」的来源。
+##    玩家元素固定传 ""（木序基准）：图鉴是跨角色查阅，不存在「本局我是谁」这个前提。
+func _enemy_waves(id: String, difficulty_id := "") -> String:
+	var nums: Array = []
 	for w in range(1, Config.WAVES_TOTAL + 1):
-		for entry in Registry.wave_composition(w):
+		for entry in Registry.wave_composition(w, difficulty_id):
 			if typeof(entry) == TYPE_DICTIONARY and String(entry.get("item", "")) == id:
-				waves.append(str(w))
+				nums.append(w)
 				break
-	if not waves.is_empty():
-		return "第 %s 波" % ", ".join(waves)
+	if not nums.is_empty():
+		return "第 %s 波" % _compress_waves(nums)
 	if id == "chest_guard":
 		return "宝箱守卫事件波"
 	for entry2 in Config.ELITE_POOL:
 		if typeof(entry2) == TYPE_DICTIONARY and String(entry2.get("item", "")) == id:
 			return "精英替换池（第 4 波起）"
 	if Config.BOSS_POOL.has(id):
-		return "BOSS 轮换池（第 10 波 / 无尽每 10 波）"
+		return "BOSS 轮换池（第 %d 波 / 无尽每 10 波）" % Config.BOSS_WAVE
 	if Registry.enemies.has(id) and _enemy_is_boss(Registry.enemies[id]):
 		return "BOSS（创意工坊 / 特殊事件）"
 	return "特殊事件 / 创意工坊"
+
+## 连续波号压成区间：[1,2,3,5,6,9] → "1-3, 5-6, 9"
+## 长度为 2 的连续段写成 "5, 6"（"5-6" 反而更难看），3 段及以上才用短横。
+func _compress_waves(nums: Array) -> String:
+	var parts: Array = []
+	var i := 0
+	while i < nums.size():
+		var start := int(nums[i])
+		var end := start
+		while i + 1 < nums.size() and int(nums[i + 1]) == end + 1:
+			i += 1
+			end = int(nums[i])
+		if end - start >= 2:
+			parts.append("%d-%d" % [start, end])
+		elif end > start:
+			parts.append("%d, %d" % [start, end])
+		else:
+			parts.append(str(start))
+		i += 1
+	return ", ".join(parts)
 
 ## 奇遇详情（Phase 4）：地域 / 品阶 / 触发规则 / 三种抉择
 func _detail_event(id: String) -> void:
@@ -1247,6 +1257,17 @@ func _section(text: String) -> Label:
 	l.text = text
 	l.add_theme_font_size_override("font_size", 14)
 	l.add_theme_color_override("font_color", Color("e8b84b"))
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+## 小节内的灰字注解（比 `_empty` 亮一档：那是「此页无内容」，这是「补充说明」）
+func _note(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(_detail_min_w(), 0.0)
+	l.add_theme_font_size_override("font_size", 12)
+	l.add_theme_color_override("font_color", Color("7b8494"))
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
 

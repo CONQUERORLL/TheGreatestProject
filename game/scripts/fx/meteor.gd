@@ -7,10 +7,13 @@ var warn_t := 0.9
 var radius := 78.0
 var dmg := 22.0
 var player
+## 来袭五行（五行体系 §12-S1）：空串 = 无属性。BOSS 的 nova 技能带自身元素。
+var element := ""
 var _warn_total := 0.9
 var _landed := false
 
-static func spawn(parent: Node, pos: Vector2, target_player, damage: float, r: float, warn: float) -> void:
+static func spawn(parent: Node, pos: Vector2, target_player, damage: float, r: float,
+		warn: float, element_atk: String = "") -> void:
 	var m := Meteor.new()
 	m.position = pos
 	m.player = target_player
@@ -18,6 +21,7 @@ static func spawn(parent: Node, pos: Vector2, target_player, damage: float, r: f
 	m.radius = r
 	m.warn_t = warn
 	m._warn_total = warn
+	m.element = element_atk
 	m.z_index = 15
 	parent.add_child(m)
 
@@ -40,7 +44,7 @@ func _land() -> void:
 	# 砸落：AOE 判定玩家
 	if player != null and is_instance_valid(player):
 		if global_position.distance_to(player.global_position) < radius + float(Config.PLAYER.radius):
-			player.take_damage(dmg)
+			player.take_damage(dmg, element)
 	# 爆裂特效（橙红双层）+ 震屏
 	Burst.spawn(get_parent(), global_position, Color("ff8a3d"), 14, 220.0)
 	Burst.spawn(get_parent(), global_position, Color("ffd24a"), 8, 120.0)

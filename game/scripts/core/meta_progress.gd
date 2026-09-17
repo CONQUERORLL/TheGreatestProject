@@ -24,24 +24,32 @@ const TALENTS := {
 ## 门派专属天赋：5 门派 × 3 级，仅对对应门派角色生效（开局按 GameState.character_id 判断）。
 ## 与通用天赋（TALENTS，全员生效）互补：这里堆「门派的特色深度」。
 ## character 字段是该门派的唯一代表角色；effect.stats 键必须落在 player.stats 已知键内。
+##
+## ⚠️ **S2 重指向（2026-09-14，必须记住）**：本表原本指向 5 个旧角色
+##    （pyromancer / druid / swordmaster / tidecaller / guardian），S2 内容收缩把它们
+##    整体迁入工坊包后，**内置 6 个角色里一个都匹配不上** → `sect_for()` 恒返回空串
+##    → 玩家买满门派天赋也永远不生效，且**全程无报错**。
+##    → 现全部重指向「同元素的五行修士」，门派名与角色名保持语义一致
+##      （金=太白剑阁→鎏金修士 / 木=青囊谷→青囊修士 / …）。
+##    若日后解冻旧角色，可再补一套映射，但**不要**把内置指向改回去。
 const SECT_TALENTS := {
-	"fire": { "name": "焚天门", "ico": "🔥", "character": "pyromancer",
+	"fire": { "name": "焚天门", "ico": "🔥", "character": "fire_adept",
 		"desc": "状态伤害 +15% · 异常持续 +10% / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "status_dmg_mult": 0.15, "status_dur_mult": 0.10 } } },
-	"wood": { "name": "青囊谷", "ico": "🌿", "character": "druid",
+	"wood": { "name": "青囊谷", "ico": "🌿", "character": "wood_adept",
 		"desc": "异常扩散 +15% · 异常命中 +5% / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "status_spread": 0.15, "status_chance": 0.05 } } },
-	"metal": { "name": "太白剑阁", "ico": "⚔", "character": "swordmaster",
+	"metal": { "name": "太白剑阁", "ico": "⚔", "character": "metal_adept",
 		"desc": "斩击范围 +12% · 暴击伤害 +15% / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "melee_range_bonus": 0.12, "crit_mult": 0.15 } } },
-	"water": { "name": "沧海门", "ico": "💧", "character": "tidecaller",
+	"water": { "name": "沧海门", "ico": "💧", "character": "water_adept",
 		"desc": "异常持续 +15% · 移速 +4% / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "status_dur_mult": 0.15, "speed_mult": 0.04 } } },
-	"earth": { "name": "厚土宗", "ico": "⛰", "character": "guardian",
+	"earth": { "name": "厚土宗", "ico": "⛰", "character": "earth_adept",
 		"desc": "最大生命 +20 · 护甲 +1 / 级", "max_lv": 3,
 		"base_cost": 130, "cost_step": 90,
 		"effect": { "stats": { "max_hp": 20.0, "armor": 1.0 } } },

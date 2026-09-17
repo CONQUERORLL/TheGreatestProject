@@ -8,6 +8,10 @@ var life := 3.0
 var dmg := 10.0
 var radius := 6.0
 var player
+## 来袭五行（五行体系 §12-S1）：空串 = 无属性。由发射者（Enemy）在 setup 后写入。
+var element := ""
+## 穿甲（§5.3）：由发射者写入，透传给 `player.take_damage`。对象池复用必须清零。
+var armor_pierce := 0.0
 
 const COL := Color("ff6b5e")
 const OUTLINE := Color(0.16, 0.05, 0.05, 0.95)
@@ -23,6 +27,8 @@ func setup(pos: Vector2, ang: float, bspeed: float, damage: float, r: float, lif
 	dmg = damage
 	radius = r
 	life = life_t
+	element = ""   # 对象池复用：清掉上一发的五行，由发射者随后写入（防串味）
+	armor_pierce = 0.0   # 同上：穿甲也必须清零，否则池子里会「串味」成上一位发射者的穿甲
 	z_index = 6
 
 func _physics_process(delta: float) -> void:
@@ -31,20 +37,10 @@ func _physics_process(delta: float) -> void:
 	var previous := global_position
 	var next := global_position + velocity * delta
 	life -= delta
-	# 障碍物遮挡（Phase 5）：地形会吃掉敌弹——这是障碍物给玩家的主要收益（掩体）。
-	# 必须显式 is_finite：INF 表示「没被挡住」，而 INF > 0.0 为真，
-	# 漏判会让每一颗敌弹都在第一帧凭空消失。
-	# 只认 t > 0：贴墙的敌人射出的弹丸起点可能落在障碍物内，放它飞出去而不是凭空消失
-	var block_t := Obstacles.first_block_t(previous, next, radius)
-	if is_finite(block_t) and block_t > 0.0:
-		# 刻意不播撞击特效：敌弹数量最多，若每颗撞墙都迸发粒子，会吃掉
-		# Config.FX_BURST_MAX_LIVE 的全局预算，把「击杀/受击」这类关键打击感的粒子挤掉
-		ObjectPool.release("enemy_bullet", self)
-		return
 	if player != null and is_instance_valid(player) and Combat.segment_hits_circle(
 			previous, next, player.global_position, radius + float(Config.PLAYER.radius)):
 		global_position = next
-		player.take_damage(dmg)
+		player.take_damage(dmg, element, armor_pierce)
 		ObjectPool.release("enemy_bullet", self)
 		return
 	global_position = next

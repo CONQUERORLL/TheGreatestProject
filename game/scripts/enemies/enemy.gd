@@ -19,6 +19,41 @@ var touch_dmg := 0.0
 var radius := 14.0
 var color := Color.WHITE
 var shape := "circle"
+## 所属五行（五行体系 §12-S1）：空串 = 无属性。取自 cfg.element，setup 时快照。
+## ⚠️ 快照而不是每次读 cfg —— 后续 S4.5 的「区块偏置」会按波次动态改这个值，
+##    快照语义让「这只怪属于哪一行」在它出生那一刻就确定，不会中途变卦。
+var element := ""
+## 元素减伤（五行体系 §5.5.2 怪物抗性模型）：0 = 不减伤。
+## 与 status_resist（状态时长减免）是两回事，别混用。
+## 受击时它是**独立的减伤乘区**，与 §2.3-B 的关系修正相乘（不是取更严/取 min）——
+## 理由见 take_damage 里那段注释：取更严会让「高波次同属性怪」的抗性完全吞掉关系收益。
+var element_resist := 0.0
+## BOSS 光环加成（§5.5.5 规则 3）：光环内**同元素**怪 R +0.15。
+## 由 BOSS 侧的低频扫描写入（见 `_refresh_boss_aura`），异元素怪保持 0。
+var aura_bonus := 0.0
+## 「自身吃自己光环」标记（§5.5.5 规则 1）：**同属性** BOSS（玩家元素 == BOSS 元素）为 true。
+## 只有它为 true 时，抗性上限才提到 0.90 —— 也正因如此，这条规则在标准 20 波里
+## 有且只有一个可达点：区域元素序末位（W20 BOSS 与玩家同属，见 §5.5.3）。
+var _aura_self_active := false
+## 区块偏置（§5.5.3）：本区块**主元素**的怪 R +0.10。
+## S3 尚无区块概念（区块划分是 S3.5），故当前恒 0 —— 但公式与接口先落地：
+## S3.5 只需在 spawn 时写 `enemy.block_bias = Config.RESIST_BLOCK_BIAS` 再调
+## `refresh_element_resist()`，不必回头改公式。
+var block_bias := 0.0
+## 地形区域加成（第 9 轮 · 需求 4）：站在本区地形圆内、且元素与本区相同时 R +该值。
+## 由 `fx/terrain_zone.gd` 每 0.35s 低频扫描写入（与 BOSS 光环同一口径）；离开圆即归零。
+## 与 block_bias / aura_bonus 进同一个加法项 → 天然被 `_resist_cap()` 压住（普通 0.75）。
+var zone_bonus := 0.0
+## ---- 五行机制字段（§12-S3），全部来自 cfg，setup 时快照 ----
+var shield := 0.0           # 当前护盾值（先扣盾、后扣血）
+var max_shield := 0.0
+var shield_resist := 0.0    # 护盾存在期间的额外减伤（与元素修正相乘）
+var armor_pierce := 0.0     # 穿甲：打玩家时按 (1 - pierce) 加权玩家护甲项
+var regen := 0.0            # 每秒回血（HP/s）
+var regen_delay := 0.0      # 受击后暂停回血的秒数
+var _regen_hold := 0.0      # 当前回血暂停剩余时间
+var _split_gen := 0         # 分裂代数：0 = 原生，1 = 分裂体（分裂体不再分裂）
+var _aura_t := 0.0          # BOSS 光环扫描计时
 var touch_cd := 0.0
 var flash_t := 0.0
 var bar_t := 0.0
@@ -72,10 +107,17 @@ func setup(type_name: String, wave: int = 1) -> void:
 	var hp_s := 1.0
 	var dmg_s := 1.0
 	if boss_flag:
-		# BOSS 不吃常规波次缩放；无尽模式每深 1 波血量 +30%（再叠难度倍率），
-		# 防止后期构筑对 BOSS 秒杀
-		if GameState.endless and wave > 10:
-			hp_s = 1.0 + 0.30 * float(wave - 10)
+		# BOSS 不吃普通怪的 `wave_hp_scale`，血量曲线**唯一真值** = `Config.boss_hp_scale(w)`：
+		#   · 无尽 = 1 + 0.30(w−10)（W10 = 1.0，与改动前逐字一致）；
+		#   · 标准最终波 = 1.0（W20 既有平衡不受影响）；
+		#   · 中间 BOSS（W4/8/12/16）= `MIDBOSS_HP_FRAC` 随区块成长；非 BOSS 波 = 1.0。
+		#
+		# ⚠️⚠️ 第 9 轮踩过的静默坑（**不报错、冒烟当时也全绿**）：`boss_hp_scale` 当时只写进了
+		#    Config 并配了纯函数断言，**这里从没调用过它** —— 于是中间 BOSS 与最终 BOSS 血量
+		#    完全相同（56 万~90 万），而中间 BOSS 还额外背 105~195s 限时
+		#    → 必然打不死 →「时间结束没有击杀则不掉落」变成常态、法宝盒子永远拿不到。
+		#    教训：**新加的公式必须确认它有消费点**；只断言纯函数返回值 = 没断言「有人读」。
+		hp_s = Config.boss_hp_scale(wave)
 		dmg_s = 1.0 + 0.18 * float(wave - 1)
 	else:
 		hp_s = Config.wave_hp_scale(wave)
@@ -91,6 +133,28 @@ func setup(type_name: String, wave: int = 1) -> void:
 	shoot_cd = GameRng.range_f(1.0, 2.0)   # 原型 rand(1,2)：首发时机错开
 	ring_cd = float(cfg.get("ring_cd", 0.0))
 	status_resist = clampf(float(cfg.get("status_resist", 0.0)), 0.0, 0.95)
+	# 元素归属快照（§12-S1）。区块偏置由外部写 `block_bias` 后调 refresh（见该变量注释）。
+	element = String(cfg.get("element", ""))
+	if element != "" and not Config.ELEMENTS.has(element):
+		element = ""
+	# ---- 五行机制字段（§12-S3）----
+	# 护盾：独立于血量的第二条命。先扣盾、后扣血。
+	max_shield = maxf(0.0, float(cfg.get("shield", 0.0)))
+	shield = max_shield
+	shield_resist = clampf(float(cfg.get("shield_resist", 0.0)), 0.0, 0.95)
+	armor_pierce = clampf(float(cfg.get("armor_pierce", 0.0)), 0.0, 1.0)
+	regen = maxf(0.0, float(cfg.get("regen", 0.0)))
+	regen_delay = maxf(0.0, float(cfg.get("regen_delay", 0.0)))
+	_regen_hold = 0.0
+	# 元素抗性（§5.5.2）—— 四项全部接上，走 Config.mob_resist 这一条唯一公式：
+	#     R = clamp( 波次成长 × 难度系数 + 区块偏置 + BOSS光环 , 0 , cap )
+	#   ⚠️ 难度系数与波次成长是**相乘**、不是相加。理由见 Config.mob_resist 的长注释：
+	#      相加会让三档难度在 W20 全部撞上 0.75 → 后期失去区分度，
+	#      且与「即使噩梦最后一波怪物抵抗也就 75%」的原话矛盾（乘法才能得出 0.45/0.60/0.75）。
+	#   cap：普通怪一律 0.75（§5.5.1）；**同属性 BOSS 自身吃光环**时才提到 0.90
+	#       （唯一的 90% 通道）—— 那条由 `_refresh_boss_aura` 在玩家元素确定后提升，
+	#       这里先按保守档算，避免依赖「setup 时 player 已绑定」这个不成立的假设。
+	element_resist = _calc_element_resist()
 	# BOSS 技能冷却初始化：首发 cd × 0.5 并逐个错开，避免进场瞬间技能齐发
 	_skill_cds = []
 	var sk_list: Array = cfg.get("skills", [])
@@ -100,6 +164,64 @@ func setup(type_name: String, wave: int = 1) -> void:
 	_charge_state = 0
 	_aimed_left = 0
 	CodexData.unlock("enemy", type_name)   # 图鉴：遭遇即解锁
+
+## 元素抗性标量 R 的统一计算口（§5.5.2）。setup 与「光环/区块偏置变化」时都调它。
+##
+## ⚠️ 与 `take_damage` 里的逐关系 cap 不冲突：这里给的是**单个标量 R**，
+##    take_damage 再按「来袭元素 vs 自身元素」的关系决定 R 的有效上限。
+func _calc_element_resist() -> float:
+	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
+	return Config.mob_resist(spawn_wave, float(diff.get("resist_mult", 0.0)),
+		block_bias, aura_bonus, _resist_cap(), zone_bonus)
+
+## 本敌当前的抗性上限：普通怪 0.75；同属性 BOSS 自身吃光环时 0.90（唯一 90% 通道）。
+func _resist_cap() -> float:
+	return Config.CAP_MOB_SAME_BOSS if _aura_self_active else 0.75
+
+## 外部改了 `block_bias` / `aura_bonus` / `_aura_self_active` 之后调它重算。
+## S3.5 接区块偏置时就用这个口，不必重新 setup（重 setup 会重置血量与护盾）。
+func refresh_element_resist() -> void:
+	element_resist = _calc_element_resist()
+
+## 地形区域（第 9 轮 · 需求 4）：由 `fx/terrain_zone.gd` 写入。
+## 写前比较（照抄 `_refresh_boss_aura`）—— 距离判定每 0.35s 跑一次、怪又多，
+## 不做这个比较就是每次扫描把全场怪的抗性重算一遍，纯白烧 CPU。
+func set_zone_bonus(v: float) -> void:
+	if is_equal_approx(zone_bonus, v):
+		return
+	zone_bonus = v
+	refresh_element_resist()
+
+## BOSS 光环（§5.5.5）。两条规则：
+##   规则 1 —— **玩家元素 == BOSS 元素**（同属性）时，BOSS 自身 R +0.15，
+##             且「同属性」行的抗性上限提到 0.90（`CAP_MOB_SAME_BOSS`，全项目唯一 90% 通道）。
+##   规则 3 —— 光环半径内 `element == 本 BOSS 元素` 的怪 R +0.15；**异元素怪不受益**。
+##
+## 为什么规则 1 要卡「同属性」：这条规则的全部意义就是给「照镜子」的 BOSS 波
+## 一个有仪式感的检验点（§5.5.3 末位放「同属」正是为了让它在标准 20 波里可达）。
+## 若对所有 BOSS 都开 90%，那 90% 就成了"BOSS 默认值"，仪式感消失，
+## 且与「只有同属性 boss 波次，在 boss 光环加持下，才能到 90%」的原话不符。
+##
+## ⚠️ 用 `node.get/set/call` 而不是直接点属性：`get_nodes_in_group` 返回 `Array[Node]`，
+##    静态类型下访问 `.element` 会直接编译报错。`has_method` 同时充当「它是不是 Enemy」的判据。
+func _refresh_boss_aura() -> void:
+	var same_as_player := player != null and is_instance_valid(player) \
+		and String(player.element) == element
+	if _aura_self_active != same_as_player:
+		_aura_self_active = same_as_player
+		refresh_element_resist()
+	for node in get_tree().get_nodes_in_group("enemies"):
+		if node == self or not node.has_method("refresh_element_resist"):
+			continue
+		var n2 := node as Node2D
+		if n2 == null:
+			continue
+		var in_aura := String(node.get("element")) == element \
+			and n2.global_position.distance_to(global_position) <= Config.BOSS_AURA_RADIUS
+		var want := Config.RESIST_BOSS_AURA if in_aura else 0.0
+		if not is_equal_approx(float(node.get("aura_bonus")), want):
+			node.set("aura_bonus", want)
+			node.call("refresh_element_resist")
 
 ## 是否 BOSS（内置 boss / boss_* 前缀 / 自定义 is_boss=true / ai="boss"）
 func is_boss() -> bool:
@@ -240,7 +362,7 @@ func _apply_dot(id: String, cfg: Dictionary, st: Dictionary) -> void:
 	FloatingText.spawn(get_parent(), global_position + Vector2(
 		GameRng.range_f(-8.0, 8.0), -radius - 6.0),
 		str(maxi(1, roundi(tick_dmg))), Color(cfg.color), 11)
-	take_damage(tick_dmg, false, true)
+	take_damage(tick_dmg, false, true, "", "status")
 
 ## 中毒传染（瘟疫之心）：死亡时把中毒扩散给附近敌人
 func _spread_poison() -> void:
@@ -478,6 +600,24 @@ func _physics_process(delta: float) -> void:
 	_tick_statuses(delta)
 	if hp <= 0.0:
 		return
+	# ---- 回血（§5.3）：受击后 `regen_delay` 秒内不回血 ----
+	# 只在没满血时走；重绘用「整数位变化」而不是每帧，回春灵每秒 3 次重绘而非 60 次。
+	if regen > 0.0 and hp < max_hp:
+		if _regen_hold > 0.0:
+			_regen_hold = maxf(0.0, _regen_hold - delta)
+		else:
+			var hp_before := hp
+			hp = minf(max_hp, hp + regen * delta)
+			if int(hp_before) != int(hp):
+				queue_redraw()
+	# ---- BOSS 光环（§5.5.5）：低频扫描，只由 BOSS 执行 ----
+	# 用 0.5s 而不是逐帧：光环是「场上有没有一只同元素 BOSS」的**宏观状态**，
+	# 玩家感觉不到 0.5s 的延迟；而 240 敌群下逐帧扫 group 是纯粹的浪费。
+	if is_boss() and element != "":
+		_aura_t -= delta
+		if _aura_t <= 0.0:
+			_aura_t = 0.5
+			_refresh_boss_aura()
 	if player == null or not is_instance_valid(player):
 		return
 	wob += delta * 6.0
@@ -563,7 +703,7 @@ func _physics_process(delta: float) -> void:
 	var contact_d := contact_vec.length()
 	if contact_d < radius + float(Config.PLAYER.radius) and touch_cd <= 0.0:
 		touch_cd = Config.PLAYER.touch_tick
-		player.take_damage(touch_dmg)
+		player.take_damage(touch_dmg, element)
 		var contact_dir := contact_vec.normalized() if contact_d > 0.001 else Vector2.from_angle(wob)
 		var push: float = (radius + float(Config.PLAYER.radius) + 10.0) - contact_d
 		if push > 0.0:
@@ -588,9 +728,6 @@ func _physics_process(delta: float) -> void:
 				other.global_position = other.global_position.clamp(
 					Vector2(other.radius, other.radius), world - Vector2(other.radius, other.radius))
 				Combat.update_enemy_position(other)
-	# 障碍物推出（Phase 5）：本项目未使用物理引擎，障碍物是手写判定，
-	# 放在最终边界钳制之前，推出结果仍在世界内
-	global_position = Obstacles.resolve_circle(global_position, radius)
 	global_position = global_position.clamp(
 		Vector2(radius, radius), world - Vector2(radius, radius))
 	Combat.update_enemy_position(self)
@@ -727,7 +864,7 @@ func _cast_nova(sk: Dictionary) -> void:
 			pos += Vector2.from_angle(GameRng.next() * TAU) * GameRng.range_f(70.0, 170.0)
 		pos = pos.clamp(Vector2(40.0, 40.0),
 			Vector2(Config.WORLD.w, Config.WORLD.h) - Vector2(40.0, 40.0))
-		Meteor.spawn(get_parent(), pos, player, dmg, r, warn)
+		Meteor.spawn(get_parent(), pos, player, dmg, r, warn, element)
 
 func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg: float) -> void:
 	# 弹幕护栏：极端敌群下放弃超量射击，避免敌弹无限堆积
@@ -736,13 +873,64 @@ func _fire_enemy_bullet(ang: float, bspeed: float, r: float, life_t: float, dmg:
 	var b = ObjectPool.acquire("enemy_bullet", EnemyBulletScene, get_parent())
 	b.setup(global_position, ang, bspeed, dmg, r, life_t)
 	b.player = player
+	b.element = element   # 五行：敌弹带着发射者的属性飞出去（§12-S1）
+	b.armor_pierce = armor_pierce   # 穿甲（§5.3）：与属性同路透传，别漏（漏了会静默失效）
 
-func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
+## 受击结算。element_atk = 来袭伤害的五行（空串 = 无属性攻击，不吃元素修正）。
+##
+## 五行体系 §12-S1 + §5.5.2，三件事按顺序叠：
+##   1. 关系修正（§2.3-B）：clamp(关系基数(来袭元素→我的元素) − 我对该元素的同化度, −cap)
+##   2. 怪物元素抗性（§5.5.2）：按波次/难度成长的减伤，与关系修正取 min（抗性与关系不叠乘）
+##   3. BOSS 单发上限 / 狂暴（沿用旧逻辑，位置不变）
+##
+## ⚠️ 怪物侧同化度恒为 0：同化度是「玩家养成的亲和」，怪物没有养成系统。
+##    故受击侧基数是纯关系值，怪物抗性才是怪物的「成长曲线」。两者别混为一谈。
+## src（第 5 参 · 2026-09-17 第 8 轮）：伤害来源标签，**只喂给逐波平衡日志**，
+## 不参与任何结算。缺省 "" = 未标注，结算行为与改动前逐字节一致。
+func take_damage(dmg: float, crit: bool, dot: bool = false, element_atk: String = "",
+		src: String = "") -> void:
 	if hp <= 0.0 or flee > 0.0:
 		return
 	# 刑天斧：低血加成必须在 hp 扣减【之前】按当前血量比例判定，扣完再算就晚了
 	var final_dmg := dmg * ArtifactSystem.execute_damage_mult(player, self) \
 		* _damage_taken_mult()
+	# ---- 五行：关系修正 × 怪物元素抗性（两个独立乘区，各自按自己的 cap 封顶）----
+	# 关系修正（§2.3-B）回答「我的五行属性能不能扛住这一发」；
+	# 元素抗性（§5.5.2）回答「我这一波本身有多硬」。两者来源不同，故相乘而非取更严 ——
+	# 取更严会让「高波次同属性怪」的抗性完全吞掉关系收益，玩家堆同化度看不到任何反馈。
+	# 两个乘区各自 clamp 到自己的 cap，叠加后最坏情况是 (1-cap_rel)×(1-cap_res)，
+	# 普通怪 75% 封顶那一条由下面的 eff_cap 统一施加在两处，保证不会出现「无效抗性叠加」。
+	if element_atk != "" and element != "":
+		# 逐关系有效 cap（§5.5.1）—— 走 Config.mob_cap 统一查表，别在这里另写一套数字。
+		# ⚠️ 与玩家侧表的差异只有 same 一行（0.90 → 0.75）；i_beat/beats_me/other 三行相同。
+		# ⚠️ 90% 的**唯一**通道 = 同属性 BOSS 自身吃光环（`_aura_self_active`）。
+		#    S1 曾写成 `0.90 if is_boss() else 0.75` —— 那对**所有** BOSS 都开了 0.90，
+		#    包括不与玩家同属性的 BOSS，比 §5.5.5 规则 1 宽松得多。这里一并收紧。
+		var eff_cap := Config.mob_cap(element_atk, element, _aura_self_active)
+		# 关系修正：直接走 Config.hit_mult（已含「基数>0 时下限为 0」的特例处理）
+		var rel_red := Config.hit_mult(element_atk, element, 0.0)   # ≤0 即减伤
+		var rel_mult := 1.0 + maxf(rel_red, -eff_cap)
+		var res_mult := 1.0 - clampf(element_resist, 0.0, eff_cap)
+		final_dmg *= rel_mult * res_mult
+	# ---- 护盾（§5.3）：先扣盾、后扣血，溢出部分照常扣血 ----
+	# 护盾期减伤（shield_resist）是**独立乘区**，作用在「这一发」上。
+	# ⚠️ 只在护盾 > 0 时生效 —— 盾碎后减伤必须消失，
+	#    否则「40 盾」会退化成一个永久的 50% 减伤（与"护盾"这个直觉命名不符）。
+	# 采用**溢出**语义（超出盾量的部分打进血量）：不溢出会让高伤单发被盾完全吞掉，
+	# 「白吃一发」的怪异感比"盾被一枪打穿"严重得多。
+	if shield > 0.0:
+		final_dmg *= (1.0 - shield_resist)
+		var absorbed := minf(shield, final_dmg)
+		shield -= absorbed
+		final_dmg -= absorbed
+		if shield <= 0.0:
+			shield = 0.0
+			bar_t = 0.9   # 破盾瞬间亮血条，给玩家"打穿了"的反馈
+		queue_redraw()
+	# 回血暂停：受击后 regen_delay 秒内不回血（§5.3）。
+	# 没有这条的话「回春灵 + 玩家 DPS 不足」会变成打不死的怪。
+	if regen > 0.0:
+		_regen_hold = regen_delay
 	if is_boss():
 		# 巨额抗性：单次伤害不得超过最大生命的一定比例（dmg_cap_pct，默认 0.5%）——
 		# 爆发构筑不能一发跳过阶段，BOSS 战必须有「打阶段」的过程；
@@ -752,6 +940,9 @@ func take_damage(dmg: float, crit: bool, dot: bool = false) -> void:
 		if enraged:
 			final_dmg *= 0.8   # 狂暴阶段再减伤：半血后明显更硬
 	hp -= final_dmg
+	# 逐波平衡日志（第 8 轮）：记「实际打进血的量」（BOSS 单发上限、护盾吸收、
+	# 元素抗性都已生效），含击杀那一下的溢出伤害 —— 它是玩家真实看到的输出。
+	BalanceLog.add_damage_dealt(final_dmg, src)
 	bar_t = 0.9
 	queue_redraw()   # 每次受击都重绘（血条比例随 hp 变化）
 	if dot:
@@ -795,6 +986,9 @@ func die() -> void:
 		queue_free()
 		return
 	Burst.spawn(get_parent(), global_position, color, 10, 150.0)
+	# ---- 死亡分裂（§5.3）：水灵这类怪死后裂成数只小体 ----
+	# 放在掉落/吸血之前：先把分裂体放出来，它们的掉落由各自死亡时结算。
+	_split_on_death()
 	# 瘟疫之心：中毒目标死亡时向周围传染
 	if player and is_instance_valid(player) and float(player.stats.get("status_spread", 0.0)) >= 1.0:
 		_spread_poison()
@@ -803,6 +997,36 @@ func die() -> void:
 	if player and is_instance_valid(player) and player.stats.lifesteal > 0.0:
 		player.hp = minf(player.stats.max_hp, player.hp + player.stats.lifesteal)
 	queue_free()
+
+## 死亡分裂（§5.3）。两条护栏缺一不可，否则会做出「打不完的怪」：
+##   ① **代数护栏** `_split_gen`：分裂体一律不再分裂（`_split_gen >= 1` 直接返回）。
+##      没有它，每一代都再裂 N 只 → 无限增长，一波怪能把帧率打穿。
+##   ② **血量递减** `hp_pct`：按**本体当前 max_hp 的比例**给，不是按配置 `hp` 重算。
+##      按配置重算的话，分裂体血量 = 配置值 × 波次缩放（与本体同档）→ 越裂越硬。
+func _split_on_death() -> void:
+	var sp: Dictionary = cfg.get("split_on_death", {})
+	if sp.is_empty() or _split_gen >= 1:
+		return
+	var stype := String(sp.get("type", type))
+	var count := clampi(int(sp.get("count", 3)), 1, 8)
+	var hp_pct := clampf(float(sp.get("hp_pct", 0.5)), 0.05, 1.0)
+	var child_hp := maxf(1.0, max_hp * hp_pct)
+	for i in count:
+		var a := GameRng.next() * TAU
+		var pos := global_position + Vector2.from_angle(a) * (radius + 26.0)
+		pos = pos.clamp(Vector2(40.0, 40.0),
+			Vector2(Config.WORLD.w, Config.WORLD.h) - Vector2(40.0, 40.0))
+		var minion: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+		minion.setup(stype, spawn_wave)
+		# setup 之后再覆盖血量与代数（setup 会按配置 + 波次缩放重算 max_hp）
+		minion.max_hp = child_hp
+		minion.hp = child_hp
+		minion._split_gen = _split_gen + 1
+		minion.global_position = pos
+		get_parent().add_child(minion)
+		minion.player = player
+		minion.queue_redraw()
+	EventBus.screen_shake.emit(1.5)
 
 ## BOSS 专属死亡技能：死亡瞬间释放的最后一击（数据驱动，见 death_skill 字段）。
 ## 设计克制 —— 形态明确可躲、伤害不高（≤ touch_dmg 且按距离衰减），
@@ -826,7 +1050,7 @@ func _execute_death_skill() -> void:
 			if player and is_instance_valid(player):
 				d = player.global_position.distance_to(global_position)
 			if d < radius + 200.0:
-				player.take_damage(touch_dmg * (1.0 - d / (radius + 200.0)))
+				player.take_damage(touch_dmg * (1.0 - d / (radius + 200.0)), element)
 			for i in 12:
 				Burst.spawn(get_parent(),
 					global_position + Vector2.from_angle(TAU * float(i) / 12.0) * radius,
@@ -837,7 +1061,7 @@ func _execute_death_skill() -> void:
 			if player and is_instance_valid(player):
 				d2 = player.global_position.distance_to(global_position)
 			if d2 < radius + 300.0:
-				player.take_damage(touch_dmg * (1.0 - d2 / (radius + 300.0)))
+				player.take_damage(touch_dmg * (1.0 - d2 / (radius + 300.0)), element, armor_pierce)
 			EventBus.screen_shake.emit(16.0)
 
 ## 掉落：经验晶体 + 材料（收获加成）+ 概率红心（越强掉越好，heart_chance 按怪物类型）
@@ -947,3 +1171,16 @@ func _draw() -> void:
 		var bw := maxf(26.0, radius * 2.0)
 		draw_rect(Rect2(-bw / 2.0, -radius - 10.0, bw, 4.0), Color(0.0, 0.0, 0.0, 0.6))
 		draw_rect(Rect2(-bw / 2.0, -radius - 10.0, bw * clampf(hp / max_hp, 0.0, 1.0), 4.0), Color("e8b84b"))
+	# 护盾条（§12-S3）：血条上方一档，冰蓝色。有盾时**常显**（不必等受击）——
+	# 它是「还得先破一层」的唯一视觉线索，藏起来会让玩家以为伤害莫名其妙被吃掉。
+	if max_shield > 0.0 and shield > 0.0:
+		var bw2 := maxf(26.0, radius * 2.0)
+		draw_rect(Rect2(-bw2 / 2.0, -radius - 15.0, bw2, 3.0), Color(0.0, 0.0, 0.0, 0.6))
+		draw_rect(Rect2(-bw2 / 2.0, -radius - 15.0, bw2 * clampf(shield / max_shield, 0.0, 1.0), 3.0),
+			Color("7fd8ff"))
+	# 元素描边环（§12-S3 · 纯视觉）：本怪所属元素的外圈细环。
+	# ⚠️ 只读 `element`（Config 真值），不提供任何判定语义 —— 铁律 3。
+	if element != "":
+		var ecol := Color(String(Config.ELEMENT_COLOR.get(element, "#ffffff")))
+		draw_arc(Vector2.ZERO, rr + 2.5, 0.0, TAU, 36,
+			Color(ecol.r, ecol.g, ecol.b, 0.75), 1.6, true)
