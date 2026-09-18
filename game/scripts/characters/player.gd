@@ -9,6 +9,7 @@ const SkillFXScript := preload("res://scripts/fx/skill_fx.gd")
 var hp: float = 100.0
 var stats: Dictionary = {}
 var weapons: Array = []   # [{ "type": String, "cd": float }]，上限 Config.WEAPON_SLOTS
+var temp_weapons: Array = []   # 商店临时武器槽（第 13+ 轮需求 3）：永久槽满后溢出的武器，退出商店时半价卖出
 var _family_synergy_bonus: Dictionary = {}   # 已应用到 stats 的同族共鸣加成（key = stats 键）
 var items_owned: Dictionary = {}   # 已购道具 id -> 数量（暂停/商店展示与出售用）
 ## 本局已获得过的升级 id -> 次数。**升级过去完全没有记账**（apply_upgrade 只改 stats），
@@ -734,6 +735,108 @@ func sell_artifact(id: String) -> int:
 	_set_artifact_stacks(id, 0)
 	artifacts_owned.erase(id)
 	return price
+
+## 武器出售：返还 50% 基础价（Registry.weapon_price），优先从永久槽移除，否则从临时槽移除。
+## 返回返还的材料数；wtype 非法 / 未持有返回 0。
+func sell_weapon(wtype: String) -> int:
+	if not Registry.weapons.has(wtype):
+		return 0
+	var idx := -1
+	for i in weapons.size():
+		if String(weapons[i].get("type", "")) == wtype:
+			idx = i
+			break
+	if idx >= 0:
+		weapons.remove_at(idx)
+	else:
+		for i in temp_weapons.size():
+			if String(temp_weapons[i].get("type", "")) == wtype:
+				idx = i
+				break
+		if idx < 0:
+			return 0
+		temp_weapons.remove_at(idx)
+	refresh_family_synergy()
+	queue_redraw()
+	return roundi(float(Registry.weapon_price(wtype)) * 0.5)
+
+## 某武器在「永久槽 + 临时槽」中的合计持有数（即时进化判定用）
+func weapon_count(wtype: String) -> int:
+	var n := 0
+	for w in weapons:
+		if String(w.get("type", "")) == wtype:
+			n += 1
+	for w in temp_weapons:
+		if String(w.get("type", "")) == wtype:
+			n += 1
+	return n
+
+## 武器是否真正满槽（永久槽 + 临时槽都满）—— 商店据此判断是否还能继续买武器
+func weapon_capacity_full() -> bool:
+	return weapons.size() >= MetaProgress.weapon_slots() \
+		and temp_weapons.size() >= Config.TEMP_WEAPON_SLOTS
+
+## 把一把武器放进临时槽（永久槽满时溢出用）
+func add_weapon_to_temp(wtype: String) -> void:
+	temp_weapons.append({ "type": wtype, "cd": 0.1 })
+
+## 从「永久槽 + 临时槽」合计里移除 n 把同名武器（即时进化消耗用）。返回是否凑齐 n 把。
+func consume_weapon_copies(wtype: String, n: int) -> bool:
+	var removed := 0
+	var new_perm: Array = []
+	for w in weapons:
+		if String(w.get("type", "")) == wtype and removed < n:
+			removed += 1
+		else:
+			new_perm.append(w)
+	weapons = new_perm
+	var new_temp: Array = []
+	for w in temp_weapons:
+		if String(w.get("type", "")) == wtype and removed < n:
+			removed += 1
+		else:
+			new_temp.append(w)
+	temp_weapons = new_temp
+	return removed >= n
+
+## 退出商店时把临时槽武器半价卖出，清空临时槽。返回返还的材料总数。
+func sell_temp_weapons() -> int:
+	var got := 0
+	for w in temp_weapons:
+		var wt := String(w.get("type", ""))
+		if Registry.weapons.has(wt):
+			got += roundi(float(Registry.weapon_price(wt)) * 0.5)
+	temp_weapons = []
+	refresh_family_synergy()
+	queue_redraw()
+	return got
+
+## 即时进化（需求 3：买够 need 把立刻升级）。与波末 `evolve_weapons` 同源，但：
+## · 只处理**单分支**武器（当前 5 把基础武器全是单分支；多分支需弹选择 UI，不在即时范围）；
+## · 同一把武器可能在「永久槽 + 临时槽」里各持若干把，所以消耗走 `consume_weapon_copies`（两槽合计）；
+## · 进化体追加进永久槽（消耗 need 把、净腾出 need-1 个永久槽，不会溢出）。
+## 成功返回公告文本，条件不足返回空串（调用方据此决定是否弹进化横幅）。
+func instant_evolve(wtype: String) -> String:
+	var cfg: Dictionary = Registry.weapons.get(wtype, {})
+	if cfg.is_empty():
+		return ""
+	var need := int(cfg.get("evolve_need", 0))
+	if need <= 0:
+		return ""
+	if weapon_count(wtype) < need:
+		return ""
+	var branches: Array = _evolve_branches(cfg)
+	if branches.size() != 1:
+		return ""
+	var target := String(branches[0])
+	if not Registry.weapons.has(target):
+		return ""
+	if not consume_weapon_copies(wtype, need):
+		return ""
+	weapons.append({ "type": target, "cd": 0.1 })
+	refresh_family_synergy()
+	queue_redraw()
+	return "%s ×%d → %s" % [cfg.name, need, Registry.weapons[target].name]
 
 ## 已持有法宝的配置列表（按获得顺序），供触发执行器与 UI 共用
 func owned_artifacts() -> Array:

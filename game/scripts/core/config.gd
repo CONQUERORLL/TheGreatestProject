@@ -675,6 +675,9 @@ const WEAPONS := {
 ## ✅ `smoke_test.gd` 的两条槽位断言（未购/已购军火专家）**已改为引用本常量**，自动跟随，不必手改。
 ## 其余 11 处调用点走 `MetaProgress.weapon_slots()` → `RunRules.weapon_slots_total()`，自动感知，无需改。
 const WEAPON_SLOTS := 5
+## 商店临时武器槽数量（第 13+ 轮需求 3）：永久槽满后，仍可买武器放进临时槽（用于凑齐 3 把进化），
+## 退出商店时半价卖出。武器总容量 = WEAPON_SLOTS + TEMP_WEAPON_SLOTS。
+const TEMP_WEAPON_SLOTS := 2
 const WEAPON_SHOP_CHANCE := 0.42
 ## 同族武器共鸣：持有同 family 武器 ≥2 把时，每多一把叠加一次加成（见 player._refresh_family_synergy）。
 ## 设计意图：鼓励玩家围绕单一武器家族构筑，让进化树各分支之间产生联动收益。
@@ -793,12 +796,12 @@ const ENEMIES := {
 		{ "type": "nova", "name": "深渊落雷", "cd": 5.5, "count": 2, "radius": 105.0, "warn": 0.8, "dmg_mult": 0.9 },
 	] },
 	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "death_skill": "miasma", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "wood", "skills": [
-		{ "type": "nova", "name": "腐土毒沼", "cd": 6.0, "count": 3, "radius": 95.0, "warn": 0.85, "dmg_mult": 0.8 },
+		{ "type": "nova", "name": "腐土毒沼", "cd": 6.0, "count": 3, "radius": 80.0, "warn": 1.0, "dmg_mult": 0.7, "spread_radius": 200.0 },
 		{ "type": "fan", "name": "腐蚀喷吐", "cd": 4.5, "count": 7, "arc": 1.2, "bspeed": 280.0, "dmg_mult": 0.6 },
 	] },
 	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "death_skill": "rebirth", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "fire", "skills": [
 		{ "type": "charge", "name": "烈焰俯冲", "cd": 5.0, "warn": 0.45, "duration": 0.5, "speed_mult": 7.0 },
-		{ "type": "nova", "name": "天火坠落", "cd": 4.5, "count": 3, "radius": 100.0, "warn": 0.7, "dmg_mult": 0.85 },
+		{ "type": "nova", "name": "天火坠落", "cd": 4.5, "count": 3, "radius": 85.0, "warn": 0.95, "dmg_mult": 0.7, "spread_radius": 210.0 },
 	] },
 	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "water", "skills": [
 		{ "type": "aimed", "name": "寒水连狙", "cd": 3.2, "count": 4, "interval": 0.13, "bspeed": 440.0, "dmg_mult": 0.65 },
@@ -2482,16 +2485,16 @@ const BAND_TRASH_MOB_IDS := ["grunt", "swarm", "runner", "bomber", "shadow",
 	"wood_sprite", "fire_imp", "vine_beast", "blade_monk", "wood_healer", "water_splitter"]
 
 ## 下标 = 区块号（1 起）。空字典 = 该区块不做构成偏移。
-##   · 区块 1（W1-4）**难**：难度全交给 HP/DMG 曲线的前段陡升 ——
-##     开局武器只有 95px 近战，构成上再堆远程会把新手直接卡死（首杀窗口本就 16s）。
-##   · 区块 2（W5-8）**易**：曲线回落，构成也不加压 —— 这是玩家把构筑搭起来的窗口。
+##   · 区块 1（W1-4）：远程怪概率 ×0.5 —— 前期只靠 95px 近战，再叠弹幕会把新手直接卡死
+##     （首杀窗口本就 16s），所以前期把火法/巫师/水妖/冰妖这些远程怪压到一半。
+##   · 区块 2（W5-8）：远程怪概率 ×0.6 —— 玩家把构筑搭起来的窗口，远程压力也先压一档。
 ##   · 区块 3（W9-12）**远程多**：远程权重 ×2.2（占比约 21% → 37%）。
 ##   · 区块 4（W13-16）**小精英**：精英 ×2.0、杂兵 ×0.70 —— 两头都动，
 ##     否则「全都乘 2」看起来也像生效了（冒烟用**份额**断言，正是一对反向对照）。
 ##   · 区块 5（W17-20）**渐肉**：精英 ×1.7、杂兵 ×0.85，配合曲线末段继续涨。
 const WAVE_BAND_WEIGHTS := [
-	{},
-	{},
+	{ "ranged": 0.5 },
+	{ "ranged": 0.6 },
 	{ "ranged": 2.2 },
 	{ "elite": 2.0, "trash": 0.70 },
 	{ "elite": 1.7, "trash": 0.85 },

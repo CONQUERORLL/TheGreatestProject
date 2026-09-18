@@ -850,7 +850,9 @@ func _fire_fan(sk: Dictionary) -> void:
 		_fire_enemy_bullet(a, spd2, 7.0, 4.5, touch_dmg * float(sk.get("dmg_mult", 0.65)))
 	Sfx.play("shoot_smg")
 
-## 地面预警圈 AOE：首圈锁定玩家脚下，后续圈在玩家周围散开（复用流星雨的收缩预警圈）
+## 地面预警圈 AOE：首圈锁定玩家脚下；后续圈按 0°/120°/240°… 均匀散开（带小幅抖动），
+## 避免三颗流星雨挤在玩家脚下叠在一起（前期移速低时几乎必吃满，难以躲开）。
+## spread_radius 控制落点与玩家的距离（越大越易躲，默认 200），可由 boss 技能表逐技能覆盖。
 func _cast_nova(sk: Dictionary) -> void:
 	if player == null or not is_instance_valid(player):
 		return
@@ -858,10 +860,12 @@ func _cast_nova(sk: Dictionary) -> void:
 	var r := float(sk.get("radius", 110.0))
 	var warn := float(sk.get("warn", 0.8))
 	var dmg := touch_dmg * float(sk.get("dmg_mult", 0.9))
+	var spread_r := float(sk.get("spread_radius", 200.0))
 	for i in count:
 		var pos: Vector2 = player.global_position
 		if i > 0:
-			pos += Vector2.from_angle(GameRng.next() * TAU) * GameRng.range_f(70.0, 170.0)
+			var ang := float(i) / float(count) * TAU + GameRng.range_f(-0.3, 0.3)
+			pos += Vector2.from_angle(ang) * spread_r
 		pos = pos.clamp(Vector2(40.0, 40.0),
 			Vector2(Config.WORLD.w, Config.WORLD.h) - Vector2(40.0, 40.0))
 		Meteor.spawn(get_parent(), pos, player, dmg, r, warn, element)

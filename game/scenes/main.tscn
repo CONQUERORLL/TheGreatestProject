@@ -39,7 +39,7 @@ offset_right = -14.0
 offset_bottom = -96.0
 theme_override_colors/font_color = Color(0.42, 0.455, 0.517, 1)
 theme_override_font_sizes/font_size = 12
-text = "WASD / 方向键 / 左摇杆 / 鼠标点击·拖动 移动　·　Esc / P / Start 暂停　·　1-5 换武器 / 6 射手 / 7 BOSS（测试）"
+text = "WASD / 方向键 / 左摇杆 / 鼠标点击·拖动 移动　·　Esc / P / Start 暂停"
 horizontal_alignment = 1
 vertical_alignment = 1
 

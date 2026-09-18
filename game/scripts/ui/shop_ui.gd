@@ -19,6 +19,7 @@ var _save_dirty := false    # 有未落盘的商店操作
 var _save_pending := false  # 合并写定时器已排队
 var _assim_pity := 0        # 连续「整店没出同化度」的店数，刷到即归零（第 9 轮保底）
 var _forced_assim := false  # 本店是否由同化度保底塞了一格（测试观测，同 forced_synergy）
+var _temp_confirm = null     # 退出二次确认对话框（需求 3：临时槽有武器时退出需确认）
 
 var _title: Label
 var _mat: Label
@@ -34,7 +35,7 @@ func _ready() -> void:
 	visible = false
 	_reroll_btn.pressed.connect(reroll)
 	_heal_btn.pressed.connect(heal)
-	_next_btn.pressed.connect(next_wave)
+	_next_btn.pressed.connect(_on_next_pressed)
 
 # ---------------- 界面构建（代码节点） ----------------
 
@@ -210,7 +211,29 @@ func _refresh_left() -> void:
 	_left_box.add_child(head)
 	var s: Dictionary = player.stats
 	_left_box.add_child(_stat_row("生命", "%d / %d" % [roundi(player.hp), roundi(s.max_hp)]))
-	_left_box.add_child(_stat_row("武器", "%d / %d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
+	# 武器容量 = 永久槽 + 临时槽（需求 3：商店新增 2 个临时武器槽）
+	var _wperm: int = player.weapons.size()
+	var _wtemp: int = player.temp_weapons.size()
+	_left_box.add_child(_stat_row("武器",
+		"%d / %d（临时槽 %d/%d）"
+		% [_wperm + _wtemp, MetaProgress.weapon_slots() + Config.TEMP_WEAPON_SLOTS,
+		   _wtemp, Config.TEMP_WEAPON_SLOTS]))
+	# 武器列表（需求 2：商店也能查看当前武器；临时槽武器标注）
+	var _wl := ""
+	for _w in player.weapons:
+		var _wc: Dictionary = Registry.weapons.get(String(_w.get("type", "")), {})
+		_wl += (", " if _wl != "" else "") + String(_wc.get("name", "?"))
+	for _t in player.temp_weapons:
+		var _tc: Dictionary = Registry.weapons.get(String(_t.get("type", "")), {})
+		_wl += (", " if _wl != "" else "") + String(_tc.get("name", "?")) + "（临时）"
+	if _wl != "":
+		var _wlab := Label.new()
+		_wlab.text = "持有：" + _wl
+		_wlab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_wlab.add_theme_font_size_override("font_size", 11)
+		_wlab.add_theme_color_override("font_color", Color("9aa3b2"))
+		_wlab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_left_box.add_child(_wlab)
 	_left_box.add_child(_stat_row("伤害", "x%.2f" % float(s.dmg_mult)))
 	_left_box.add_child(_stat_row("攻速", "x%.2f" % float(s.as_mult)))
 	_left_box.add_child(_stat_row("移速", "%.0f" % float(s.base_speed * s.speed_mult)))
@@ -272,7 +295,10 @@ func _refresh_right() -> void:
 	for c in _items_box.get_children():
 		_items_box.remove_child(c)
 		c.queue_free()
-	if player.artifacts_owned.is_empty() and player.items_owned.is_empty():
+	# 仅在「法宝 + 道具 + 武器 + 临时武器」全空时才显示空面板并返回，
+	# 否则下方会按存在与否分别渲染对应分组（需求 2：仅持有武器时也要能查看/卖出）
+	if player.artifacts_owned.is_empty() and player.items_owned.is_empty() \
+			and player.weapons.is_empty() and player.temp_weapons.is_empty():
 		var empty := _mk_label(12, Color("5a6270"))
 		empty.text = "暂无道具"
 		_items_box.add_child(empty)
@@ -343,6 +369,13 @@ func _refresh_right() -> void:
 		sell.pressed.connect(_sell.bind(id))
 		row.add_child(sell)
 		_items_box.add_child(row)
+	# ---- 需求 2：商店也能查看 / 卖出已持有武器（含临时槽）----
+	if not player.weapons.is_empty() or not player.temp_weapons.is_empty():
+		_items_box.add_child(_group_label("武器"))
+		for _w in player.weapons:
+			_items_box.add_child(_weapon_sell_row(String(_w.get("type", "")), false))
+		for _wt in player.temp_weapons:
+			_items_box.add_child(_weapon_sell_row(String(_wt.get("type", "")), true))
 
 ## ---- 点击详情（第 8 轮）----
 ## 把条目 id 解析成 `{title, body}`。实现全在 `EntryText`，这里只做「哪个表去查」。
@@ -396,6 +429,39 @@ func _sell(id: String) -> void:
 ## 出售法宝：sell_artifact 内部已先清零叠层属性（否则暴击率/护甲会残留）
 func _sell_artifact(id: String) -> void:
 	var got: int = player.sell_artifact(id)
+	if got > 0:
+		GameState.add_materials(got)
+		Haptics.rumble(0.2, 0.0, 0.06)
+		Sfx.play("ui_select")
+		_refresh()
+		_save_checkpoint()
+
+## 武器出售行（需求 2）：名称（临时槽标注）+ 50% 购入价卖出按钮
+func _weapon_sell_row(wtype: String, is_temp: bool) -> HBoxContainer:
+	var c: Dictionary = Registry.weapons.get(wtype, {})
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var nm := Label.new()
+	nm.text = "%s %s%s" % [c.get("ico", "🗡"), c.get("name", wtype),
+		"（临时）" if is_temp else ""]
+	nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	nm.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	nm.add_theme_font_size_override("font_size", 13)
+	nm.add_theme_color_override("font_color", Config.rarity_color(c.get("rarity", "common")))
+	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(nm)
+	HintBubble.attach_click(nm, _entry_detail_provider("weapon", wtype), self)
+	var sell := Button.new()
+	sell.text = "%d◆" % roundi(float(Registry.weapon_price(wtype)) * 0.5)
+	sell.custom_minimum_size = _sell_btn_size()
+	sell.tooltip_text = "出售（50% 购入价）"
+	sell.pressed.connect(_sell_weapon.bind(wtype))
+	row.add_child(sell)
+	return row
+
+## 出售一把武器：sell_weapon 内部优先永久槽、否则临时槽，返还 50% 基础价
+func _sell_weapon(wtype: String) -> void:
+	var got: int = player.sell_weapon(wtype)
 	if got > 0:
 		GameState.add_materials(got)
 		Haptics.rumble(0.2, 0.0, 0.06)
@@ -922,10 +988,8 @@ func _make_good_card(i: int) -> Control:
 	HintBubble.attach_click(name_l, _good_detail_provider(i), self)
 	# 武器显示已拥有数量（同名武器聚合提示）+ 进化进度（如 3/4）
 	if g.kind == "weapon":
-		var owned := 0
-		for w in player.weapons:
-			if w.type == g.wtype:
-				owned += 1
+		# 持有数含临时槽（需求 3：临时槽也是同名武器的持有来源）
+		var owned: int = player.weapon_count(String(g.wtype))
 		if owned > 0:
 			name_l.text = "%s  x%d" % [g.name, owned]
 		# 进化提示：拥有同名武器时显示进度/预告（多分支时显示下一个未持有的进化方向）
@@ -996,7 +1060,7 @@ func _make_good_card(i: int) -> Control:
 		btn.text = "%d ◆" % price
 		# 满槽武器拦截在扣钱前（修正原型 buyGood 先扣钱后检查的坑）
 		btn.disabled = GameState.materials < price \
-			or (g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots())
+			or (g.kind == "weapon" and player.weapon_capacity_full())
 		btn.pressed.connect(buy.bind(i))
 	row.add_child(btn)
 	panel.set_meta("buy_btn", btn)
@@ -1023,7 +1087,8 @@ func buy(i: int) -> void:
 	var price := _price_of(g)
 	if g.sold or GameState.materials < price:
 		return
-	if g.kind == "weapon" and player.weapons.size() >= MetaProgress.weapon_slots():
+	# 武器满槽（永久 + 临时都满）才拦截；否则买武器由下面的路由送进对应槽
+	if g.kind == "weapon" and player.weapon_capacity_full():
 		return
 	# 商店开着期间已通过掉落/事件拿到同一件法宝：直接标售罄且不扣钱。
 	# 否则玩家会为一件已拥有的法宝付 110~300 只换回 60 材料补偿（apply_artifact 的重复分支）
@@ -1042,8 +1107,28 @@ func buy(i: int) -> void:
 	Haptics.rumble(0.25, 0.0, 0.08)   # 手柄确认轻震
 	Sfx.play("buy")
 	if g.kind == "weapon":
-		player.weapons.append({ "type": g.wtype, "cd": 0.1 })
+		var _wt: String = String(g.wtype)
+		var _cfg: Dictionary = Registry.weapons.get(_wt, {})
+		var _need := int(_cfg.get("evolve_need", 0))
+		# 路由：永久槽未满先进永久槽；永久满则进临时槽（需求 3：临时槽是永久槽满后的溢出位）
+		if player.weapons.size() < MetaProgress.weapon_slots():
+			player.weapons.append({ "type": _wt, "cd": 0.1 })
+		elif player.temp_weapons.size() < Config.TEMP_WEAPON_SLOTS:
+			player.temp_weapons.append({ "type": _wt, "cd": 0.1 })
+		else:
+			# 双槽皆满的安全兜底（按钮本应已禁用），退款不买
+			GameState.add_materials(price)
+			g.sold = false
+			_refresh()
+			return
 		player.refresh_family_synergy()
+		# 需求 3：买够 need 把立刻进化（单分支自动合成；当前 5 把基础武器全是单分支）
+		if _need > 0 and player.weapon_count(_wt) >= _need:
+			var _txt: String = player.instant_evolve(_wt)
+			if _txt != "":
+				Haptics.rumble(0.5, 0.2, 0.3)
+				Sfx.play("victory")
+				EventBus.banner_requested.emit("⚔ 武器进化！", _txt, 3.0)
 	elif g.kind == "upgrade":
 		player.apply_upgrade(g.id)
 	elif g.kind == "artifact":
@@ -1125,6 +1210,48 @@ func next_wave() -> void:
 		return
 	wave_manager.start_wave(target)
 
+## 下一波按钮入口（需求 3）：临时武器槽有武器时，退出商店会半价卖出，先二次确认。
+## 确认 → 半价返还材料 + 进入下一波；取消 → 留在商店继续操作。
+func _on_next_pressed() -> void:
+	if player != null and is_instance_valid(player) and player.temp_weapons.size() > 0:
+		_ask_exit_with_temp()
+	else:
+		next_wave()
+
+func _ask_exit_with_temp() -> void:
+	if _temp_confirm != null and is_instance_valid(_temp_confirm):
+		return
+	var d := ConfirmationDialog.new()
+	d.title = "退出商店确认"
+	d.dialog_text = "临时武器槽中还有 %d 把武器，退出商店将按半价自动卖出。确定离开？" \
+		% player.temp_weapons.size()
+	add_child(d)
+	# 宽一点避免文字被截断
+	d.min_size = Vector2(360.0, 0.0)
+	d.confirmed.connect(_on_temp_confirmed)
+	d.canceled.connect(_on_temp_canceled.bind(d))
+	d.popup_centered()
+	_temp_confirm = d
+
+func _on_temp_confirmed() -> void:
+	var got := 0
+	if player != null and is_instance_valid(player):
+		got = player.sell_temp_weapons()
+	if got > 0:
+		GameState.add_materials(got)
+		Haptics.rumble(0.2, 0.0, 0.06)
+		Sfx.play("ui_select")
+	_clear_temp_confirm()
+	next_wave()
+
+func _on_temp_canceled(d: ConfirmationDialog) -> void:
+	_clear_temp_confirm()
+
+func _clear_temp_confirm() -> void:
+	if _temp_confirm != null and is_instance_valid(_temp_confirm):
+		_temp_confirm.queue_free()
+	_temp_confirm = null
+
 func _grab_first_focus() -> void:
 	# 默认焦点给第一张可购买的卡片按钮，供手柄直接操作
 	var first := _first_card_button()
@@ -1139,6 +1266,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("ui_accept"):
 		var focus := get_viewport().gui_get_focus_owner()
-		if focus is Button and not focus.disabled:
+		# 仅当焦点落在商店自身子树内才转发（临时槽退出确认的 ConfirmDialog
+		# 是独立窗口，其按钮焦点不在本树内，交给对话框自身处理，避免重复触发）
+		if focus is Button and not focus.disabled and is_ancestor_of(focus):
 			focus.pressed.emit()
 			get_viewport().set_input_as_handled()

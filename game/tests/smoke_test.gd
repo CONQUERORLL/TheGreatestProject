@@ -699,6 +699,7 @@ func _check_shop() -> void:
 		_fail("刷新后商店焦点丢失（手柄断导航）")
 		return
 	_check_shop_rules()
+	_check_shop_evolve()
 	# 下一波
 	_suppress_event_cards()
 	shop.next_wave()
@@ -787,6 +788,86 @@ func _good_key(g: Dictionary) -> String:
 	if g.has("wtype"):
 		return "w:" + String(g.wtype)
 	return "%s:%s" % [String(g.get("kind", "")), String(g.get("id", ""))]
+
+## 出怪池里「远程怪」权重占比（需求 1 断言用）：远程怪名单见 Config.BAND_RANGED_MOB_IDS。
+## 取模块级函数（GDScript 不允许在其它函数体内嵌套定义 func）。
+func _ranged_share_of(c: Array) -> float:
+	var _tot := 0.0
+	var _r := 0.0
+	for _e in c:
+		var _w := float(_e.get("w", 0.0))
+		_tot += _w
+		if Config.BAND_RANGED_MOB_IDS.has(String(_e.get("item", ""))):
+			_r += _w
+	return _r / _tot if _tot > 0.0 else 0.0
+
+## 商店·需求 3 集成验证：① 永久槽满时买武器进临时槽且买够 need 把即时进化；
+## ② 永久+临时都满时武器购买按钮禁用；③ 临时槽有武器时「下一波」先弹二次确认框、
+## 不立即进波，取消后临时槽保留。全程快照/还原实况 Player，避免污染后续 HUD/进波流程。
+func _check_shop_evolve() -> void:
+	var shop: Control = _main.get_node("UI/Shop")
+	var pl: Node2D = _main.get_node("Player")
+	var w_bak: Array = pl.weapons.duplicate(true)
+	var t_bak: Array = pl.temp_weapons.duplicate(true)
+	var m_bak: int = GameState.materials
+	# ① 路由 + 即时进化：永久槽满（2 金剑 + 3 水枪）时买金剑 → 进临时槽 → 凑 3 把即时进化
+	pl.weapons = []
+	pl.temp_weapons = []
+	for _i in 2:
+		pl.weapons.append({ "type": "knife", "cd": 0.1 })
+	for _i in 3:
+		pl.weapons.append({ "type": "frost_staff", "cd": 0.1 })
+	shop.goods[0] = { "kind": "weapon", "wtype": "knife", "ico": "🗡",
+		"name": "金剑", "desc": "", "rarity": "common", "base_price": 28,
+		"sold": false, "locked": false }
+	GameState.materials += 999
+	shop.buy(0)
+	if pl.weapon_count("knife") != 0 or pl.weapon_count("knife_ex") != 1 or pl.temp_weapons.size() != 0:
+		_fail("永久槽满买金剑应进临时槽并即时进化（knife=%d knife_ex=%d temp=%d）"
+			% [pl.weapon_count("knife"), pl.weapon_count("knife_ex"), pl.temp_weapons.size()])
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	# ② 满槽门禁：永久5 + 临时2 → 武器购买按钮禁用
+	pl.weapons = []
+	pl.temp_weapons = []
+	for _i in 5:
+		pl.weapons.append({ "type": "frost_staff", "cd": 0.1 })
+	for _i in 2:
+		pl.temp_weapons.append({ "type": "knife", "cd": 0.1 })
+	shop.goods[0] = { "kind": "weapon", "wtype": "knife", "ico": "🗡",
+		"name": "金剑", "desc": "", "rarity": "common", "base_price": 28,
+		"sold": false, "locked": false }
+	GameState.materials += 999
+	shop._refresh()
+	var card0: Control = shop._goods_box.get_child(0)
+	var btn0: Button = card0.get_meta("buy_btn")
+	if btn0 == null or not btn0.disabled:
+		_fail("永久+临时槽全满时武器购买按钮应禁用")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	# ③ 临时槽有武器时「下一波」先弹二次确认框且不立即进波
+	pl.temp_weapons = [{ "type": "knife", "cd": 0.1 }]
+	shop._on_next_pressed()
+	if shop._temp_confirm == null or not is_instance_valid(shop._temp_confirm):
+		_fail("临时槽有武器时退出应先弹二次确认框")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	if GameState.phase != GameState.Phase.SHOP:
+		_fail("退出确认框出现前不应直接进波（phase=%d）" % GameState.phase)
+		shop._clear_temp_confirm()
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	# 模拟取消：临时槽应保留
+	shop._on_temp_canceled(shop._temp_confirm)
+	if pl.temp_weapons.is_empty():
+		_fail("取消退出后临时槽应仍保留")
+	pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+	shop._refresh()
+	print("SMOKE: shop temp-slot + instant evolve + capacity gate + exit confirm OK")
 
 func _check_hud() -> void:
 	var hud: Control = _main.get_node("UI/HUD")
@@ -1385,6 +1466,49 @@ func _check_items() -> void:
 	# 指定进化到**合法**目标：进化选择 UI 那条路（`evolve_weapon_to`）也必须成立
 	if p4.evolve_weapon_to("knife", "knife_ex") == "" or p4.weapons.size() != 1:
 		_fail("指定进化到 knife_ex 应成功（剩 %d 把）" % p4.weapons.size())
+		return
+	# ---- 需求 3：临时武器槽 + 即时进化（单分支买够 need 把立刻升级）----
+	p4.weapons = []
+	p4.temp_weapons = []
+	# 永久槽放 5 把（2 把金剑 + 3 把水枪），临时槽空 → 此时还能买（进临时槽）
+	for _i in 2:
+		p4.weapons.append({ "type": "knife", "cd": 0.1 })
+	for _i in 3:
+		p4.weapons.append({ "type": "frost_staff", "cd": 0.1 })
+	p4.add_weapon_to_temp("knife")   # 临时槽 1 把 → 金剑合计 3 把
+	p4.refresh_family_synergy()
+	if p4.weapon_count("knife") != 3:
+		_fail("临时槽路由后金剑合计应为 3（实 %d）" % p4.weapon_count("knife"))
+		return
+	if p4.weapon_capacity_full():
+		_fail("永久5 + 临时1 不应判满（临时槽还能再买）")
+		return
+	var _evo3: String = p4.instant_evolve("knife")
+	if _evo3 == "":
+		_fail("买够 3 把金剑（含临时槽）应即时进化")
+		return
+	if p4.weapon_count("knife") != 0:
+		_fail("进化后金剑应被消耗（剩 %d 把）" % p4.weapon_count("knife"))
+		return
+	if p4.weapon_count("knife_ex") != 1 or p4.temp_weapons.size() != 0 or p4.weapons.size() != 4:
+		_fail("进化体应进永久槽、临时槽应清空（weapons=%d knife_ex=%d temp=%d）"
+			% [p4.weapons.size(), p4.weapon_count("knife_ex"), p4.temp_weapons.size()])
+		return
+	# 临时槽半价卖出：退出商店时清掉临时槽并返还材料
+	p4.temp_weapons = [{ "type": "frost_staff", "cd": 0.1 }]
+	var _got: int = p4.sell_temp_weapons()
+	if _got <= 0 or not p4.temp_weapons.is_empty():
+		_fail("临时槽半价卖出应返还材料并清空（got=%d）" % _got)
+		return
+	# 满槽门禁：永久5 + 临时2 → capacity_full 为真（商店据此拦购买）
+	p4.weapons = []
+	p4.temp_weapons = []
+	for _i in 5:
+		p4.weapons.append({ "type": "frost_staff", "cd": 0.1 })
+	p4.add_weapon_to_temp("knife")
+	p4.add_weapon_to_temp("frost_staff")
+	if not p4.weapon_capacity_full():
+		_fail("永久+临时都满 应判定满槽（商店购买门禁失效）")
 		return
 	p4.weapons = saved_weapons4   # 还原
 	# ---- 局外天赋：购买/效果/槽位 ----
@@ -5162,6 +5286,18 @@ func _check_element_engine() -> void:
 		if not _comp_ids(Config.wave_composition(20)).has(String(tid5)):
 			_fail("标准局 W20 应含区块 5 的阵营怪 %s（区块表未生效到最后一波）" % String(tid5))
 			return
+	# 5.5) 前期（W2 / W6）远程怪占比显著低于区块 3（W10）——「1.8 关前降低弹幕怪概率」需求。
+	#    直接比 ranged 名单合计权重占比，而不是只验「表里有值」这种弱断言。
+	var _c2 := Config.wave_composition(2)
+	var _c6 := Config.wave_composition(6)
+	var _c10 := Config.wave_composition(10)
+	var _share2 := _ranged_share_of(_c2)
+	var _share6 := _ranged_share_of(_c6)
+	var _share10 := _ranged_share_of(_c10)
+	if _share2 >= _share10 or _share6 >= _share10:
+		_fail("前期远程怪占比未低于区块3（W2/W6 ≥ W10）：%.3f / %.3f / %.3f"
+			% [_share2, _share6, _share10])
+		return
 	# 6) compose_pool 区块加权：本区区域元素那只元素怪 ×2，其余一律不动。
 	#    木角色区块 2（W5-8）的区域元素是水 → 只有 `water_splitter` 翻倍。
 	#    ⚠️ 「其余不动」这半条不能省：只验翻倍的话，实现写成「所有元素怪都翻倍」也照样通过。
@@ -6097,6 +6233,21 @@ func _check_round9_boss_terrain() -> void:
 		_fail("中间 BOSS 限时未比同波普通波宽（%.1f vs %.1f）"
 			% [Config.midboss_duration(4), Config.wave_duration(4)])
 		return
+	# ---- 4a. ⭐ 流星雨削弱（第 13+ 轮需求 7）：两颗 count:3 的 BOSS 流星雨必须均布散开、范围更小 ----
+	#    直接核技能表字段：spread_radius 已接入 _cast_nova + radius<95 + warn≥0.9（易躲、落点分开）。
+	for _bid in ["boss_summoner", "boss_phoenix"]:
+		var _sk: Array = Registry.enemies.get(_bid, {}).get("skills", [])
+		var _nova: Dictionary = {}
+		for _s in _sk:
+			if String(_s.get("type", "")) == "nova" and int(_s.get("count", 0)) == 3:
+				_nova = _s
+		if _nova.is_empty():
+			_fail("%s 缺少 count:3 的 nova 流星雨技能" % _bid)
+			return
+		if not _nova.has("spread_radius") or float(_nova.get("radius", 999.0)) >= 95.0 \
+				or float(_nova.get("warn", 0.0)) < 0.9:
+			_fail("%s 流星雨未削弱（需 spread_radius + radius<95 + warn≥0.9）：%s" % [_bid, str(_nova)])
+			return
 	# ---- 4b. ⭐ **消费点**断言：`boss_hp_scale` 必须被真实实例消费，不能只在 Config 里躺着 ----
 	# ⚠️⚠️ 这是第 9 轮的真实教训：本函数当时**没有任何游戏代码调用它** —— 中间 BOSS 与
 	#    最终 BOSS 血量完全相同（56 万~90 万），却多背 105~195s 限时，必然打不死。

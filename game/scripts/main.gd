@@ -299,11 +299,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_5: _debug_set_weapon("thunder_gong") # 土
 				KEY_6: wave_manager.spawn("shooter")
 				KEY_7: wave_manager.spawn("boss")
-		elif event.physical_keycode == KEY_R \
-				and (GameState.phase == GameState.Phase.GAME_OVER \
-					or GameState.phase == GameState.Phase.VICTORY):
-			_finish_victory_run()
-			get_tree().reload_current_scene()
+		# 按 R 重开已移除（结算面板用「再来一局」主动重开）
 
 func _debug_set_weapon(type: String) -> void:
 	if Registry.weapons.has(type):
@@ -878,12 +874,10 @@ func _on_wave_ended(w: int) -> void:
 	_clear_terrain_zone()
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
-	shop_ui.open(w)
-	Music.play_track("shop", 0.4)
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
-	shop_ui._refresh()   # 回收后刷新材料显示
-	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、存档前）
+	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、进商店前）。
+	# 流程收尾（`_finish_evolve_flow` → `_enter_shop`）负责开商店 + 落档（需求 4：先奖励后商店）。
 	_start_evolve_flow(w)
 
 ## 波末武器进化流程：先自动进化「单分支」武器，再逐个弹出「多分支」选择；
@@ -922,26 +916,34 @@ func _on_evolve_choice(weapon: String, target: String) -> void:
 		shop_ui._refresh()
 	_show_next_evolve_choice()
 
-## 进化流程收尾：所有进化处理完，写入存档。
-## S4.5：这里就是「第 w 波已打完 → 紧接着进商店」的落盘点，checkpoint 必须是 `shop`
-## （存档时机口径 = 通过波次、进入商店时）。原先写 `wave_start` 会让恢复后**把第 w+1 波重打一遍**。
-## `w + 1 >= 2` 是恒成立的（`_pending_evolve_wave` 只在本波结束后被赋值）→ 一定有前置商店。
+## 进化流程收尾：所有进化处理完，决定下一步。
+## 法宝盒子（第 9 轮 · 需求 4）必须在**进化结算之后、开商店之前**开完，否则玩家选的
+## 那件法宝不会进档（读档后凭空消失，且不报错）。盒子开完（或本就无盒子）才进入商店。
+## ⚠️ 需求 4 配套：商店在 `_enter_shop` 里才打开，所以奖励盒子与商店不会同时可见 → 不重叠。
 func _finish_evolve_flow() -> void:
-	# 法宝盒子（第 9 轮 · 需求 4）：中间 BOSS 给的盒子必须在**进化结算之后、写档之前**开完，
-	# 否则玩家选的那件法宝不会进档（读档后凭空消失，且不报错）。
 	# 这里不自增任何计数器，只是把"开盒"插进流程中间；开完会再次回到本函数。
 	if GameState.boss_boxes > 0:
 		_open_boss_box()
 		return
-	var w := _pending_evolve_wave
+	_enter_shop(_pending_evolve_wave)
+
+## 进入商店并把存档点钉在「进商店时刻」（第 13+ 轮需求 6）。
+## 与进化/盒子流程同构：所有进化结算 + 盒子奖励都处理完，才到这里开商店 + 落档，
+## 这样「恢复后重新开这一层商店」的断点稳定，且不会把没选完的奖励/进化丢进存档。
+## 需求 4 配套：商店在本函数里才打开，奖励盒子（上一步）与商店不会同时可见 → UI 不重叠。
+func _enter_shop(w: int) -> void:
 	_pending_evolve_wave = 0
-	if w > 0 and not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_SHOP):
+	if w <= 0:
+		return
+	Music.play_track("shop", 0.4)
+	shop_ui.open(w)	# open 内部会 _roll_goods + _refresh
+	# 需求 6：存档时机 = 进入商店时（CHECKPOINT_SHOP），下次进来直接回到商店页买道具
+	if not SaveRun.save(w + 1, player, SaveRun.CHECKPOINT_SHOP):
 		EventBus.banner_requested.emit("存档失败", "本次波次进度尚未写入", 2.0)
 	# 逐波平衡日志（第 8 轮需求 4）：与存档**同刻**落盘，所以「日志里的状态 == 读档得到的状态」。
 	# 这里也是「本波战斗数据」唯一完整的时刻 —— 掉落已回收（`_on_wave_ended`）、进化已结算。
 	# 商店里买的东西不算进本波（它属于下一波的起点），这样逐波曲线才读得干净。
-	if w > 0:
-		BalanceLog.commit(w, player, "shop")
+	BalanceLog.commit(w, player, "shop")
 
 ## 开一个法宝盒子（第 9 轮 · 需求 4）：3 件**未持有**法宝三选一。
 ## 与武器进化流程同构（`_show_next_evolve_choice` → 玩家选择 → 回到收尾），
@@ -1418,7 +1420,28 @@ func _refresh_pause_content() -> void:
 	_pause_left.add_child(head)
 	var s: Dictionary = player.stats
 	_pause_left.add_child(_pause_stat_row("生命", "%d / %d" % [roundi(player.hp), roundi(s.max_hp)]))
-	_pause_left.add_child(_pause_stat_row("武器", "%d / %d" % [player.weapons.size(), MetaProgress.weapon_slots()]))
+	# 武器容量 = 永久槽 + 临时槽（需求 3）；暂停界面也能查看当前武器（需求 2）
+	var _pperm: int = player.weapons.size()
+	var _ptemp: int = player.temp_weapons.size()
+	_pause_left.add_child(_pause_stat_row("武器",
+		"%d / %d（临时槽 %d/%d）"
+		% [_pperm + _ptemp, MetaProgress.weapon_slots() + Config.TEMP_WEAPON_SLOTS,
+		   _ptemp, Config.TEMP_WEAPON_SLOTS]))
+	var _pwl := ""
+	for _pw in player.weapons:
+		var _pwc: Dictionary = Registry.weapons.get(String(_pw.get("type", "")), {})
+		_pwl += (", " if _pwl != "" else "") + String(_pwc.get("name", "?"))
+	for _pt in player.temp_weapons:
+		var _ptc: Dictionary = Registry.weapons.get(String(_pt.get("type", "")), {})
+		_pwl += (", " if _pwl != "" else "") + String(_ptc.get("name", "?")) + "（临时）"
+	if _pwl != "":
+		var _pwlab := Label.new()
+		_pwlab.text = "持有：" + _pwl
+		_pwlab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_pwlab.add_theme_font_size_override("font_size", 11)
+		_pwlab.add_theme_color_override("font_color", Color("9aa3b2"))
+		_pwlab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_pause_left.add_child(_pwlab)
 	_pause_left.add_child(_pause_stat_row("伤害", "x%.2f" % float(s.dmg_mult)))
 	_pause_left.add_child(_pause_stat_row("攻速", "x%.2f" % float(s.as_mult)))
 	_pause_left.add_child(_pause_stat_row("移速", "%.0f" % float(s.base_speed * s.speed_mult)))
