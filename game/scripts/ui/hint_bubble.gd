@@ -31,6 +31,20 @@ const META_KEY := "_hint_bubble"
 const MAX_W := 340.0
 ## 尺寸上限（超出则内部滚动）—— 屏幕小的时候防止气泡长到出屏
 const MAX_H := 260.0
+## ---- 窄屏（移动端 / 紧凑档）收缩（移动端适配补齐）----
+## 上面几个常量是**桌面绝对尺寸**，不含视口概念：手机横屏可用区只有约 700×380 单位，
+## DOCK_MAX_H=340 会吃掉八成屏高、DOCK_W=360 会占掉近半屏宽 —— 一张临时详情把战场全盖住。
+## 所以窄屏按 `UiMetrics.available()` 的比例收缩；桌面走原常量，排布逐像素不变。
+## ⚠️ 比「太大」更要紧的是**溢出**：`show_at` 的落点夹取是 `clampf(p, 4, vp - size - 4)`，
+##    size 一旦超过视口，上界就跌到 4 以下（被 maxf 兜成 4）→ 气泡被钉在左上角，
+##    右/下侧文字**直接看不见**，且不报任何错。
+const NARROW_W_RATIO := 0.92       # 跟随气泡最大宽 / 可用区宽
+const NARROW_H_RATIO := 0.62       # 跟随气泡最大高 / 可用区高
+const NARROW_DOCK_W_RATIO := 0.80  # 固定视图宽 / 可用区宽
+const NARROW_DOCK_H_RATIO := 0.78  # 固定视图高 / 可用区高
+## 窄屏收缩后的绝对下限：再小就读不成句，宁可让外层换行
+const NARROW_MIN_W := 168.0
+const NARROW_MIN_H := 140.0
 ## ---- 点击详情的「固定视图」（第 9 轮 · 用户要求）----
 ## 用户原话：「属性和道具查看的时候就是固定视图 + 滚动条」。
 ## 跟随鼠标的气泡读长描述时很别扭：同一个属性在商店不同格点开、位置都不同，
@@ -39,6 +53,41 @@ const MAX_H := 260.0
 const DOCK_W := 360.0       # 固定视图宽度（位置稳定比「刚好包住文字」重要）
 const DOCK_MAX_H := 340.0   # 固定视图高度上限，超出则内部滚动
 const DOCK_MARGIN := 12.0   # 距屏幕右缘的边距（与安全区取较大者）
+
+## 把「想要的尺寸」夹进视口（**纯函数** —— 冒烟 `_check_mobile_ui()` 直接断言它）。
+## 气泡自算的宽高一旦超过视口，落点夹取就会失效并把气泡钉在左上角（见上面常量区的说明）。
+static func clamp_to_viewport(want: Vector2, vp: Vector2, pad := 4.0) -> Vector2:
+	return Vector2(
+		clampf(want.x, 1.0, maxf(1.0, vp.x - pad * 2.0)),
+		clampf(want.y, 1.0, maxf(1.0, vp.y - pad * 2.0)))
+
+## 四个尺寸上限：桌面恒为原常量，窄屏按可用区比例收缩。
+## 统一 gate 在 `UiMetrics.prefers_full_page()` 上 —— 桌面不能走 `dp()`：
+## 桌面 units_per_inch≈96，`dp(340)` 会算成 204，气泡反而缩水。
+##
+## ⚠️ 这四个必须是 `static`：它们只读 UiMetrics（autoload）与常量，**没有任何实例状态**。
+##    写成实例方法会逼着测试 `HintBubble.new()` 才能断言 —— 而冒烟退出时本来就有
+##    `N ObjectDB instances were leaked` 的引擎侧噪音，测试再塞对象进去就把那个数字搅浑了，
+##    真正新引入的泄漏会被淹没（本次正是先踩了这个坑）。纯函数就该是 static 的。
+static func _max_w() -> float:
+	if not UiMetrics.prefers_full_page():
+		return MAX_W
+	return clampf(UiMetrics.available().x * NARROW_W_RATIO, NARROW_MIN_W, MAX_W)
+
+static func _max_h() -> float:
+	if not UiMetrics.prefers_full_page():
+		return MAX_H
+	return clampf(UiMetrics.available().y * NARROW_H_RATIO, NARROW_MIN_H, MAX_H)
+
+static func _dock_w() -> float:
+	if not UiMetrics.prefers_full_page():
+		return DOCK_W
+	return clampf(UiMetrics.available().x * NARROW_DOCK_W_RATIO, NARROW_MIN_W, DOCK_W)
+
+static func _dock_max_h() -> float:
+	if not UiMetrics.prefers_full_page():
+		return DOCK_MAX_H
+	return clampf(UiMetrics.available().y * NARROW_DOCK_H_RATIO, NARROW_MIN_H, DOCK_MAX_H)
 
 var _title: Label = null
 var _body: Label = null
@@ -140,6 +189,7 @@ func _ensure() -> void:
 	col.add_child(_scroll)
 	_body = Label.new()
 	_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# 初始值；每次 show_* 都会按当前视口重算（旋转 / 布局变化后 _max_w 会变）
 	_body.custom_minimum_size = Vector2(MAX_W, 0.0)
 	_body.add_theme_font_size_override("font_size", 12)
 	_body.add_theme_color_override("font_color", Color("d8dde6"))
@@ -155,17 +205,22 @@ func show_at(title_text: String, body_text: String) -> void:
 	# 尺寸必须「先按内容算，再夹进视口」：直接信任内容高度会在长说明时把气泡顶出屏幕，
 	# 玩家看不到上半截，还以为是渲染 bug。
 	reset_size()
+	# 换行宽度必须先按当前视口定：`custom_minimum_size.x` 既是 Label 的换行宽，
+	# 也决定气泡的最小宽度 —— 窄屏不收这一项，下面的 clamp 就永远夹不动（恒 ≥ MAX_W+内边距）。
+	var max_w := _max_w()
+	var max_h := _max_h()
+	_body.custom_minimum_size = Vector2(max_w, 0.0)
 	var want := get_combined_minimum_size()
-	if want.y > MAX_H:
-		want.y = MAX_H
-		_scroll.custom_minimum_size = Vector2(0.0, MAX_H - 42.0)
+	if want.y > max_h:
+		want.y = max_h
+		_scroll.custom_minimum_size = Vector2(0.0, max_h - 42.0)
 	else:
 		# ⚠️ 必须显式复位：`_scroll` 是**复用**节点，上一次长文把最小高度顶上去之后
 		#    不复位，下一条短提示也会撑出同样一大片空白（现象是"气泡突然变得很高"，
 		#    不是报错，纯视觉）。
 		_scroll.custom_minimum_size = Vector2.ZERO
-	size = want
 	var vp := get_viewport().get_visible_rect().size
+	size = clamp_to_viewport(want, vp)
 	var p := get_viewport().get_mouse_position() + Vector2(18.0, 18.0)
 	p.x = clampf(p.x, 4.0, maxf(4.0, vp.x - size.x - 4.0))
 	p.y = clampf(p.y, 4.0, maxf(4.0, vp.y - size.y - 4.0))
@@ -183,16 +238,23 @@ func show_docked(title_text: String, body_text: String) -> void:
 	_docked = true
 	visible = true
 	reset_size()
+	# 与 show_at 同源：换行宽先按当前视口定（否则最小宽恒 ≥ MAX_W+内边距，clamp 夹不动）
+	var max_w := _max_w()
+	var dock_w := _dock_w()
+	var dock_max_h := _dock_max_h()
+	_body.custom_minimum_size = Vector2(max_w, 0.0)
 	var vp := get_viewport().get_visible_rect().size
 	var want := get_combined_minimum_size()
-	want.x = maxf(DOCK_W, minf(want.x, MAX_W))
-	if want.y > DOCK_MAX_H:
-		want.y = DOCK_MAX_H
-		_scroll.custom_minimum_size = Vector2(0.0, DOCK_MAX_H - 42.0)
+	# 固定视图「位置稳定比刚好包住文字重要」→ 宽度取固定值，但必须 ≥ 换行宽且不超上限。
+	# 桌面（dock_w=360 / max_w=340）结果恒为 360，与改动前逐像素一致。
+	want.x = maxf(dock_w, minf(want.x, max_w))
+	if want.y > dock_max_h:
+		want.y = dock_max_h
+		_scroll.custom_minimum_size = Vector2(0.0, dock_max_h - 42.0)
 	else:
 		# 同 `show_at`：固定视图与跟随视图共用同一个滚动节点，短内容必须把最小高度收回
 		_scroll.custom_minimum_size = Vector2.ZERO
-	size = want
+	size = clamp_to_viewport(want, vp)
 	var m := UiMetrics.margin()
 	var edge := maxf(m.x, DOCK_MARGIN)
 	# 右侧固定位：避开商店左侧属性栏，也不压中间的商品卡（会挡住右侧「已购道具」，

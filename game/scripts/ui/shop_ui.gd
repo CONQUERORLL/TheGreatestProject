@@ -306,7 +306,7 @@ func _refresh_right() -> void:
 				arow.add_child(ast)
 			var asell := Button.new()
 			asell.text = "%d◆" % roundi(float(int(a.get("price", 110))) * 0.5)
-			asell.custom_minimum_size = Vector2(56.0, 24.0)
+			asell.custom_minimum_size = _sell_btn_size()
 			asell.tooltip_text = "出售（50% 购入价，并清除其叠层加成）"
 			asell.pressed.connect(_sell_artifact.bind(aid))
 			arow.add_child(asell)
@@ -337,7 +337,7 @@ func _refresh_right() -> void:
 		row.add_child(ct)
 		var sell := Button.new()
 		sell.text = "%d◆" % roundi(float(int(it.get("price", 30))) * 0.5)
-		sell.custom_minimum_size = Vector2(56.0, 24.0)
+		sell.custom_minimum_size = _sell_btn_size()
 		sell.tooltip_text = "出售 1 个（50% 购入价）"
 		sell.pressed.connect(_sell.bind(id))
 		row.add_child(sell)
@@ -811,6 +811,15 @@ func _goods_min_h() -> float:
 
 func _goods_max_h() -> float:
 	return UiMetrics.dp(238.0)
+
+## 出售按钮尺寸（移动端适配补齐）。桌面 56×24 —— 右侧栏是纯列表，24 够用。
+## 但手机上左侧属性栏已按 compact 隐藏，右侧栏成了**唯一**的出售入口
+## （第 9 轮特意保留它就是为了「手机上也能卖东西」），24 单元 ≈ 24dp、
+## 只有 Material 最小触控目标（48dp）的一半，手指根本按不准 —— 那这一栏就白保留了。
+func _sell_btn_size() -> Vector2:
+	if not UiMetrics.prefers_full_page():
+		return Vector2(56.0, 24.0)
+	return Vector2(UiMetrics.dp(56.0), UiMetrics.touch_at_least(UiMetrics.dp(24.0)))
 
 ## 商品阵列的行列（第 9 轮）。思路与菜单首页一致：**先把最大列数按宽度算出来，
 ## 再用 ceil 反推行数，最后用 ceil(n/rows) 平均分列** —— 这样 6 格在「最多 4 列」

@@ -1035,6 +1035,7 @@ func _check_items() -> void:
 	_check_boss_death_skills()
 	_check_boss_skills()
 	_check_round9_boss_terrain()
+	_check_mobile_ui()
 	_check_unlocks()
 	_check_sect_talents()
 	if _failed:
@@ -6999,6 +7000,82 @@ func _check_balance() -> void:
 ## ⚠️ 安全线只取**内置**敌人（跳过带 `source` 的 mod 条目）：若让工坊内容参与定义这条线，
 ##    某 mod 塞一只 `keep_dist=20` 的射手就能让下面的反向断言假红，
 ##    而病因会被指向「近战武器设计错了」——典型误诊。
+## 移动端 UI 度量（第 10 轮补）。改动前冒烟对 UiMetrics **零覆盖** ——
+## 它同时被桌面与移动端读，一旦改坏，桌面排布会「静默变形」（不报错、只是位置变了）。
+## 所以这里钉三件事：① 纯函数真的会收缩（不是恒等）② 收缩有下限（不出 0/负数）
+## ③ 桌面端契约：card_grid / touch_at_least / 气泡四个上限**一律返回原值**。
+func _check_mobile_ui() -> void:
+	# ① 夹进视口：超出部分被裁到 vp - pad*2
+	var vp := Vector2(200.0, 100.0)
+	var c1: Vector2 = HintBubble.clamp_to_viewport(Vector2(9999.0, 9999.0), vp)
+	if not c1.is_equal_approx(Vector2(192.0, 92.0)):
+		_fail("clamp_to_viewport 未把尺寸夹进视口：%s（期望 192,92）" % c1)
+		return
+	# 反向对照：它必须**不是恒等函数**，否则上面那条在「函数没生效」时也会绿
+	if c1.is_equal_approx(Vector2(9999.0, 9999.0)):
+		_fail("clamp_to_viewport 是恒等函数（没生效）")
+		return
+	# ② 小尺寸不被放大（只在超限时收缩）
+	var c2: Vector2 = HintBubble.clamp_to_viewport(Vector2(10.0, 20.0), vp)
+	if not c2.is_equal_approx(Vector2(10.0, 20.0)):
+		_fail("clamp_to_viewport 把未超限的尺寸改动了：%s" % c2)
+		return
+	# ③ 极小视口：下界兜到 1 而不是 0/负数（0 会让气泡不可见且落点夹取反向）
+	var c3: Vector2 = HintBubble.clamp_to_viewport(Vector2(80.0, 80.0), Vector2(10.0, 10.0))
+	if c3.x < 1.0 or c3.y < 1.0:
+		_fail("clamp_to_viewport 在极小视口下返回了 0/负数：%s" % c3)
+		return
+	# ④ 桌面契约：headless 无触屏、非 mobile、视口高 720 → 一定不是 full_page
+	if UiMetrics.prefers_full_page():
+		_fail("桌面/headless 不该判为 full_page（排布分支会整体切错）")
+		return
+	if UiMetrics.size_class() != "expanded":
+		_fail("桌面 720 高应为 expanded，实为 %s" % UiMetrics.size_class())
+		return
+	# card_grid 在非 full_page 时必须**原样返回 want**，否则桌面卡阵尺寸会变
+	var g: Dictionary = UiMetrics.card_grid(3, Vector2(210.0, 224.0), 150.0, 150.0, 14.0, 140.0)
+	if not Vector2(g.card_size).is_equal_approx(Vector2(210.0, 224.0)) or int(g.cols) != 3:
+		_fail("card_grid 桌面端未原样返回设计尺寸：%s cols=%s" % [g.card_size, g.cols])
+		return
+	# touch_at_least：非触屏恒返回原值（这是「桌面不被改」的总闸门）
+	if not is_equal_approx(UiMetrics.touch_at_least(30.0), 30.0):
+		_fail("非触屏设备 touch_at_least 改动了原值")
+		return
+	# 气泡四个上限：桌面必须等于原常量（窄屏收缩绝不能漏到桌面）。
+	# 它们是 static，所以这里**不实例化** —— 测试里 new 一个 Control 会往 ObjectDB 塞对象，
+	# 把退出时的泄漏计数搅浑，真正的新增泄漏反而看不见。
+	var mw: float = HintBubble._max_w()
+	var mh: float = HintBubble._max_h()
+	var dw: float = HintBubble._dock_w()
+	var dh: float = HintBubble._dock_max_h()
+	var caps_ok: bool = is_equal_approx(mw, HintBubble.MAX_W) and is_equal_approx(mh, HintBubble.MAX_H)
+	caps_ok = caps_ok and is_equal_approx(dw, HintBubble.DOCK_W) and is_equal_approx(dh, HintBubble.DOCK_MAX_H)
+	var caps_txt := "max_w=%.1f max_h=%.1f dock_w=%.1f dock_max_h=%.1f" % [mw, mh, dw, dh]
+	if not caps_ok:
+		_fail("气泡尺寸上限在桌面端被改动了：%s" % caps_txt)
+		return
+	# ⑤ 安全区兜底：四边都不小于 SAFE_MIN_DP（刘海 API 不可用时也不能是 0）
+	var ins: Dictionary = UiMetrics.safe_insets()
+	var min_side: float = UiMetrics.dp(UiMetrics.SAFE_MIN_DP) - 0.01
+	for k in ["left", "right", "top", "bottom"]:
+		if float(ins[k]) < min_side:
+			_fail("安全区 %s 低于兜底值：%.2f < %.2f" % [k, float(ins[k]), min_side])
+			return
+	# available() 必须真的扣掉了边距（否则各界面的「自适应」都在按全屏算）
+	var avail: Vector2 = UiMetrics.available()
+	var vu: Vector2 = UiMetrics.viewport_units()
+	if avail.x <= 0.0 or avail.y <= 0.0 or avail.x >= vu.x or avail.y >= vu.y:
+		_fail("available() 未扣除边距：avail=%s viewport=%s" % [avail, vu])
+		return
+	# ⑥ grid_columns 纯函数：宽了才多列、窄了只 1 列（反向对照，防「恒返回 1」或「恒返回 n」）
+	if UiMetrics.grid_columns(2000.0, 150.0, 3, 10.0) != 3:
+		_fail("grid_columns 在宽区未放满 3 列")
+		return
+	if UiMetrics.grid_columns(200.0, 150.0, 3, 10.0) != 1:
+		_fail("grid_columns 在窄区未退化成 1 列")
+		return
+	print("SMOKE: mobile ui metrics OK（%s / caps %s）" % [UiMetrics.size_class(), caps_txt])
+
 func _check_reach_safety() -> void:
 	var shooter_min := 1e9
 	var shooter_max := 0.0

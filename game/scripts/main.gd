@@ -1594,6 +1594,13 @@ func _pause_artifact_rows() -> void:
 		_pause_items.add_child(row)
 
 func _build_end_menus() -> void:
+	# 结算页按钮高度（移动端适配补齐）：38 单元 ≈ 38dp，够不着 Material 的 48dp 最小可点尺寸，
+	# 手机上「再来一局 / 返回主菜单 / 退出游戏」会点空。触摸设备按触控下限抬到 48dp。
+	# ⚠️ 必须 gate 在 `prefers_full_page()` 上：桌面 units_per_inch≈96，`dp(38)` 只有 22.8，
+	#    直接套 dp 会让桌面按钮**变矮**（与 `_build_pause_panel` 同样的写法与理由）。
+	var full := UiMetrics.prefers_full_page()
+	var h_btn := UiMetrics.touch_at_least(UiMetrics.dp(38.0)) if full else 38.0
+	var h_btn_big := UiMetrics.touch_at_least(UiMetrics.dp(46.0)) if full else 46.0
 	# 死亡界面按钮
 	dead_label.text = "你倒下了"
 	var dead_vbox := VBoxContainer.new()
@@ -1608,18 +1615,18 @@ func _build_end_menus() -> void:
 	$UI.add_child(dead_vbox)
 	var retry_btn := Button.new()
 	retry_btn.text = "再来一局（R）"
-	retry_btn.custom_minimum_size = Vector2(200.0, 38.0)
+	retry_btn.custom_minimum_size = Vector2(200.0, h_btn)
 	retry_btn.pressed.connect(func() -> void: get_tree().reload_current_scene())
 	dead_vbox.add_child(retry_btn)
 	var back_btn := Button.new()
 	back_btn.text = "返回主菜单"
-	back_btn.custom_minimum_size = Vector2(200.0, 38.0)
+	back_btn.custom_minimum_size = Vector2(200.0, h_btn)
 	back_btn.pressed.connect(_goto_main_menu)
 	dead_vbox.add_child(back_btn)
 	# 第 8 轮：结算页也得能退 —— 否则只能先回主菜单再找那个被切掉的「退出」
 	var dead_quit := Button.new()
 	dead_quit.text = "退出游戏"
-	dead_quit.custom_minimum_size = Vector2(200.0, 38.0)
+	dead_quit.custom_minimum_size = Vector2(200.0, h_btn)
 	dead_quit.pressed.connect(_quit_game)
 	dead_vbox.add_child(dead_quit)
 	_dead_menu = dead_vbox
@@ -1637,7 +1644,7 @@ func _build_end_menus() -> void:
 	$UI.add_child(vic_vbox)
 	_victory_continue = Button.new()
 	_victory_continue.text = "🔥 继续挑战 · 无尽炼狱"
-	_victory_continue.custom_minimum_size = Vector2(270.0, 46.0)
+	_victory_continue.custom_minimum_size = Vector2(270.0, h_btn_big)
 	_victory_continue.add_theme_font_size_override("font_size", 17)
 	_victory_continue.pressed.connect(_continue_endless)
 	vic_vbox.add_child(_victory_continue)
@@ -1650,21 +1657,21 @@ func _build_end_menus() -> void:
 	vic_vbox.add_child(vic_tip)
 	var vic_retry := Button.new()
 	vic_retry.text = "再来一局（R）"
-	vic_retry.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_retry.custom_minimum_size = Vector2(270.0, h_btn)
 	vic_retry.pressed.connect(func() -> void:
 		_finish_victory_run()
 		get_tree().reload_current_scene())
 	vic_vbox.add_child(vic_retry)
 	var vic_back := Button.new()
 	vic_back.text = "返回主菜单"
-	vic_back.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_back.custom_minimum_size = Vector2(270.0, h_btn)
 	vic_back.pressed.connect(func() -> void:
 		_finish_victory_run()
 		_goto_main_menu())
 	vic_vbox.add_child(vic_back)
 	var vic_quit := Button.new()
 	vic_quit.text = "退出游戏"
-	vic_quit.custom_minimum_size = Vector2(270.0, 38.0)
+	vic_quit.custom_minimum_size = Vector2(270.0, h_btn)
 	vic_quit.pressed.connect(_quit_game)
 	vic_vbox.add_child(vic_quit)
 	_victory_menu = vic_vbox
