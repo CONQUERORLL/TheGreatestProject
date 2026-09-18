@@ -45,6 +45,9 @@ const STAT_LIMITS := {
 	"bullet_speed_bonus": Vector2(0.0, 10.0), "bullet_range_bonus": Vector2(0.0, 10.0),
 	"throw_speed_bonus": Vector2(0.0, 10.0), "throw_range_bonus": Vector2(0.0, 10.0),
 	"melee_range_bonus": Vector2(0.0, 10.0), "aoe_radius_bonus": Vector2(0.0, 10.0),
+	# 第 11 轮：喷射散布角倍率增量。⚠️ **可为负**（负 = 收窄）——
+	#    这是全表唯一下限不是 0 的武器加成通道，别照抄上面的 `maxf(0.0, …)`。
+	"proj_spread_mult": Vector2(-0.8, 4.0),
 	"low_hp_dmg_bonus": Vector2(0.0, 5.0), "momentum_dmg_bonus": Vector2(0.0, 5.0),
 	# 元素同化度（五行体系 §7）：0 = 无亲和，1.0 = 满。上限 2.0 是给 mod 的余量，
 	# 游戏内实际由 §7.2 的分档上限约束（角色/道具各自有更严的口径）。
@@ -65,6 +68,7 @@ const EFFECT_LIMITS := {
 	"bullet_speed_bonus": 10.0, "bullet_range_bonus": 10.0, "melee_range_bonus": 10.0,
 	"throw_speed_bonus": 10.0, "throw_range_bonus": 10.0,
 	"aoe_radius_bonus": 10.0, "low_hp_dmg_bonus": 5.0, "momentum_dmg_bonus": 5.0,
+	"proj_spread_mult": 0.8,   # 第 11 轮：单条喷嘴道具的散布改动上限（绝对值）
 	# S5 元素同化度（§7）：5 个扁平键，单条效果上限与 STAT_LIMITS 一致（2.0）
 	"assim_metal": 2.0, "assim_wood": 2.0, "assim_water": 2.0, "assim_fire": 2.0, "assim_earth": 2.0,
 }

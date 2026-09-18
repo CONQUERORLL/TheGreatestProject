@@ -1027,6 +1027,9 @@ func _check_items() -> void:
 	_check_visual_layer()
 	_check_balance()
 	_check_reach_safety()
+	_check_spread_channel()
+	_check_buff_display()
+	_check_wave_bands()
 	_check_balance_log()
 	_check_dot_contribution()
 	_check_assim_gain()
@@ -1069,6 +1072,29 @@ func _check_items() -> void:
 	if art_name == "" or art_stack == "":
 		_fail("暂停面板法宝区未显示持有法宝与叠层（name='%s' stack='%s'）"
 			% [art_name, art_stack])
+		return
+	# ---- 武器区 / 临时增益区（第 11 轮新增 · 用户需求 5/6）----
+	# ⚠️ 必须断言**具体条目**而不能只断言「分区标题在」：武器区第一版插在了
+	#    `_pause_items` 的清空循环之前 —— 加完立刻被同函数下面几行删掉，
+	#    面板上一行武器都没有；而「标题存在」类断言会跟着标题一起被判绿（都没有）。
+	#    用户的诉求本来就是「点武器/道具能看到东西」，所以这里直接找**武器名**。
+	if _find_label_text(pi, "临时增益") == "":
+		_fail("暂停面板缺少临时增益分区")
+		return
+	if _find_label_text(pi, "武器") == "":
+		_fail("暂停面板缺少武器分区")
+		return
+	if p2.weapons.is_empty():
+		_fail("暂停面板武器区用例前置不成立：玩家此刻一件武器都没有")
+		return
+	var first_wid := String(p2.weapons[0].type)
+	var first_wcfg: Dictionary = Registry.weapons.get(first_wid, {})
+	if first_wcfg.is_empty():
+		_fail("暂停面板武器区用例前置不成立：Registry 缺武器 %s" % first_wid)
+		return
+	if _find_label_text(pi, String(first_wcfg.get("name", first_wid))) == "":
+		_fail("暂停面板武器区没列出实际持有的武器（%s）—— 多半是被同函数的清空循环删掉了"
+			% first_wid)
 		return
 	_main.toggle_pause()
 	# 波末自动回收积压的升级在此清空（触控/移动测试需要稳定的 PLAYING 阶段）
@@ -7158,6 +7184,320 @@ func _check_reach_safety() -> void:
 			return
 	print("SMOKE: S8 综合战力（reach / AOE 面积 / %d 只内置远程怪 keep_dist %.0f~%.0f）OK"
 		% [n_shooter, shooter_min, shooter_max])
+
+
+## 原样还回一批 stats 键并重新净化 —— 「租的变量要还」的公共写法。
+## 起因见 `_check_spread_channel` 与 `_check_balance_log` 里关于**残留加成**的长注释。
+func _restore_stat_keys(p: Node2D, keep: Dictionary) -> void:
+	for k in keep:
+		p.stats[String(k)] = float(keep[k])
+	p._sanitize_stats()
+
+
+## 第 11 轮 · 用户需求 7：分段难度曲线 + 波段怪构成。
+## 三条链路各测正向与反向：
+##   ① 曲线：端点不漂移 + 单调不减 + 「先难后易 / 渐肉」真的体现在**斜率**上
+##   ② 构成：远程段远程份额涨、精英段精英份额涨**且**杂兵份额跌（两头都断言，
+##     否则「全都乘 2」这种错实现照样判绿）
+##   ③ 名单防漂移：与 `Registry` 的 `ai=="shooter"` 双向核对 + 三张名单两两不相交
+func _check_wave_bands() -> void:
+	# ---- ① 曲线 ----
+	var prev_hp := 0.0
+	for w in range(1, Config.WAVES_TOTAL + 1):
+		var hp := Config.wave_hp_scale(w)
+		var dm := Config.wave_dmg_scale(w)
+		if hp < prev_hp - 1e-6:
+			_fail("难度曲线非单调：W%d HP 倍率 %.3f 低于 W%d 的 %.3f" % [w, hp, w - 1, prev_hp])
+			return
+		if hp <= 0.0 or dm <= 0.0:
+			_fail("难度曲线出现非正倍率（W%d：HP %.3f / DMG %.3f）" % [w, hp, dm])
+			return
+		prev_hp = hp
+	if not is_equal_approx(Config.wave_hp_scale(1), 1.0) \
+			or not is_equal_approx(Config.wave_dmg_scale(1), 1.0):
+		_fail("W1 难度倍率必须恒为 1.0（开局基准，改动它会连坐首杀窗口）")
+		return
+	# 端点不许失控漂移：W20 落在合理带内即可，不写死精确值（那是设计值不是实现细节）
+	var hp20 := Config.wave_hp_scale(Config.WAVES_TOTAL)
+	if hp20 < 6.0 or hp20 > 7.5:
+		_fail("W20 HP 倍率 %.2f 超出合理带 [6.0, 7.5] —— 分段改动把端点带跑了" % hp20)
+		return
+	# 「先难后易」：区块 1（W1-4）的每波增量必须**严格大于**区块 2（W4-8）的。
+	# 这是用户需求的直接翻译；只断言「W20 变大」的话，整条曲线抬高也能过。
+	var slope1 := (Config.wave_hp_scale(4) - Config.wave_hp_scale(1)) / 3.0
+	var slope2 := (Config.wave_hp_scale(8) - Config.wave_hp_scale(4)) / 4.0
+	if slope1 <= slope2:
+		_fail("「W1-4 难 / W4-8 易」没体现：区块1 斜率 %.3f 未大于区块2 的 %.3f"
+			% [slope1, slope2])
+		return
+	# 「渐肉」：末段（W16-20）斜率必须 ≥ 区块 2（易）—— 否则后段成了第二个休息区
+	var slope5 := (Config.wave_hp_scale(20) - Config.wave_hp_scale(16)) / 4.0
+	if slope5 < slope2:
+		_fail("「W16-20 渐肉」没体现：末段斜率 %.3f 低于区块2 的 %.3f" % [slope5, slope2])
+		return
+	# ---- ③ 名单防漂移（先测这个：后面②要用它的数据）----
+	var ranged_truth: Array = []
+	for eid in Registry.enemies:
+		var ec: Dictionary = Registry.enemies[eid]
+		if ec.has("source"):
+			continue                      # mod 条目不参与内置构成的名单核对
+		if String(ec.get("ai", "")) == "shooter":
+			ranged_truth.append(String(eid))
+	for rid in Config.BAND_RANGED_MOB_IDS:
+		if not Registry.enemies.has(String(rid)):
+			_fail("BAND_RANGED_MOB_IDS 含未注册敌人 %s" % String(rid))
+			return
+		if not ranged_truth.has(String(rid)):
+			_fail("BAND_RANGED_MOB_IDS 里的 %s 在 Registry 里并非 shooter AI —— 名单写错了" % String(rid))
+			return
+	for tid in ranged_truth:
+		if not (Config.BAND_RANGED_MOB_IDS as Array).has(String(tid)):
+			_fail("Registry 里的 shooter 怪 %s 不在 BAND_RANGED_MOB_IDS 里 —— 名单漏了它，" % String(tid)
+				+ "「远程多」这一段就悄悄漏一只")
+			return
+	for eid2 in Config.BAND_ELITE_MOB_IDS + Config.BAND_TRASH_MOB_IDS:
+		if not Registry.enemies.has(String(eid2)):
+			_fail("波段名单含未注册敌人 %s" % String(eid2))
+			return
+	# 三张名单两两不相交：同时命中两张会吃到两次倍率（远程精英被平方放大）
+	var all_band: Array = []
+	for grp in [Config.BAND_RANGED_MOB_IDS, Config.BAND_ELITE_MOB_IDS, Config.BAND_TRASH_MOB_IDS]:
+		for mid_x in grp:
+			if all_band.has(String(mid_x)):
+				_fail("波段名单重复收录 %s —— 会吃到两次倍率" % String(mid_x))
+				return
+			all_band.append(String(mid_x))
+	# ---- ② 构成：用**份额**（占比）而不是绝对权重，天然免疫「整体缩放」这种假实现 ----
+	var share_w10 := _band_share(10, Config.BAND_RANGED_MOB_IDS)
+	var share_w6 := _band_share(6, Config.BAND_RANGED_MOB_IDS)
+	if share_w10 <= share_w6:
+		_fail("区块 3（W9-12）「远程多」未生效：W10 远程份额 %.3f ≤ W6 的 %.3f"
+			% [share_w10, share_w6])
+		return
+	var elite_w10 := _band_share(10, Config.BAND_ELITE_MOB_IDS)
+	var elite_w14 := _band_share(14, Config.BAND_ELITE_MOB_IDS)
+	var trash_w10 := _band_share(10, Config.BAND_TRASH_MOB_IDS)
+	var trash_w14 := _band_share(14, Config.BAND_TRASH_MOB_IDS)
+	if elite_w14 <= elite_w10:
+		_fail("区块 4（W13-16）「小精英」未生效：W14 精英份额 %.3f ≤ W10 的 %.3f"
+			% [elite_w14, elite_w10])
+		return
+	if trash_w14 >= trash_w10:
+		_fail("「小精英」只抬了精英、没让出杂兵份额（W14 杂兵 %.3f ≥ W10 的 %.3f）——"
+			% [trash_w14, trash_w10] + " 这不是构成变化，是整体缩放")
+		return
+	# 「渐肉」在**构成**侧的体现 = 末段仍是精英主导（相对中段），强度由 HP 曲线末段斜率承担
+	# （上面 slope5 已断言）。⚠️ 这里**刻意不写「精英份额一路递增到区块 5」**：
+	# 区块 5 的精英倍率(1.7)本就低于区块 4(2.0) ——「小精英」是区块 4 的峰值，
+	# 区块 5 改为靠 HP 变厚 + 整池上移继续加压。把「递增」硬钉进断言会让
+	# **完全正确的实现也红**（份额实算：W18 精英 ≈0.402 < W14 ≈0.440，那是设计不是 bug）。
+	# 故这里只断言「末段精英主导 / 杂兵让位」这两个与区块 3 的对照 —— 方向与区块 4 一致。
+	var elite_w18 := _band_share(18, Config.BAND_ELITE_MOB_IDS)
+	var trash_w18 := _band_share(18, Config.BAND_TRASH_MOB_IDS)
+	if elite_w18 <= elite_w10:
+		_fail("区块 5（W17-20）「渐肉」的精英份额 %.3f 不高于中段（区块3）的 %.3f"
+			% [elite_w18, elite_w10])
+		return
+	if trash_w18 >= trash_w10:
+		_fail("区块 5 的杂兵份额 %.3f 未低于中段（区块3）的 %.3f —— 末段回到杂兵海了"
+			% [trash_w18, trash_w10])
+		return
+	# 区块 1/2 刻意不做构成偏移（空表）→ 份额必须保持「未加工」的水平，
+	# 即低于区块 3 的远程份额与区块 4 的精英份额。这是反向对照：
+	# 若有人把倍率表整体前移，这三条会同时红。
+	if _band_share(4, Config.BAND_RANGED_MOB_IDS) >= share_w10:
+		_fail("区块 1（W1-4「难」）不该在构成上堆远程 —— 难度应由 HP/DMG 曲线承担")
+		return
+	# 权重必须恒 > 0（w<=0 的条目会让 weighted_pick 报错并返回 null）
+	for w2 in range(1, Config.WAVES_TOTAL + 1):
+		for entry_w in Config.wave_composition(w2):
+			if float((entry_w as Dictionary).get("w", 0.0)) <= 0.0:
+				_fail("波段加权把权重压到 ≤ 0（W%d / %s）" % [w2, String((entry_w as Dictionary).get("item", ""))])
+				return
+	print("SMOKE: 第11轮 分段难度曲线 + 波段怪构成（端点不漂移 / 先难后易 / 远程多·小精英·渐肉 / 名单防漂移）OK")
+
+
+## 某波段名单在 W 波出怪池里的**权重份额**（占比）。
+## 用份额而不是绝对权重：整体缩放（全都 ×2）不会改变份额 —— 那正是要拦的假实现。
+func _band_share(w: int, ids: Array) -> float:
+	var total := 0.0
+	var hit := 0.0
+	for e in Config.wave_composition(w):
+		var d: Dictionary = e
+		var wv := float(d.get("w", 0.0))
+		total += wv
+		if ids.has(String(d.get("item", ""))):
+			hit += wv
+	return 0.0 if total <= 0.0 else hit / total
+
+
+## 第 11 轮：喷射散布角通道（喷嘴类道具）。
+## 加「新字段」的老坑是**零消费点**（`boss_hp_scale` 那次），所以三侧一起断言：
+##   ① 道具真的注册进来（不在 EFFECT_LIMITS 的键会让 registry 整条拒登，只 push_warning）
+##   ② 通道真的被 `_weapon_runtime_cfg` 消费，且 0 值时**原样复用原字典**（反向对照）
+##   ③ 表现层同源：火焰锥宽度随同一倍率缩放（否则就是「看到的 ≠ 打到的」）
+##   + 相关度闸门两侧都测（有喷射武器才刷、没有就别刷）
+func _check_spread_channel() -> void:
+	var ids := ["i-highpressure", "i-multihole"]
+	for iid in ids:
+		if not Registry.items.has(iid):
+			_fail("第11轮：喷嘴道具 %s 未注册（`proj_spread_mult` 不在 EFFECT_LIMITS 会整条被拒登）" % iid)
+			return
+		if not Registry.items[iid].get("effects", {}).has("proj_spread_mult"):
+			_fail("第11轮：喷嘴道具 %s 没有 proj_spread_mult 效果" % iid)
+			return
+	# 反向对照：两件喷嘴方向必须相反 —— 否则「收窄 / 扩散」只有一头能用，
+	# 而只测正向的话，把两件都写成 +60% 也会判绿。
+	var hi := float(Registry.items["i-highpressure"].effects.proj_spread_mult)
+	var mh := float(Registry.items["i-multihole"].effects.proj_spread_mult)
+	if not (hi < 0.0 and mh > 0.0):
+		_fail("第11轮：两件喷嘴方向必须相反（高压=%.2f / 多孔=%.2f）" % [hi, mh])
+		return
+	# ② 消费点前置：内置武器里必须**存在**带 spread 的，否则通道写了没人吃
+	var spread_wid := ""
+	for wid in Config.WEAPONS:
+		if float(Config.WEAPONS[wid].get("spread", 0.0)) > 0.0:
+			spread_wid = String(wid)
+			break
+	if spread_wid == "":
+		_fail("第11轮：内置武器里没有带 spread 的 —— proj_spread_mult 零消费点")
+		return
+	var p: Node2D = _main.get_node("Player")
+	var cfg: Dictionary = Registry.weapons[spread_wid]
+	var base_spread := float(cfg.get("spread", 0.0))
+	# ⚠️⚠️ 本用例排在几十条用例之后，玩家身上**已经有别人留下的武器加成**。
+	#    实测（第 11 轮第一次跑就假红）：残留会让 `_weapon_runtime_cfg` 走 duplicate 分支，
+	#    于是「全 0 时不该 duplicate」这条反向对照必红，**且红得像「实现错了」**。
+	#    与 `_check_balance_log` 同款纪律：进用例先把武器加成键全摘掉，所有退出路径原样还回去。
+	var keep := {}
+	for k in ["bullet_speed_bonus", "bullet_range_bonus", "throw_speed_bonus",
+			"throw_range_bonus", "melee_range_bonus", "aoe_radius_bonus", "proj_spread_mult"]:
+		keep[String(k)] = float(p.stats.get(String(k), 0.0))
+		p.stats[String(k)] = 0.0
+	# 反向对照：武器加成**全部归零**后必须原样复用原字典（`_weapon_runtime_cfg` 的早退约定）。
+	# ⚠️ 用 `is_same()` 而不是 `!=`：Dictionary 的 `!=` 语义随版本摇摆，
+	#    `is_same()` 明确比的是「同一个实例」，正是这里要测的东西。
+	if not is_same(p._weapon_runtime_cfg(cfg), cfg):
+		_restore_stat_keys(p, keep)
+		_fail("第11轮：全部武器加成归零时不该 duplicate 武器字典")
+		return
+	if not is_equal_approx(float(p._weapon_runtime_cfg(cfg).get("spread", 0.0)), base_spread):
+		_restore_stat_keys(p, keep)
+		_fail("第11轮：无加成时 spread 被改动（应恒为 %.4f）" % base_spread)
+		return
+	# 正向：收窄 / 扩散都必须真的改到 spread，且严格等于 base × (1+m)
+	p.stats["proj_spread_mult"] = hi
+	var got_hi := float(p._weapon_runtime_cfg(cfg).get("spread", 0.0))
+	p.stats["proj_spread_mult"] = mh
+	var got_mh := float(p._weapon_runtime_cfg(cfg).get("spread", 0.0))
+	if not (got_hi < base_spread and got_mh > base_spread):
+		_restore_stat_keys(p, keep)
+		_fail("第11轮：喷嘴没改到 spread（base=%.4f 收窄=%.4f 扩散=%.4f）"
+			% [base_spread, got_hi, got_mh])
+		return
+	if absf(got_hi - base_spread * (1.0 + hi)) > 1e-6 \
+			or absf(got_mh - base_spread * (1.0 + mh)) > 1e-6:
+		_restore_stat_keys(p, keep)
+		_fail("第11轮：spread 缩放与 (1 + proj_spread_mult) 不一致")
+		return
+	# ③ 表现层同源：火焰锥末端宽度必须跟着同一倍率走
+	p.stats["proj_spread_mult"] = 0.0
+	p._ignite_flame_jet(cfg, 0.0)
+	var w0 := float(p._ensure_flame_jet().width)
+	p.stats["proj_spread_mult"] = mh
+	p._ignite_flame_jet(cfg, 0.0)
+	var w1 := float(p._ensure_flame_jet().width)
+	_restore_stat_keys(p, keep)
+	if w0 <= 0.0 or absf(w1 - w0 * (1.0 + mh)) > 1e-4:
+		_fail("第11轮：火焰锥宽度没跟着 proj_spread_mult 缩放（%.2f → %.2f）" % [w0, w1])
+		return
+	# 相关度闸门两侧都测：用**非喷射弹幕武器**做反向对照（这样其它键都过得去，
+	# 只有 proj_spread_mult 那一关该拦下它）
+	if Config.entry_weapon_relevant(Registry.items["i-highpressure"], [{ "type": "frost_staff" }]):
+		_fail("第11轮：没有喷射武器时仍判定喷嘴相关（会给一屋子废属性）")
+		return
+	if not Config.entry_weapon_relevant(Registry.items["i-highpressure"], [{ "type": spread_wid }]):
+		_fail("第11轮：持有喷射武器时喷嘴却被判无关")
+		return
+	print("SMOKE: 第11轮 喷射散布角通道（喷嘴道具注册 / 1±proj_spread_mult 缩放 / 火焰锥同源 / 相关度闸门）OK")
+
+
+## 第 11 轮 · 用户需求 6：临时增益显示层。
+## 断言「数据源 → HUD 增益条 → 详情文案」三段都真的接上：
+##   ① `player.active_buffs()` 在技能增益生效时给出条目（其余情形归零 → 反面对照）
+##   ② HUD 的增益条子节点数 = 条目数（挂上了才叫「在武器上方显示」）
+##   ③ `EntryText.buff_detail()` 正文非空 —— 空正文会让 `attach_hover` **静默不挂**，
+##      悬浮没反应却不报错，正是最难发现的那一类
+func _check_buff_display() -> void:
+	var p: Node2D = _main.get_node("Player")
+	var h: Control = _main.get_node("UI/HUD")
+	# 反面对照：先把技能增益清空，`active_buffs()` 里不许再出现「剩余秒」那一条
+	var keep_t := float(p._skill_buff_t)
+	var keep_eff: Dictionary = p._skill_buff_effects.duplicate()
+	p._skill_buff_t = 0.0
+	p._skill_buff_effects = {}
+	for b in p.active_buffs():
+		if float((b as Dictionary).get("remain", -1.0)) >= 0.0:
+			p._skill_buff_t = keep_t
+			p._skill_buff_effects = keep_eff
+			_fail("第11轮：技能增益已清空，active_buffs 仍报出带倒计时的条目")
+			return
+	# 正向：注入一条技能增益（直接写字段，不走 use_skill —— 那会真的进冷却）
+	p._skill_buff_effects = { "dmg_mult": 0.25 }
+	p._skill_buff_t = 4.0
+	var buffs: Array = p.active_buffs()
+	if buffs.is_empty():
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：技能增益生效时 active_buffs 为空")
+		return
+	var timed: Dictionary = {}
+	for b in buffs:
+		if float((b as Dictionary).get("remain", -1.0)) >= 0.0:
+			timed = b
+			break
+	if timed.is_empty() or not is_equal_approx(float(timed.get("remain", 0.0)), 4.0):
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：技能增益没带出剩余秒（期望 4.0，得到 %s）" % str(timed))
+		return
+	# ② HUD 增益条：显式刷一次（`_process` 在非 PLAYING 阶段会跳过整段刷新）
+	h._refresh_buff_row()
+	if int(h._buff_row.get_child_count()) != buffs.size():
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：HUD 增益条芯片数 %d ≠ active_buffs 条目数 %d"
+			% [int(h._buff_row.get_child_count()), buffs.size()])
+		return
+	if not h._buff_row.visible:
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：有增益时 HUD 增益条仍不可见")
+		return
+	# 芯片尺寸必须真的量出来 —— `_buff_row` 的父节点是 Control 不是 Container，
+	# 没人替它设 size；不显式设的话宽高恒 0，芯片画不出来且不报错。
+	if h._buff_row.size.x <= 0.0 or h._buff_row.size.y <= 0.0:
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：HUD 增益条尺寸为零（芯片画不出来）")
+		return
+	# ③ 详情文案：正文必须非空且说明实际加成（空正文 = 悬浮静默不挂）
+	var det := EntryText.buff_detail(timed)
+	var body := String(det.get("body", ""))
+	if body.strip_edges() == "":
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：buff_detail 正文为空 → 悬浮会静默不挂")
+		return
+	if not body.contains("剩余") or not body.contains("25%"):
+		p._skill_buff_t = keep_t
+		p._skill_buff_effects = keep_eff
+		_fail("第11轮：buff_detail 正文没写清剩余时间与实际加成：%s" % body.replace("\n", " / "))
+		return
+	# 收尾：原样还回去
+	p._skill_buff_t = keep_t
+	p._skill_buff_effects = keep_eff
+	print("SMOKE: 第11轮 临时增益显示（技能/地脉/战意数据源 · HUD 武器上方增益条 · 详情文案）OK")
 
 
 ## 单把武器在「白板 + 单体 + 非暴击」下的**稳态 DoT DPS**。

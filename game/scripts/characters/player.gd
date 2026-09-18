@@ -69,6 +69,13 @@ func _ready() -> void:
 		# ╰────────────────────────────────────────╯
 		"melee_range_bonus": 0.0,    # 近战斩击半径
 		"aoe_radius_bonus": 0.0,     # 爆炸 / 溅射半径
+		# ╭─ 2026-09-18（第 11 轮）喷射散布角 ─╮
+		# 用户反馈「喷火枪需要攻击范围道具：高压喷嘴（增距减角）、多孔喷嘴（增角减伤）」。
+		# 射程通道本来就有（`bullet_range_bonus` 对喷火枪生效），真正零消费的是
+		# **`spread`（扇形随机散布角）** —— 火焰锥的胖瘦此前没有任何构筑维度。
+		# ⚠️ **有符号**（负 = 收窄），是本文件唯一不做 `maxf(0, …)` 的武器加成键。
+		"proj_spread_mult": 0.0,     # 喷射散布角倍率增量（负=收窄 / 正=扩散）
+		# ╰──────────────────────────────╯
 		"low_hp_dmg_bonus": 0.0,     # 残血增伤上限（按缺失生命比例发挥）
 		"momentum_dmg_bonus": 0.0,   # 战意当前增伤（特性运行时写入，每波清零）
 	}
@@ -272,7 +279,9 @@ func try_fire(w: Dictionary) -> void:
 	else:
 		var pellets := maxi(1, int(c.get("pellets", 1)))
 		var arc := maxf(0.0, float(c.get("arc", 0.0)))
-		var spread := maxf(0.0, float(c.get("spread", 0.0)))
+		# ⚠️ 散布角必须读 **wc**（叠加了道具的运行时配置）而不是 c（原始数值表）——
+		#    喷嘴类道具只改 `wc.spread`，读 c 就等于道具静默失效（不报错、只是没效果）。
+		var spread := maxf(0.0, float(wc.get("spread", 0.0)))
 		for i in pellets:
 			var offset := 0.0
 			if pellets > 1:
@@ -349,7 +358,10 @@ func _ignite_flame_jet(c: Dictionary, ang: float) -> void:
 	#   减 18 是抵消 `flame_jet.gd` 把锥体起点画在枪口 `d * 18` 处的偏移，
 	#   否则火焰尖端会多出 18px（那样又变成「看到的比打到的远」）。
 	var eff := reach + float(wc.get("splash", 0.0))
-	_ensure_flame_jet().ignite(ang, maxf(20.0, eff - 18.0), 26.0)
+	# ⚠️ 第 11 轮：锥体末端宽度**随喷射散布角同步缩放** —— 喷嘴改的是判定散布，
+	#    视觉不同步就又变成「看到的 ≠ 打到的」（第 8 轮刚修过同一类问题）。
+	var cone_w := 26.0 * proj_spread_scale()
+	_ensure_flame_jet().ignite(ang, maxf(20.0, eff - 18.0), cone_w)
 
 ## 惰性创建喷射锥并挂在自身（成为子节点后位置自动跟随玩家，无需每帧同步）
 func _ensure_flame_jet() -> Node2D:
@@ -406,7 +418,9 @@ func _weapon_runtime_cfg(c: Dictionary) -> Dictionary:
 	var sb := float(stats.throw_speed_bonus) if thrown else float(stats.bullet_speed_bonus)
 	var rb := float(stats.throw_range_bonus) if thrown else float(stats.bullet_range_bonus)
 	var ab := float(stats.aoe_radius_bonus)
-	if sb <= 0.0 and rb <= 0.0 and ab <= 0.0:
+	# 第 11 轮：喷射散布角（喷嘴类道具）。**有符号** —— 负 = 收窄、正 = 扩散。
+	var sm := float(stats.get("proj_spread_mult", 0.0))
+	if sb <= 0.0 and rb <= 0.0 and ab <= 0.0 and is_zero_approx(sm):
 		return c
 	var wc := c.duplicate()
 	if sb > 0.0:
@@ -415,7 +429,18 @@ func _weapon_runtime_cfg(c: Dictionary) -> Dictionary:
 		wc["bullet_life"] = float(c.get("bullet_life", 1.1)) * (1.0 + rb)
 	if ab > 0.0 and c.has("splash"):
 		wc["splash"] = float(c.get("splash", 0.0)) * (1.0 + ab)
+	if not is_zero_approx(sm) and c.has("spread"):
+		wc["spread"] = float(c.get("spread", 0.0)) * proj_spread_scale()
 	return wc
+
+
+## 喷射散布倍率（第 11 轮）：`1 + proj_spread_mult`。
+## 下限 0.15 = 防止叠满后变成「0 度雷射」（散布角归零就不叫喷射了）；
+## 上限 4.0 = 防止叠满后变成纯随机乱射（那样连索敌都没意义了）。
+## ⚠️ **火焰锥的视觉宽度必须同源调用它**（见 `_ignite_flame_jet`）——
+##    表现与判定分家的后果就是用户第 8 轮报的「喷火器范围好像有问题」。
+func proj_spread_scale() -> float:
+	return clampf(1.0 + float(stats.get("proj_spread_mult", 0.0)), 0.15, 4.0)
 
 func _melee_slash(c: Dictionary, ang: float) -> void:
 	# 斩击范围受角色的近战范围特性加成（视觉与判定用同一个 reach）
@@ -555,6 +580,50 @@ func status_sources() -> Dictionary:
 		e2.chance = 1.0 - (1.0 - float(e2.chance)) * (1.0 - ch2)
 		e2.count = int(e2.count) + 1
 		out[String(sid2)] = e2
+	return out
+
+## 当前生效的**临时增益**（第 11 轮 · 用户需求 6）。
+## 用户原话：「技能/地图区域 buff 应在武器上方显示、暂停可点看、局内可悬浮看」。
+##
+## 返回 `[{ "ico", "name", "effects", "note", "remain", "color" }]`：
+##   effects —— 直接取自**真正写进 stats 的那份增量**（不是另记一份显示状态）
+##   remain  —— 剩余秒数；`< 0` = 无倒计时（站进区域 / 按波累积类）
+##
+## ⚠️ 数据源必须是运行时真值字段。另记一份「展示用状态」迟早与 stats 的实值分叉 ——
+##    那就是第 8 轮「看到的 ≠ 打到的」同款问题。本函数**仅供展示，不参与任何结算**。
+func active_buffs() -> Array:
+	var out: Array = []
+	# ① 主动技能临时增益：`_skill_buff()` 把 effects 写进 stats，`_skill_buff_t` 是剩余秒
+	if _skill_buff_t > 0.0 and not _skill_buff_effects.is_empty():
+		out.append({
+			"ico": String(skill.get("ico", "✨")),
+			"name": String(skill.get("name", "技能增益")),
+			"effects": _skill_buff_effects.duplicate(),
+			"note": "主动技能持续期间生效，结束即撤销",
+			"remain": _skill_buff_t,
+			"color": Color("7ee0c0"),
+		})
+	# ② 地形属性区域（第 9 轮）：站进区块才有，**离区即撤**（所以没有倒计时）
+	if _zone_assim_element != "" and not is_zero_approx(_zone_assim_applied):
+		var en := String(Config.ELEMENT_NAME.get(_zone_assim_element, _zone_assim_element))
+		out.append({
+			"ico": "🗺",
+			"name": "%s地脉" % en,
+			"effects": { "assim_" + _zone_assim_element: _zone_assim_applied },
+			"note": "站在%s区块内才有，离开区块立即失效" % en,
+			"remain": -1.0,
+			"color": Color(String(Config.ELEMENT_COLOR.get(_zone_assim_element, "#9aa3b2"))),
+		})
+	# ③ 战意（momentum 特性）：按本波击杀累积、**波末清零** → 同样无倒计时
+	if float(stats.get("momentum_dmg_bonus", 0.0)) > 0.0:
+		out.append({
+			"ico": String(char_trait.get("ico", "⚔")),
+			"name": String(char_trait.get("name", "战意")),
+			"effects": { "dmg_mult": float(stats.get("momentum_dmg_bonus", 0.0)) },
+			"note": "按本波击杀累积，每波结束清零",
+			"remain": -1.0,
+			"color": Color("ff9d3b"),
+		})
 	return out
 
 ## 应用升级效果（数据驱动：effects 键 = stats 键，创意工坊自定义升级直接生效）
@@ -773,6 +842,9 @@ func _sanitize_stats() -> void:
 	stats.bullet_range_bonus = maxf(0.0, float(stats.bullet_range_bonus))
 	stats.melee_range_bonus = maxf(0.0, float(stats.melee_range_bonus))
 	stats.aoe_radius_bonus = maxf(0.0, float(stats.aoe_radius_bonus))
+	# 第 11 轮：喷射散布角 —— ⚠️ **有符号**，不能套上面的 `maxf(0.0, …)`（会把收窄抹平）。
+	# 用 `.get()` 兜旧档：老存档的 stats 里没有这个键（`stats.k` 读缺失键会拿到 null）。
+	stats["proj_spread_mult"] = clampf(float(stats.get("proj_spread_mult", 0.0)), -0.8, 4.0)
 	stats.low_hp_dmg_bonus = clampf(float(stats.low_hp_dmg_bonus), 0.0, 5.0)
 	stats.momentum_dmg_bonus = clampf(float(stats.momentum_dmg_bonus), 0.0, 5.0)
 	# 元素同化度（五行体系 §7）：不许为负；上限 2.0 与 Registry.STAT_LIMITS 一致。

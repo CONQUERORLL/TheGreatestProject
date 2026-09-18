@@ -34,6 +34,11 @@ var _status_box: VBoxContainer
 var _status_key := ""   # 来源签名：武器/道具/加成变化才重建
 var _reaction_open := false   # 五行反应表折叠状态（默认收起，点标题展开）
 var _bonus_label: Label = null   # 强化加成行（图例末尾又追加了反应节，不再能用“最后一个子节点”定位）
+# ---- 临时增益条（第 11 轮 · 用户需求 6）----
+# 用户原话：「技能/地图区域 buff 应该在武器上方显示、暂停可点看、局内可悬浮看」。
+var bubble_host: Node = null     # 由 main 注入 `$UI`；气泡挂 CanvasLayer 才能压在整个 UI 之上
+var _buff_row: HBoxContainer = null
+var _buffs_key := ""             # 内容签名：不变则不动节点（避免每帧建控件）
 
 # ------------------------------------------------------------
 # 安全区适配
@@ -65,6 +70,13 @@ func _ready() -> void:
 	_score_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_score_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_top_right.add_child(_score_text)
+	# 临时增益条：**武器槽正上方**。位置与尺寸在 `_layout_buff_row()` 里显式给 ——
+	# 它不是任何 Container 的子节点，光靠锚点不会自己量出「刚好包住芯片」的宽高。
+	_buff_row = HBoxContainer.new()
+	_buff_row.add_theme_constant_override("separation", 6)
+	_buff_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_buff_row.visible = false
+	add_child(_buff_row)
 	_build_status_legend()
 	# 旋转 / 分屏后安全区会变，必须重排（否则刘海会重新压住血条）
 	UiMetrics.metrics_changed.connect(_apply_safe_layout)
@@ -140,6 +152,10 @@ func _process(delta: float) -> void:
 		_score_text.text = "%s %d" % ["📅" if GameState.daily else "★", GameState.score]
 	# 商店/暂停/升级/结算期间战斗数值冻结，跳过整段刷新
 	if GameState.phase != GameState.Phase.PLAYING and GameState.phase != GameState.Phase.INTRO:
+		# 临时增益条也要收起来：它描述的是**本场战斗**的实时状态，
+		# 停在商店里还挂着「剩余 3.2s」是错的（暂停页有独立的增益区可看）
+		if _buff_row != null:
+			_buff_row.visible = false
 		return
 	var s: Dictionary = player.stats
 	# 血条 / 等级 / 经验条
@@ -182,6 +198,80 @@ func _process(delta: float) -> void:
 	if key != _weapons_key:
 		_weapons_key = key
 		_rebuild_weapons(groups)
+	_refresh_buff_row()
+
+# ------------------------------------------------------------
+# 临时增益条（第 11 轮 · 用户需求 6）
+# ------------------------------------------------------------
+
+## 每帧按 `player.active_buffs()` 的签名决定重不重建；重建后重排一次位置。
+func _refresh_buff_row() -> void:
+	if _buff_row == null:
+		return
+	var buffs: Array = player.active_buffs()
+	var key := ""
+	for b in buffs:
+		key += "%s|%.1f|" % [String((b as Dictionary).get("name", "")),
+			float((b as Dictionary).get("remain", -1.0))]
+	if key != _buffs_key:
+		_buffs_key = key
+		for c in _buff_row.get_children():
+			_buff_row.remove_child(c)
+			c.queue_free()
+		for b in buffs:
+			_buff_row.add_child(_make_buff_chip(b))
+	_buff_row.visible = not buffs.is_empty()
+	if _buff_row.visible:
+		_layout_buff_row()
+
+## 尺寸与位置都**显式**算：`_buff_row` 的直接父节点是 HUD 根 Control（不是一个 Container），
+## 所以没人替它 `size = get_combined_minimum_size()`（HUD 根是 Control，不是 Container）。
+## 不显式设的话 rect 恒为 0，芯片画不出来且**不报任何错**。
+func _layout_buff_row() -> void:
+	_buff_row.size = _buff_row.get_combined_minimum_size()
+	_buff_row.position = Vector2(
+		_weapons_box.position.x + (_weapons_box.size.x - _buff_row.size.x) * 0.5,
+		_weapons_box.position.y - _buff_row.size.y - 4.0)
+
+## 单个增益芯片：`[图标 名称] [剩余秒]`。
+## 悬浮出详情 —— 与暂停页点出来的是同一份 `EntryText.buff_detail()`。
+func _make_buff_chip(b: Dictionary) -> Control:
+	var accent := Color(b.get("color", Color("7ee0c0")))
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.094, 0.106, 0.129, 0.85)
+	style.border_color = accent
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(7)
+	style.content_margin_left = 7.0
+	style.content_margin_right = 7.0
+	style.content_margin_top = 2.0
+	style.content_margin_bottom = 2.0
+	panel.add_theme_stylebox_override("panel", style)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var box := HBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(box)
+	var lbl := Label.new()
+	lbl.text = "%s %s" % [String(b.get("ico", "✨")), String(b.get("name", "增益"))]
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", accent)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(lbl)
+	var remain := float(b.get("remain", -1.0))
+	if remain >= 0.0:
+		var t := Label.new()
+		t.text = "%.1fs" % remain
+		t.add_theme_font_size_override("font_size", 11)
+		t.add_theme_color_override("font_color", Color("f2e7c7"))
+		t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		box.add_child(t)
+	# 悬浮详情（`attach_hover` 会把 panel 置为 MOUSE_FILTER_STOP 才收得到 hover）
+	if bubble_host != null:
+		HintBubble.attach_hover(panel, String(b.get("name", "增益")),
+			String(EntryText.buff_detail(b).get("body", "")), bubble_host)
+	return panel
 
 ## 武器向加成键 → HUD 简称。只列与武器行为直接相关的，
 ## 其余（经济 / 回复 / 护甲等）走左下属性行，避免 HUD 单行过长

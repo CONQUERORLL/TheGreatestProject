@@ -1017,6 +1017,17 @@ const ITEMS := [
 	# 与泛用道具不同，这些只对特定武器形态生效 —— 买之前先想清楚自己在玩什么
 	{ "id": "i-whetstone", "ico": "🪨", "name": "磨刀石", "desc": "斩击范围 +21%：近战刀光挥得更远，太刀/长剑尤其明显", "price": 58, "rarity": "mythic", "effects": { "melee_range_bonus": 0.21 } },
 	{ "id": "i-longbarrel", "ico": "🔩", "name": "铳匠长管", "desc": "弹丸射程 +35%：火焰喷射距离、弹药飞行距离同步拉长", "price": 62, "rarity": "epic", "effects": { "bullet_range_bonus": 0.35 } },
+	# ---- 喷射散布角通道（第 11 轮新增）：喷嘴类道具 ----
+	# 用户反馈喷火枪「加不动距离、容易被金剑替代」。查证：射程通道本来就有
+	# （`bullet_range_bonus`），真正的空白是 **`spread`（扇形随机散布角）零道具消费** ——
+	# 火焰锥的「胖瘦」此前完全没有构筑维度。这两件把它补上，一收一放：
+	#   · 高压喷嘴：再加 25% 射程，同时把锥体**收窄 40%** → 单点更集中、更像一束火矛
+	#   · 多孔喷嘴：锥体**扩散 60%**（覆盖面更广、更容易同时撩到多只），代价是伤害 -10%
+	# ⚠️ `proj_spread_mult` 是**有符号**的（负 = 收窄），与其余武器加成通道不同。
+	# ⚠️ 品质口径沿用「阈值制副作用」：`i-multihole` 是 rare 且单条 +60% → 必须带代价；
+	#    `i-highpressure` 是 epic，其内部取舍（覆盖角变窄）已写在 desc 里，不另加代价。
+	{ "id": "i-highpressure", "ico": "🔻", "name": "高压喷嘴", "desc": "喷射距离 +25%、火焰锥收窄 40%（喷火枪类）：单点更集中；代价：同时覆盖的角度变窄", "price": 64, "rarity": "epic", "effects": { "bullet_range_bonus": 0.25, "proj_spread_mult": -0.40 } },
+	{ "id": "i-multihole", "ico": "🔱", "name": "多孔喷嘴", "desc": "火焰锥扩散 60%（喷火枪类）：覆盖面更广、更易同时灼烧多只；代价：伤害 -10%", "price": 46, "rarity": "rare", "effects": { "proj_spread_mult": 0.60, "dmg_mult": -0.10 } },
 	# 投掷类专属通道（第 8 轮）：与弹幕类的 `bullet_speed_bonus` / `bullet_range_bonus`
 	# 互不串味（见 `player._weapon_runtime_cfg` 的 `proj_kind` 分流）。
 	# 之前土炸弹被弹速类道具按弹幕公式放大，射程能被拉到 731px —— 这两件把那份收益收回到「主动选投掷构筑」才能拿到。
@@ -1841,6 +1852,10 @@ static func effect_tags(key: String) -> Array:
 			out.append("speed")
 		"throw_range_bonus":
 			out.append("range")
+		"proj_spread_mult":
+			# 第 11 轮：喷射散布角。只对「有 spread 的武器」有意义（当前仅喷火枪一族），
+			# 与 range（飞多远）/ aoe（爆多大）都不同族，单列一个标签。
+			out.append("spread")
 		"aoe_radius_bonus":
 			out.append("aoe")
 		"max_hp", "armor", "regen", "heal_flat", "heal_pct", "lifesteal":
@@ -1914,6 +1929,7 @@ static func affinity_mult(item_tags: Array, affinity: Array) -> float:
 ##     （投射且 `proj_kind != "thrown"` —— 土质炸弹是投掷物，不吃这一族，见 WEAPONS 抬头注释）
 ##   - throw_speed_bonus / throw_range_bonus 需要至少一把**投掷**武器
 ##   - aoe_radius_bonus 需要至少一把带溅射（splash）的武器
+##   - proj_spread_mult 需要至少一把**带喷射散布**（spread>0）的武器（第 11 轮，当前仅喷火枪一族）
 ## 其余通用属性（伤害/攻速/生命/暴击等）无条件保留。
 ## 需读 Registry，故为实例方法（Config 是 autoload）。
 func entry_weapon_relevant(cfg: Dictionary, weapons: Array) -> bool:
@@ -1922,6 +1938,7 @@ func entry_weapon_relevant(cfg: Dictionary, weapons: Array) -> bool:
 	var has_aoe := false
 	var has_bullet := false
 	var has_thrown := false
+	var has_spread := false   # 第 11 轮：有喷射散布的武器（喷嘴类道具只对它有意义）
 	for w in weapons:
 		var wid := ""
 		if typeof(w) == TYPE_DICTIONARY:
@@ -1941,6 +1958,8 @@ func entry_weapon_relevant(cfg: Dictionary, weapons: Array) -> bool:
 				has_bullet = true
 		if float(wcfg.get("splash", 0.0)) > 0.0:
 			has_aoe = true
+		if float(wcfg.get("spread", 0.0)) > 0.0:
+			has_spread = true
 	var eff: Variant = cfg.get("effects", null)
 	if typeof(eff) != TYPE_DICTIONARY:
 		return true
@@ -1957,6 +1976,9 @@ func entry_weapon_relevant(cfg: Dictionary, weapons: Array) -> bool:
 					return false
 			"aoe_radius_bonus":
 				if not has_aoe:
+					return false
+			"proj_spread_mult":
+				if not has_spread:
 					return false
 	return true
 
@@ -2003,6 +2025,7 @@ static func effect_sigil(key: String) -> String:
 		"melee_range_bonus": "blade",
 		"bullet_speed_bonus": "swift",
 		"bullet_range_bonus": "swift",
+		"proj_spread_mult": "swift",
 		"throw_speed_bonus": "blast",
 		"throw_range_bonus": "blast",
 		"aoe_radius_bonus": "blast",
@@ -2133,11 +2156,58 @@ static func wave_interval(w: int) -> float:
 static func wave_cap(w: int) -> int:
 	return 24 + w * 6
 
+## ---- 分段难度曲线（第 11 轮 · 用户需求 7）----
+## 用户原话：「难度曲线分段计划：W1-4 难、W4-8 易、W10-12 远程多、W12-16 小精英、W16-20 渐肉」。
+##
+## 形态选**控制点 + 线性插值**而不是继续叠系数：分段曲线的全部意义在「哪一段陡、哪一段平」，
+## 控制点把这件事写成可读的一张表，斜率一眼看得出来；写成 `1 + a(w-1) + b·max(0,w-4)…`
+## 就没人能再核对它。
+##
+## ⚠️ 控制点与区块边界**对齐**（W1/4/8/12/16/20）—— 区块划分正是
+##    W1-4 / W5-8 / W9-12 / W13-16 / W17-20（`block_of`），与用户要的五段天然一一对应。
+##    对齐之后「这一段的难度斜率」和「这一段的怪构成」说的是同一件事。
+##
+## ⚠️ **端点刻意不动**：W1 = 1.0（开局基准）、W20 与旧的线性公式基本持平
+##    （HP 6.70 / DMG 4.42）—— 「难 / 易」是**曲线内部的重新分配**，不是整体调高。
+##    否则等于把整局难度抬了一档，而用户要的是节奏变化。
+##
+## 各段斜率（HP，每波增量）：W1→4 **0.383**（难）｜W4→8 0.175（易）｜
+##                          W8→12 0.313｜W12→16 0.338（小精英）｜W16→20 0.313（渐肉 + 构成变肉）
+const WAVE_HP_CURVE := [
+	[1, 1.00], [4, 2.15], [8, 2.85], [12, 4.10], [16, 5.45], [20, 6.70],
+]
+const WAVE_DMG_CURVE := [
+	[1, 1.00], [4, 1.60], [8, 2.05], [12, 2.90], [16, 3.70], [20, 4.42],
+]
+
+## 控制点查表 + 波间线性插值。越界按端点夹取（无尽局 W21+ 沿用末段斜率继续涨，
+## 见下面的 `_curve_slope` 分支）。
+## 纯函数：只读常量，无任何运行局状态 —— 冒烟 / 图鉴 / 存档校验都直接调它。
+static func curve_at(points: Array, w: int) -> float:
+	var wave := maxi(1, w)
+	var first: Array = points[0]
+	if wave <= int(first[0]):
+		return float(first[1])
+	for i in range(1, points.size()):
+		var lo: Array = points[i - 1]
+		var hi: Array = points[i]
+		if wave <= int(hi[0]):
+			var span := maxf(1.0, float(int(hi[0]) - int(lo[0])))
+			var t := float(wave - int(lo[0])) / span
+			return lerpf(float(lo[1]), float(hi[1]), t)
+	# 超出最后一个控制点：按**末段斜率**外推（无尽局靠这条继续变难，而不是撞上限）
+	var last: Array = points[points.size() - 1]
+	var prev: Array = points[points.size() - 2]
+	var last_span := maxf(1.0, float(int(last[0]) - int(prev[0])))
+	var slope := (float(last[1]) - float(prev[1])) / last_span
+	return float(last[1]) + slope * float(wave - int(last[0]))
+
+
 static func wave_hp_scale(w: int) -> float:
-	return 1.0 + 0.30 * (w - 1)
+	return curve_at(WAVE_HP_CURVE, w)
 
 static func wave_dmg_scale(w: int) -> float:
-	return 1.0 + 0.18 * (w - 1)
+	return curve_at(WAVE_DMG_CURVE, w)
 
 static func wave_spd_scale(w: int) -> float:
 	return 1.0 + minf(0.18, 0.015 * (w - 1))
@@ -2217,6 +2287,72 @@ const THEMED_MOB_WEIGHT := 0.03
 ##    开局武器是 95px 近战 `knife`，首杀本就需 t≈11.6s，
 ##    W1 再塞盾怪/回血怪会把首杀窗口拖到冒烟断言之外（§13 第 13 条）。
 const ELEMENT_MOB_BLOCK_WEIGHT := [0.0, 0.03, 0.04, 0.05, 0.05, 0.06]
+
+## ---- 波段怪构成（第 11 轮 · 用户需求 7）----
+## 用户原话里的三段构成要求：「W10-12 远程多」「W12-16 小精英」「W16-20 渐肉」。
+##
+## ⚠️ 倍率必须**按区块**给常量，不能逐波变化：冒烟钉死了「区块内出怪池完全一致」
+##    （W10 == W11 必须成立、W8 ≠ W9 必须成立，见 `_check_element_engine`）。
+##    区块划分（`block_of`）= W1-4 / W5-8 / W9-12 / W13-16 / W17-20，与用户要的五段一一对应，
+##    所以「按区块给」不但合规，还正好是用户要的分段。
+##
+## 三张名单**必须两两不相交**：同一只怪同时命中两张名单会吃到两次倍率
+##    （典型症状是「小精英」段里远程精英被平方放大）。冒烟有断言守住。
+##
+## ⚠️ 名单是**手写**的（`wave_composition` 是纯波次函数，不能去读 `Registry.enemies` 的 ai ——
+##    那会让图鉴 / 存档校验这些调用点依赖注册表就绪）。防漂移靠冒烟：
+##    断言「Registry 里所有 ai=="shooter" 的内置怪都在 `BAND_RANGED_MOB_IDS` 里」
+##    且「名单里的 id 都存在」—— 两边任一侧漏了就红。
+
+## 远程怪（`ai == "shooter"`，6 只，`keep_dist` 270~320 —— 见 `_check_reach_safety`）
+const BAND_RANGED_MOB_IDS := ["shooter", "wizard", "fire_caster", "fire_shaman",
+	"water_nymph", "ice_witch"]
+## 精英怪：高生命 / 高护甲的「硬目标」（`guard` 120 / `stone_titan` 140 / `earth_bulwark` 80 …）
+const BAND_ELITE_MOB_IDS := ["tank", "guard", "stone_titan", "earth_bulwark",
+	"earth_golem", "metal_puppet", "metal_guard"]
+## 杂兵：数量型，构成变「精英化」时要把它们的份额让出来
+const BAND_TRASH_MOB_IDS := ["grunt", "swarm", "runner", "bomber", "shadow",
+	"wood_sprite", "fire_imp", "vine_beast", "blade_monk", "wood_healer", "water_splitter"]
+
+## 下标 = 区块号（1 起）。空字典 = 该区块不做构成偏移。
+##   · 区块 1（W1-4）**难**：难度全交给 HP/DMG 曲线的前段陡升 ——
+##     开局武器只有 95px 近战，构成上再堆远程会把新手直接卡死（首杀窗口本就 16s）。
+##   · 区块 2（W5-8）**易**：曲线回落，构成也不加压 —— 这是玩家把构筑搭起来的窗口。
+##   · 区块 3（W9-12）**远程多**：远程权重 ×2.2（占比约 21% → 37%）。
+##   · 区块 4（W13-16）**小精英**：精英 ×2.0、杂兵 ×0.70 —— 两头都动，
+##     否则「全都乘 2」看起来也像生效了（冒烟用**份额**断言，正是一对反向对照）。
+##   · 区块 5（W17-20）**渐肉**：精英 ×1.7、杂兵 ×0.85，配合曲线末段继续涨。
+const WAVE_BAND_WEIGHTS := [
+	{},
+	{},
+	{ "ranged": 2.2 },
+	{ "elite": 2.0, "trash": 0.70 },
+	{ "elite": 1.7, "trash": 0.85 },
+]
+
+## 给一张出怪池按波段倍率改写权重。**只改 `w`、不改条目集合** ——
+## 「区块 5 必须含全部阵营怪」那条断言靠条目集合，动集合会挂。
+## 未命中任何名单的 id（mod 新加的敌人）一律保持原权重，不被静默改动。
+static func _apply_band_weights(pool: Array, block: int) -> Array:
+	var b := clampi(block, 1, WAVE_BAND_WEIGHTS.size())
+	var band: Dictionary = WAVE_BAND_WEIGHTS[b - 1]
+	if band.is_empty():
+		return pool
+	var out: Array = []
+	for e in pool:
+		var d: Dictionary = (e as Dictionary).duplicate()
+		var mid := String(d.get("item", ""))
+		var mult := 1.0
+		if BAND_RANGED_MOB_IDS.has(mid):
+			mult *= float(band.get("ranged", 1.0))
+		if BAND_ELITE_MOB_IDS.has(mid):
+			mult *= float(band.get("elite", 1.0))
+		if BAND_TRASH_MOB_IDS.has(mid):
+			mult *= float(band.get("trash", 1.0))
+		if not is_equal_approx(mult, 1.0):
+			d["w"] = float(d.get("w", 0.0)) * mult
+		out.append(d)
+	return out
 
 ## 区块 1 的 W2 渐入白名单：只放「最温和的两只」。
 ## 为什么单给 W2 开这个口子（S3 定下的节奏，S3.5 沿用）：
@@ -2337,6 +2473,10 @@ static func wave_composition(w: int, difficulty_id: String = "",
 		ids = ELEMENT_MOB_W2_IDS   # W2 渐入白名单，见该常量注释
 	for mid in ids:
 		out.append({ "item": String(mid), "w": ew })
+	# 第四层：波段怪构成（第 11 轮 · 用户需求 7）。
+	# 放在闸门**之前**（闸门只按元素整条剔除、不动权重，两处顺序等价）——
+	# 这样本函数的输入永远是完整的四层池，便于断言「只改权重不改条目集合」。
+	out = _apply_band_weights(out, block)
 	# ⚠️ 「W2 白名单 ∩ 闸门」可能为空（简单档区块 1 只放「我克」）：本波就不出元素怪，
 	#    这是刻意的（简单 = 元素最晚出现），不是漏写。
 	#    池子不会被清空 —— 基础池那 9 只都不带 element，冒烟另有断言守住这条前提。

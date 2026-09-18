@@ -109,6 +109,9 @@ static func effect_lines(effects: Dictionary) -> Array:
 			"melee_range_bonus": out.append("斩击范围 +%d%%（近战）" % roundi(v * 100.0))
 			"bullet_speed_bonus": out.append("子弹速度 +%d%%（弹幕武器）" % roundi(v * 100.0))
 			"bullet_range_bonus": out.append("弹丸射程 +%d%%（弹幕武器）" % roundi(v * 100.0))
+			# 第 11 轮：散布角是**有符号**的，正负要分别读得懂（扩散 / 收窄）
+			"proj_spread_mult": out.append("喷射散布角 %s%d%%（喷火枪类）"
+				% ["扩散 " if v > 0.0 else "收窄 ", roundi(absf(v) * 100.0)])
 			"throw_speed_bonus": out.append("投掷物飞行速度 +%d%%（土质炸弹 / 厚土雷）" % roundi(v * 100.0))
 			"throw_range_bonus": out.append("投掷物飞行距离 +%d%%（土质炸弹 / 厚土雷）" % roundi(v * 100.0))
 			"aoe_radius_bonus": out.append("爆炸范围 +%d%%（带溅射的武器）" % roundi(v * 100.0))
@@ -130,6 +133,26 @@ static func effect_lines(effects: Dictionary) -> Array:
 				else:
 					out.append("%s +%.2f" % [key, v])
 	return out
+
+## 临时增益（技能 / 地脉区域 / 战意）→ 详情卡。
+## HUD 的悬浮与暂停页的点击**共用这一个格式化**，两处文案不可能说不一致的话。
+## ⚠️ 正文**必须非空**：`HintBubble.attach_hover()` 对空 body 是**静默不挂**的
+##    （那是它的既定语义），正文写漏了不会报错，只是悬浮没反应 —— 冒烟钉死了这一点。
+static func buff_detail(b: Dictionary) -> Dictionary:
+	var lines: Array = []
+	var remain := float(b.get("remain", -1.0))
+	if remain >= 0.0:
+		lines.append("剩余 %.1f 秒" % remain)
+	else:
+		lines.append("持续时间：无倒计时（条件成立期间常驻）")
+	var note := String(b.get("note", ""))
+	if note != "":
+		lines.append(note)
+	var eff: Dictionary = b.get("effects", {})
+	var es := effect_summary(eff)
+	lines.append("当前加成：" + es if es != "" else "当前加成：无额外属性（见上方说明）")
+	return { "title": String(b.get("name", "临时增益")), "body": "\n".join(lines) }
+
 
 ## 效果行拼成一行（商店卡 / 悬浮气泡用；图鉴用 `effect_lines` 逐行显示）
 static func effect_summary(effects: Dictionary) -> String:

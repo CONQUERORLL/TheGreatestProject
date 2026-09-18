@@ -396,6 +396,10 @@ func _sanitize_stats(stats: Dictionary) -> void:
 	#    但读档后会把负数原样恢复 —— 那等于「穿甲正数变负数」的同类静默坑。
 	stats.throw_speed_bonus = maxf(0.0, float(stats.throw_speed_bonus))
 	stats.throw_range_bonus = maxf(0.0, float(stats.throw_range_bonus))
+	# 第 11 轮：喷射散布角 —— 与 player._sanitize_stats 保持一致的**副本**。
+	# ⚠️ 这一键是**有符号**的（负 = 收窄），不能抄上面的 `maxf(0.0, …)`：
+	#    抹平负值 = 玩家买的「高压喷嘴」读档后静默消失（不报错，只是少一截）。
+	stats["proj_spread_mult"] = clampf(float(stats.get("proj_spread_mult", 0.0)), -0.8, 4.0)
 	# 元素同化度（五行体系 §7）：与 player._sanitize_stats 的副本保持一致
 	for eid in Config.ELEMENTS:
 		var assim_key := "assim_" + String(eid)

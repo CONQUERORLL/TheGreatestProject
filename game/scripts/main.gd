@@ -111,6 +111,9 @@ func _ready() -> void:
 	shop_ui.main = self   # 商店关闭后由 main 决定是否先弹奇遇（见 shop_ui.next_wave）
 	hud.player = player
 	hud.wave_manager = wave_manager
+	# 悬浮气泡的宿主：挂 CanvasLayer（`$UI`）才能压在整个界面之上；
+	# 挂到 HUD 上会被商店 / 暂停面板盖住（HUD 的 z 比它们低）
+	hud.bubble_host = $UI
 	# 江湖奇遇事件卡（Phase 4）
 	event_card_ui = preload("res://scenes/ui/event_card.tscn").instantiate()
 	$UI.add_child(event_card_ui)
@@ -1528,6 +1531,59 @@ func _refresh_pause_content() -> void:
 	trait_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	trait_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_left.add_child(trait_l)
+	# 右栏重建起点 —— ⚠️ 本句必须在**任何** `_pause_items.add_child()` 之前。
+	# 第 11 轮踩到过：武器区第一版写在这句上面，加完就被它清掉 ——
+	# 面板上一行武器都没有，而且**不报任何错**（「分区标题存在」类断言也照样判绿，
+	# 因为标题一起被删了）。修法是把清空提前，并补一条断言**具体条目**的冒烟用例。
+	for c in _pause_items.get_children():
+		_pause_items.remove_child(c)
+		c.queue_free()
+	# 右：**临时增益区**（第 11 轮新增 · 用户需求 6）
+	# 用户原话：「技能/地图区域 buff 应在武器上方显示、暂停可点看、局内可悬浮看」。
+	# 这里只列**当前真的生效**的（数据源与 HUD 增益条同为 `player.active_buffs()`），
+	# 点名字出详情 —— 两个入口同源，所以永远不会互相说不一致的话。
+	var bft := Label.new()
+	bft.text = "临时增益"
+	bft.add_theme_font_size_override("font_size", 13)
+	bft.add_theme_color_override("font_color", Color("e8b84b"))
+	bft.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(bft)
+	var buffs_now: Array = player.active_buffs()
+	if buffs_now.is_empty():
+		var bfe := Label.new()
+		bfe.text = "暂无（技能 / 地脉区域 / 战意生效时自动出现）"
+		bfe.add_theme_font_size_override("font_size", 12)
+		bfe.add_theme_color_override("font_color", Color("5a6270"))
+		bfe.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_pause_items.add_child(bfe)
+	else:
+		for b in buffs_now:
+			var bd: Dictionary = b
+			var brow := HBoxContainer.new()
+			brow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var bl := Label.new()
+			bl.text = "%s %s" % [String(bd.get("ico", "✨")), String(bd.get("name", "增益"))]
+			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			bl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			bl.add_theme_font_size_override("font_size", 13)
+			bl.add_theme_color_override("font_color", Color(bd.get("color", Color("7ee0c0"))))
+			bl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			brow.add_child(bl)
+			HintBubble.attach_click(bl, func() -> Dictionary:
+				return EntryText.buff_detail(bd), $UI)
+			var bv := Label.new()
+			var b_remain := float(bd.get("remain", -1.0))
+			bv.text = ("%.1fs" % b_remain) if b_remain >= 0.0 else "持续"
+			bv.add_theme_font_size_override("font_size", 13)
+			bv.add_theme_color_override("font_color", Color("f2e7c7"))
+			bv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			brow.add_child(bv)
+			_pause_items.add_child(brow)
+	var bfsep := ColorRect.new()
+	bfsep.color = Color("2c3340")
+	bfsep.custom_minimum_size = Vector2(0.0, 1.0)
+	bfsep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(bfsep)
 	# 右：**武器区**（第 11 轮新增）
 	# 用户原话：「道具和武器在暂停界面点击查看详情时，只有名称，没有道具效果描述」。
 	# 查证：武器详情**点不出来**——这个面板此前根本没有武器列表，只有左栏一行
@@ -1577,9 +1633,8 @@ func _refresh_pause_content() -> void:
 	wsep.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_items.add_child(wsep)
 	# 右：已购道具（相同叠加显示数量）+ 法宝区
-	for c in _pause_items.get_children():
-		_pause_items.remove_child(c)
-		c.queue_free()
+	# ⚠️ 清空**不能**再在这里做一次：它已经提到本栏开头（见那里的注释）。
+	#    放在这里会把上面刚建好的临时增益区 + 武器区一起删掉。
 	if player.items_owned.is_empty():
 		var empty := Label.new()
 		empty.text = "暂无道具"
