@@ -1377,7 +1377,12 @@ func _pause_stat_row(name_text: String, value_text: String) -> HBoxContainer:
 	# 悬浮看该属性的具体含义（第 8 轮）。只把**这一个 Label** 置为 STOP，
 	# 整行仍是 IGNORE —— 不会挡住右侧数值。宿主用 `$UI`（气泡是 Control，
 	# 挂 CanvasLayer 下才能在整个酸盘层之上自由定位；挂 Node2D 上会跟着相机跑）。
-	HintBubble.attach_hover(l, name_text, EntryText.stat_help(name_text), $UI)
+	# 悬浮看该属性的具体含义 —— 但**只对「不看说明就不知道」的属性弹**（第 11 轮收窄）。
+	# 原先是 15 条基础属性全挂（生命/伤害/攻速…），用户反馈那是噪音；
+	# 判断依据集中在 `EntryText.HOVER_HELP`，这里不做第二份名单。
+	# 不挂时 Label 保持 IGNORE（整行仍然完全穿透），与改动前的点击行为一致。
+	if EntryText.needs_help(name_text):
+		HintBubble.attach_hover(l, name_text, EntryText.stat_help(name_text), $UI)
 	row.add_child(l)
 	var v := Label.new()
 	v.text = value_text
@@ -1432,19 +1437,36 @@ func _refresh_pause_content() -> void:
 	#    的位置，同化度走独立通道，不在那三个百分比里）。所以这里直接把双向含义写在表头。
 	# ⚠️ 只列 > 0 的元素：白板角色（potato）与未堆同化的局不开这一节，
 	#    免得 5 行 0% 白占版面；元素顺序走 Config.ELEMENTS（字母序，与图鉴一致）。
+	# ⚠️ 第 11 轮：用户反馈「现在的同化度不够清晰」。原先只报 `+12%` 这个**库存值**，
+	#    玩家看不出它换来多少。现在按游戏自己的两条通道**当场算一遍**（口径 = 源码）：
+	#      · 受击侧 player.gd:813-815 → `Config.apply_hit_mult(dmg, 来袭元素, 我的元素, 同化度)`
+	#      · 输出侧 player.gd:501-504 → `Config.out_mult(我的元素, 出招元素) + 同化度`
+	#    用 raw = 100 探一次，差值就是真实百分比 —— 与战斗同函数，不会与实现脱节。
+	# ⚠️ 两条通道都要求**角色自身有五行属性**，`element == ""` 时都直接跳过
+	#    → 白板角色堆同化度是**废属性**，必须显式写明，否则玩家会一直堆一个不生效的数字。
+	var char_elem := String(player.element)
 	var assim_hdr := false
 	for assim_eid in Config.ELEMENTS:
 		var assim_key := "assim_" + String(assim_eid)
 		var assim_val := float(s.get(assim_key, 0.0))
 		if assim_val <= 0.0:
 			continue
+		var assim_name := String(Config.ELEMENT_NAME.get(String(assim_eid), String(assim_eid)))
 		if not assim_hdr:
 			assim_hdr = true
 			_pause_left.add_child(_pause_stat_row("五行同化",
-				"受到该元素伤害 ↓｜用该元素输出 ↑"))
+				"（角色无五行 → 同化度不生效）" if char_elem == "" else "受该元素伤害 ↓｜用该元素输出 ↑"))
+		var take_pct := 0
+		var give_pct := 0
+		if char_elem != "":
+			var probe := Config.apply_hit_mult(100.0, String(assim_eid), char_elem, assim_val)
+			take_pct = roundi((probe / 100.0 - 1.0) * 100.0)
+			give_pct = roundi((Config.out_mult(char_elem, String(assim_eid)) + assim_val) * 100.0)
 		_pause_left.add_child(_pause_stat_row(
-			"　%s同化" % String(Config.ELEMENT_NAME.get(String(assim_eid), String(assim_eid))),
-			"+%d%%" % roundi(assim_val * 100.0)))
+			"　%s同化" % assim_name,
+			"+%d%% → 挨伤 %s%d%%｜输出 %s%d%%"
+			% [roundi(assim_val * 100.0), "+" if take_pct > 0 else "", take_pct,
+				"+" if give_pct > 0 else "", give_pct]))
 	var status_hit := 0.0
 	for sid in Config.STATUS:
 		status_hit += float(s.get("on_hit_" + String(sid), 0.0))
@@ -1506,6 +1528,54 @@ func _refresh_pause_content() -> void:
 	trait_l.add_theme_color_override("font_color", Color("9aa3b2"))
 	trait_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_left.add_child(trait_l)
+	# 右：**武器区**（第 11 轮新增）
+	# 用户原话：「道具和武器在暂停界面点击查看详情时，只有名称，没有道具效果描述」。
+	# 查证：武器详情**点不出来**——这个面板此前根本没有武器列表，只有左栏一行
+	# 「武器 3/5」计数（`_pause_stat_row("武器", ...)`）。这里按与道具 / 法宝同一套补上：
+	# 同名分组显示 xN，点名字 → `EntryText.entry_detail(..., "武器")`
+	# （它会额外补「射程 / 有效射程 / 加成通道」三行 —— 那是玩家最需要的口径）。
+	var wt := Label.new()
+	wt.text = "武器"
+	wt.add_theme_font_size_override("font_size", 13)
+	wt.add_theme_color_override("font_color", Color("e8b84b"))
+	wt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(wt)
+	if player.weapons.is_empty():
+		var we := Label.new()
+		we.text = "暂无武器"
+		we.add_theme_font_size_override("font_size", 12)
+		we.add_theme_color_override("font_color", Color("5a6270"))
+		_pause_items.add_child(we)
+	else:
+		var wgroups := {}
+		for w in player.weapons:
+			wgroups[w.type] = int(wgroups.get(w.type, 0)) + 1
+		for wid in wgroups:
+			var wcfg: Dictionary = Registry.weapons.get(String(wid), {})
+			var wrow := HBoxContainer.new()
+			wrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var wl := Label.new()
+			wl.text = "%s %s" % [wcfg.get("ico", "🗡"), wcfg.get("name", String(wid))]
+			wl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			wl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			wl.add_theme_font_size_override("font_size", 13)
+			wl.add_theme_color_override("font_color", Config.rarity_color(wcfg.get("rarity", "common")))
+			wl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			wrow.add_child(wl)
+			HintBubble.attach_click(wl, func() -> Dictionary:
+				return EntryText.entry_detail(Registry.weapons.get(String(wid), {}), "武器"), $UI)
+			var wc := Label.new()
+			wc.text = "x%d" % int(wgroups[wid])
+			wc.add_theme_font_size_override("font_size", 13)
+			wc.add_theme_color_override("font_color", Color("f2e7c7"))
+			wc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			wrow.add_child(wc)
+			_pause_items.add_child(wrow)
+	var wsep := ColorRect.new()
+	wsep.color = Color("2c3340")
+	wsep.custom_minimum_size = Vector2(0.0, 1.0)
+	wsep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_items.add_child(wsep)
 	# 右：已购道具（相同叠加显示数量）+ 法宝区
 	for c in _pause_items.get_children():
 		_pause_items.remove_child(c)

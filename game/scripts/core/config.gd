@@ -573,7 +573,31 @@ static func _is_number(v: Variant) -> bool:
 ##    「所有武器数值减半」）。进化体同步减半 → 「进化 = 基础 2.0×」这条口径
 ##    **恒等保持**，不需要额外重算。逐把账目见 `docs/武器DPS体检表.md` §12。
 const WEAPONS := {
-	"knife": { "name": "金剑", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.45, "dmg": 7.0, "range": 95.0, "swing_arc": 2.618, "status": "bleed", "status_chance": 0.35, "rarity": "common", "family": "blade", "element": "metal", "desc": "五行·金：150° 大开大合横扫，概率造成流血。单目标不算最强，靠群扫吃多目标", "price": 28, "shop_weight": 2.4, "evolve_need": 3, "evolve_branches": ["knife_ex"] },
+	# ⚠️⚠️ 2026-09-18（第 11 轮）用户反馈：「金剑的加成太离谱，距离加成对金剑的加成太高了，
+	#    搞几关就变的攻击范围很大」。
+	#   查证：**根因是几何**——近战 `reach = range × (1 + melee_range_bonus)`（player.gd:422），
+	#   而扇形 AOE = ½·r²·θ **∝ reach²** → **每 +10% range ≈ +21% 面积**。
+	#   4 张近战 range 道具全叠 = **+110%**（旧：edge+18 / swordmanual+22 / whetstone+35 / swordcase+35）
+	#   → reach 95→199.5、AOE 11,814→**52,098（×4.41）**；再叠铭刻 +12% 就是 ×4.93。
+	#   同期喷火枪堆满 range（+103%）只把 reach 110→223（射程乘算、**splash 不吃 range**）→ AOE 仍 5,027。
+	#   同样「+100% 射程」，一个把面积推到 4.4 倍、一个只是射程 ×2 —— 这才是「被金剑替代」的真机制。
+	# ✅ 修法（用户拍板「**只砍数值 + 提品**，不动公式」）：
+	#   1. 本体：`cd` 0.45→**0.55**（−18% 攻速）、`range` 95→**88**。
+	#      单体 DPS 15.56→12.73；DoT 稳态按 1/cd 算层数 → 也同步下降，合计 19.91→**≈16.3**。
+	#      进化体 `knife_ex` 同步 **cd 0.55 / range 106**（守住「进化 = 基础 2.0×」与面积比 1.69×）。
+	#   2. 4 张近战 range 道具加成量**砍到约 60%** 并**提品**：
+	#      edge +18%→**+11%**（**保持 rare**）、swordmanual +22%→**+13%**（epic→mythic）、
+	#      whetstone +35%→**+21%**（epic→mythic）、swordcase +35%→**+21%**（epic→mythic）。
+	#      ⚠️ 提到 mythic = 金「**唯一件**」（本局每种最多 1 件）+ 池权重更低 → 双重「更难刷出来」。
+	#      ⚠️⚠️ `edge` **刻意留在 rare**（第 11 轮冒烟实测拦下）：`rarity_weight` 按波次压权重
+	#        （epic 要 progress≥3、mythic ≥6，见本文件 1716-1724），而商店「亲和保底」
+	#        （`shop_ui._ensure_affinity_goods`）要求**任意波次**都能找到一条契合商品。
+	#        4 张近战射程道具若全部 ≥epic，W1~W2 的近战构筑就没有任何可保底条目
+	#        （实测：池非空但全是 0 权重 → weighted_pick 报错返回 null → 撞 SCRIPT ERROR）。
+	#        留最弱的这张在 rare 顶住低波，既当保底锚点，也符合「最弱的那个不必提品」。
+	#   ⚠️ 刻意**没动公式**：改成「加固定 px」能根治雪崩，但会改近战手感，用户选了保守路线。
+	#      所以「堆满仍会雪崩」的形状还在，只是来得更晚、更贵 —— 下次再失衡**先看这一段**。
+	"knife": { "name": "金剑", "ico": "🗡", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.55, "dmg": 7.0, "range": 88.0, "swing_arc": 2.618, "status": "bleed", "status_chance": 0.35, "rarity": "common", "family": "blade", "element": "metal", "desc": "五行·金：150° 大开大合横扫，概率造成流血。单目标不算最强，靠群扫吃多目标", "price": 28, "shop_weight": 2.4, "evolve_need": 3, "evolve_branches": ["knife_ex"] },
 	# ⚠️ 2026-09-16 S8 调数值：dmg 3.5→2.5（−1）、射程 128px→110px（`bullet_life` 0.34→0.28）、
 	#    新增 `splash` 变成 AOE。定位从「贴脸单体最高 DPS」改为「中近距离范围灼烧」。
 	#    ⚠️ 2026-09-17 二轮修正（综合战力口径）：splash 60→**75**、price 52→**42**。
@@ -634,7 +658,7 @@ const WEAPONS := {
 	"thunder_gong": { "name": "土质炸弹", "ico": "💣", "attack_type": "projectile", "proj_kind": "thrown", "sfx": "shoot_rocket", "cd": 1.35, "dmg": 15.0, "bspeed": 340.0, "bullet_life": 1.1, "splash": 95.0, "status": "stun", "status_chance": 0.35, "status_stacks": 1, "shake": 2.5, "rarity": "common", "family": "element", "element": "earth", "desc": "五行·土：投掷爆炸物，400px 外爆开 95px 范围（眩晕 35%）。⚠️ 只吃「投掷类」加成，不吃弹速/射程类", "price": 54, "shop_weight": 0.9, "evolve_need": 3, "evolve_branches": ["thunder_gong_ex"] },
 	"blight_bow": { "name": "木弓", "ico": "🏹", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.75, "dmg": 9.0, "bspeed": 620.0, "bullet_life": 1.1, "rarity": "common", "family": "element", "element": "wood", "desc": "五行·木：攻速最慢（0.75s），单发最重，靠高单发与吸血续航而非爆发", "price": 52, "shop_weight": 1.3, "evolve_need": 3, "evolve_branches": ["blight_bow_ex"] },
 	# ---- 五行进化形态（S8 补做）：持满 3 把基础武器 → 波末自动合成；shop_weight 0 = 不进商店池 ----
-	"knife_ex": { "name": "庚金剑域", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.45, "dmg": 14.0, "range": 115.0, "swing_arc": 3.054, "status": "bleed", "status_chance": 0.45, "rarity": "rare", "family": "blade", "element": "metal", "desc": "金剑·进化：reach 115px + 175° 剑域（面积 1.71×），单体 DPS 2.0×，流血 45%", "price": 84, "shop_weight": 0 },
+	"knife_ex": { "name": "庚金剑域", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.55, "dmg": 14.0, "range": 106.0, "swing_arc": 3.054, "status": "bleed", "status_chance": 0.45, "rarity": "rare", "family": "blade", "element": "metal", "desc": "金剑·进化：reach 106px + 175° 剑域（面积 1.69×），单体 DPS 2.0×，流血 45%", "price": 84, "shop_weight": 0 },
 	#  ⚠️ dmg 3.0 是跟着基础体走的：基础 1.5 × 2.0（进化倍数）= 3.0 → 单体 30.0。
 	#     基础体改数值时**必须同步这里**，否则进化倍数会悄悄跌破 2.0× 而不报错。
 	"flamethrower_ex": { "name": "焚天焰", "ico": "☄", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 3.0, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.28, "splash": 56.0, "status": "burn", "status_chance": 0.90, "rarity": "rare", "family": "element", "element": "fire", "desc": "喷火枪·进化：56px 溅射（有效射程≈166px），单体 DPS 2.0×，燃烧 90%", "price": 126, "shop_weight": 0 },
@@ -925,17 +949,17 @@ const UPGRADES := [
 	{ "id": "hex", "ico": "🕯", "name": "咒术", "desc": "异常命中率 +10%", "rarity": "epic", "effects": { "status_chance": 0.10 } },
 	# ---- 武器向升级：只强化特定武器形态，属于「构筑向」而非泛用强化 ----
 	# （这些键在角色特性里先出现，此处把它们开放给升级池，让构筑有成长路径）
-	{ "id": "edge", "ico": "🗡", "name": "开刃", "desc": "斩击范围 +18%（近战武器）", "rarity": "rare", "effects": { "melee_range_bonus": 0.18 } },
-	{ "id": "barrel", "ico": "🏹", "name": "加长枪管", "desc": "弹丸射程 +20%（投射武器）", "rarity": "rare", "effects": { "bullet_range_bonus": 0.20 } },
-	{ "id": "velocity", "ico": "💨", "name": "高初速", "desc": "子弹速度 +20%，命中更跟手", "rarity": "rare", "effects": { "bullet_speed_bonus": 0.20 } },
-	{ "id": "warhead", "ico": "💥", "name": "高爆装药", "desc": "爆炸范围 +20%（溅射武器：火箭筒 / 冰霜新星 / 震雷法锣…）", "rarity": "rare", "effects": { "aoe_radius_bonus": 0.20 } },
+	{ "id": "edge", "ico": "🗡", "name": "开刃", "desc": "斩击范围 +11%（近战武器）", "rarity": "rare", "effects": { "melee_range_bonus": 0.11 } },
+	{ "id": "barrel", "ico": "🏹", "name": "加长枪管", "desc": "弹丸射程 +20%（投射武器）；代价：攻速 -5%", "rarity": "rare", "effects": { "bullet_range_bonus": 0.20, "as_mult": -0.05 } },
+	{ "id": "velocity", "ico": "💨", "name": "高初速", "desc": "子弹速度 +20%，命中更跟手；代价：伤害 -5%", "rarity": "rare", "effects": { "bullet_speed_bonus": 0.20, "dmg_mult": -0.05 } },
+	{ "id": "warhead", "ico": "💥", "name": "高爆装药", "desc": "爆炸范围 +20%（溅射武器：火箭筒 / 冰霜新星 / 震雷法锣…）；代价：伤害 -5%", "rarity": "rare", "effects": { "aoe_radius_bonus": 0.20, "dmg_mult": -0.05 } },
 	# ---- 角色向升级：effects 刻意集中在**单一标签族**（近战范围 / 弹速射程 / 异常 / 残血 / 经济），
 	# 于是对对应角色的亲和倍率天然高达 ×2.7~3.55，对无关角色接近不出现 ——
 	# 不用新增「专属」机制，靠既有的 affinity 推导就形成了角色向内容池
-	{ "id": "swordmanual", "ico": "📜", "name": "剑冢图谱", "desc": "斩击范围 +22%，暴击伤害 +60（近战构筑）", "rarity": "epic", "effects": { "melee_range_bonus": 0.22, "crit_mult": 0.60 } },
+	{ "id": "swordmanual", "ico": "📜", "name": "剑冢图谱", "desc": "斩击范围 +13%，暴击伤害 +60（近战构筑）", "rarity": "mythic", "effects": { "melee_range_bonus": 0.13, "crit_mult": 0.60 } },
 	{ "id": "ballistic", "ico": "📐", "name": "弹道校准", "desc": "子弹速度 +25%，弹丸射程 +18%（投射构筑）", "rarity": "epic", "effects": { "bullet_speed_bonus": 0.25, "bullet_range_bonus": 0.18 } },
 	{ "id": "burningheart", "ico": "🔥", "name": "灼心诀", "desc": "命中时 12% 概率点燃，状态伤害 +35%", "rarity": "epic", "effects": { "on_hit_burn": 0.12, "status_dmg_mult": 0.35 } },
-	{ "id": "frostmantra", "ico": "🧊", "name": "玄冰诀", "desc": "命中时 10% 概率冻结，异常持续 +45%", "rarity": "epic", "effects": { "on_hit_freeze": 0.10, "status_dur_mult": 0.45 } },
+	{ "id": "frostmantra", "ico": "🧊", "name": "玄冰诀", "desc": "命中时 10% 概率冻结，异常持续 +45%；重复获取可叠加（概率相加）", "rarity": "epic", "effects": { "on_hit_freeze": 0.10, "status_dur_mult": 0.45 } },
 	{ "id": "bloodoath", "ico": "🩸", "name": "血战令", "desc": "生命越低伤害越高，濒死时最高 +30%", "rarity": "epic", "effects": { "low_hp_dmg_bonus": 0.30 } },
 	{ "id": "harvestrite", "ico": "🌾", "name": "丰饶祭", "desc": "材料获取 +45%，拾取范围 +70", "rarity": "epic", "effects": { "harvesting": 0.45, "pickup_range": 70.0 } },
 	# ---- S5 新增：五行之悟 ×5（§7.4；对应元素同化度 +12%，走通用 apply 管线）----
@@ -960,13 +984,13 @@ const ITEMS := [
 	{ "id": "i-dod", "ico": "🧥", "name": "斗篷", "desc": "闪避 +8%", "price": 32, "rarity": "rare", "effects": { "dodge": 0.08 } },
 	{ "id": "i-mag", "ico": "🧲", "name": "大磁铁", "desc": "拾取范围 +55", "price": 22, "rarity": "common", "effects": { "pickup_range": 55.0 } },
 	{ "id": "i-reg", "ico": "💊", "name": "再生器", "desc": "生命回复 +1.0 / 秒", "price": 42, "rarity": "epic", "effects": { "regen": 1.0 } },
-	{ "id": "i-harv", "ico": "💰", "name": "金币袋", "desc": "材料获取 +25%", "price": 32, "rarity": "rare", "effects": { "harvesting": 0.25 } },
+	{ "id": "i-harv", "ico": "💰", "name": "金币袋", "desc": "材料获取 +25%；代价：伤害 -6%", "price": 32, "rarity": "rare", "effects": { "harvesting": 0.25, "dmg_mult": -0.06 } },
 	{ "id": "i-ls", "ico": "🩸", "name": "血蛭", "desc": "每击杀 1 个敌人回复 1 点生命（可叠加）", "price": 48, "rarity": "epic", "effects": { "lifesteal": 1.0 } },
 	# ---- 状态效果道具（on_hit_* = 命中时施加概率；status_dmg_mult = 持续伤害加成） ----
-	{ "id": "i-ember", "ico": "🔥", "name": "余烬", "desc": "命中时 20% 概率点燃（伤害随攻击力）", "price": 44, "rarity": "rare", "effects": { "on_hit_burn": 0.20 } },
-	{ "id": "i-venom", "ico": "🧪", "name": "毒囊", "desc": "命中时 20% 概率使目标中毒", "price": 44, "rarity": "rare", "effects": { "on_hit_poison": 0.20 } },
-	{ "id": "i-hemo", "ico": "🩸", "name": "放血针", "desc": "命中时 25% 概率造成流血", "price": 40, "rarity": "rare", "effects": { "on_hit_bleed": 0.25 } },
-	{ "id": "i-frost", "ico": "❄", "name": "霜核", "desc": "命中时 12% 概率冰冻目标", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12 } },
+	{ "id": "i-ember", "ico": "🔥", "name": "余烬", "desc": "命中时 20% 概率点燃（伤害随攻击力）；代价：伤害 -4%", "price": 44, "rarity": "rare", "effects": { "on_hit_burn": 0.20, "dmg_mult": -0.04 } },
+	{ "id": "i-venom", "ico": "🧪", "name": "毒囊", "desc": "命中时 20% 概率使目标中毒；代价：伤害 -4%", "price": 44, "rarity": "rare", "effects": { "on_hit_poison": 0.20, "dmg_mult": -0.04 } },
+	{ "id": "i-hemo", "ico": "🩸", "name": "放血针", "desc": "命中时 25% 概率造成流血；代价：护甲 -1", "price": 40, "rarity": "rare", "effects": { "on_hit_bleed": 0.25, "armor": -1.0 } },
+	{ "id": "i-frost", "ico": "❄", "name": "霜核", "desc": "命中时 12% 概率冰冻目标；**重复购买概率相加**（买 2 件 = 24%）", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12 } },
 	{ "id": "i-tar", "ico": "🕸", "name": "沥青网", "desc": "命中时 18% 概率减速目标", "price": 42, "rarity": "rare", "effects": { "on_hit_slow": 0.18 } },
 	{ "id": "i-thunder", "ico": "🌩", "name": "雷击石", "desc": "命中时 8% 概率眩晕目标", "price": 66, "rarity": "epic", "effects": { "on_hit_stun": 0.08 } },
 	{ "id": "i-plague", "ico": "☠", "name": "瘟疫之心", "desc": "中毒伤害 +60%，中毒目标死亡时传染", "price": 175, "rarity": "mythic", "effects": { "status_dmg_mult": 0.60, "status_spread": 1.0 } },
@@ -991,34 +1015,34 @@ const ITEMS := [
 	{ "id": "i-sunstone", "ico": "☀", "name": "日曜石", "desc": "生命回复 +1.6 / 秒，最大生命 +30", "price": 68, "rarity": "epic", "effects": { "regen": 1.6, "max_hp": 30.0 } },
 	# ---- 武器向道具（Phase 3.5）：把「武器形态强化」做成可购买的构筑件 ----
 	# 与泛用道具不同，这些只对特定武器形态生效 —— 买之前先想清楚自己在玩什么
-	{ "id": "i-whetstone", "ico": "🪨", "name": "磨刀石", "desc": "斩击范围 +35%：近战刀光挥得更远，太刀/长剑尤其明显", "price": 58, "rarity": "epic", "effects": { "melee_range_bonus": 0.35 } },
+	{ "id": "i-whetstone", "ico": "🪨", "name": "磨刀石", "desc": "斩击范围 +21%：近战刀光挥得更远，太刀/长剑尤其明显", "price": 58, "rarity": "mythic", "effects": { "melee_range_bonus": 0.21 } },
 	{ "id": "i-longbarrel", "ico": "🔩", "name": "铳匠长管", "desc": "弹丸射程 +35%：火焰喷射距离、弹药飞行距离同步拉长", "price": 62, "rarity": "epic", "effects": { "bullet_range_bonus": 0.35 } },
 	# 投掷类专属通道（第 8 轮）：与弹幕类的 `bullet_speed_bonus` / `bullet_range_bonus`
 	# 互不串味（见 `player._weapon_runtime_cfg` 的 `proj_kind` 分流）。
 	# 之前土炸弹被弹速类道具按弹幕公式放大，射程能被拉到 731px —— 这两件把那份收益收回到「主动选投掷构筑」才能拿到。
-	{ "id": "i-fuse", "ico": "🧨", "name": "火绳引信", "desc": "投掷物飞行速度 +20%（土质炸弹 / 厚土雷）", "price": 46, "rarity": "rare", "effects": { "throw_speed_bonus": 0.20 } },
+	{ "id": "i-fuse", "ico": "🧨", "name": "火绳引信", "desc": "投掷物飞行速度 +20%（土质炸弹 / 厚土雷）；代价：攻速 -5%", "price": 46, "rarity": "rare", "effects": { "throw_speed_bonus": 0.20, "as_mult": -0.05 } },
 	{ "id": "i-powder", "ico": "⚗", "name": "重装药罐", "desc": "投掷物飞行距离 +20%（土质炸弹 / 厚土雷）", "price": 64, "rarity": "epic", "effects": { "throw_range_bonus": 0.20 } },
-	# ⚠️ 高爆装荗（`warhead`）/ 霜核（`i-frostcore`）等 `aoe_radius_bonus` 道具**因果不变**：它管「爆多大」，与「飞多远」正交，两类投射物都吃。
-	{ "id": "i-frostcore", "ico": "🧊", "name": "霜核", "desc": "爆炸范围 +42%：冰冻、毒爆、火箭的覆盖面大幅提升", "price": 66, "rarity": "epic", "effects": { "aoe_radius_bonus": 0.42 } },
-	{ "id": "i-accelerator", "ico": "⚙", "name": "高速膛线", "desc": "子弹速度 +38%，弹道更直更难被走位躲开", "price": 48, "rarity": "rare", "effects": { "bullet_speed_bonus": 0.38 } },
-	{ "id": "i-venomsac", "ico": "☣", "name": "毒囊", "desc": "爆炸范围 +22%，异常持续时间 +20%", "price": 44, "rarity": "rare", "effects": { "aoe_radius_bonus": 0.22, "status_dur_mult": 0.20 } },
+	# ⚠️ 高爆装荗（`warhead`）/ 霜爆核心（`i-frostcore`）等 `aoe_radius_bonus` 道具**因果不变**：它管「爆多大」，与「飞多远」正交，两类投射物都吃。
+	{ "id": "i-frostcore", "ico": "🧊", "name": "霜爆核心", "desc": "爆炸范围 +42%：冰冻、毒爆、火箭的覆盖面大幅提升", "price": 66, "rarity": "epic", "effects": { "aoe_radius_bonus": 0.42 } },
+	{ "id": "i-accelerator", "ico": "⚙", "name": "高速膛线", "desc": "子弹速度 +38%，弹道更直更难被走位躲开；代价：伤害 -6%", "price": 48, "rarity": "rare", "effects": { "bullet_speed_bonus": 0.38, "dmg_mult": -0.06 } },
+	{ "id": "i-venomsac", "ico": "☣", "name": "毒爆囊", "desc": "爆炸范围 +22%，异常持续时间 +20%；代价：伤害 -5%", "price": 44, "rarity": "rare", "effects": { "aoe_radius_bonus": 0.22, "status_dur_mult": 0.20, "dmg_mult": -0.05 } },
 	# ---- 元素附魔向（Phase 3.6）：让**任意武器**都能挂上某种状态。
 	# 与状态流 / 五行反应构筑天然关联，且因为用了 on_hit_* 键，
 	# 会被 Config.entry_tags 自动打上对应元素标签 → 抽取时自动亲和（见 affinity_mult）
-	{ "id": "i-emberdust", "ico": "🔥", "name": "火绒", "desc": "命中时 18% 概率点燃，状态伤害 +20%", "price": 50, "rarity": "rare", "effects": { "on_hit_burn": 0.18, "status_dmg_mult": 0.20 } },
-	{ "id": "i-venomgland", "ico": "🐍", "name": "毒腺", "desc": "命中时 18% 概率使目标中毒，异常持续 +20%", "price": 50, "rarity": "rare", "effects": { "on_hit_poison": 0.18, "status_dur_mult": 0.20 } },
-	{ "id": "i-bloodvial", "ico": "🩸", "name": "血瓶", "desc": "命中时 20% 概率造成流血，击杀回复 +1.5", "price": 52, "rarity": "rare", "effects": { "on_hit_bleed": 0.20, "lifesteal": 1.5 } },
-	{ "id": "i-frostshard", "ico": "❄", "name": "霜片", "desc": "命中时 12% 概率冻结目标，异常持续 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12, "status_dur_mult": 0.15 } },
+	{ "id": "i-emberdust", "ico": "🔥", "name": "火绒", "desc": "命中时 18% 概率点燃，状态伤害 +20%；代价：攻速 -5%", "price": 50, "rarity": "rare", "effects": { "on_hit_burn": 0.18, "status_dmg_mult": 0.20, "as_mult": -0.05 } },
+	{ "id": "i-venomgland", "ico": "🐍", "name": "毒腺", "desc": "命中时 18% 概率使目标中毒，异常持续 +20%；代价：攻速 -5%", "price": 50, "rarity": "rare", "effects": { "on_hit_poison": 0.18, "status_dur_mult": 0.20, "as_mult": -0.05 } },
+	{ "id": "i-bloodvial", "ico": "🩸", "name": "血瓶", "desc": "命中时 20% 概率造成流血，击杀回复 +1.5；代价：护甲 -1", "price": 52, "rarity": "rare", "effects": { "on_hit_bleed": 0.20, "lifesteal": 1.5, "armor": -1.0 } },
+	{ "id": "i-frostshard", "ico": "❄", "name": "霜片", "desc": "命中时 12% 概率冻结目标，异常持续 +15%；重复购买概率相加", "price": 58, "rarity": "epic", "effects": { "on_hit_freeze": 0.12, "status_dur_mult": 0.15 } },
 	{ "id": "i-thunderrod", "ico": "⚡", "name": "雷杵", "desc": "命中时 10% 概率眩晕目标，子弹速度 +15%", "price": 58, "rarity": "epic", "effects": { "on_hit_stun": 0.10, "bullet_speed_bonus": 0.15 } },
 	# ---- 角色向道具：与元素附魔同一思路，但标签更集中（对对应角色的亲和倍率更高）----
 	# 近战（太白剑客 / 无相武僧 / 百战军侯）/ 投射（游侠 / 弹雨枪手）/ 火（焚天祭司）/
 	# 冰（沧海鲛人）/ 残血（狂战士 / 血族）/ 经济（收获者）各有 1 件
-	{ "id": "i-swordcase", "ico": "🗡", "name": "剑匣", "desc": "斩击范围 +35%，暴击率 +3%", "price": 72, "rarity": "epic", "effects": { "melee_range_bonus": 0.35, "crit_ch": 0.03 } },
+	{ "id": "i-swordcase", "ico": "🗡", "name": "剑匣", "desc": "斩击范围 +21%，暴击率 +3%", "price": 72, "rarity": "mythic", "effects": { "melee_range_bonus": 0.21, "crit_ch": 0.03 } },
 	{ "id": "i-calibrator", "ico": "🎯", "name": "校准仪", "desc": "弹丸射程 +30%，子弹速度 +20%", "price": 68, "rarity": "epic", "effects": { "bullet_range_bonus": 0.30, "bullet_speed_bonus": 0.20 } },
 	{ "id": "i-pyrotalisman", "ico": "🧧", "name": "焚天符", "desc": "命中时 16% 概率点燃，状态伤害 +40%", "price": 74, "rarity": "epic", "effects": { "on_hit_burn": 0.16, "status_dmg_mult": 0.40 } },
-	{ "id": "i-frostmirror", "ico": "🪞", "name": "霜心镜", "desc": "命中时 14% 概率冻结，异常持续 +50%", "price": 72, "rarity": "epic", "effects": { "on_hit_freeze": 0.14, "status_dur_mult": 0.50 } },
-	{ "id": "i-ragecloak", "ico": "🧥", "name": "怒血披风", "desc": "濒死时最高 +28% 伤害，闪避 +5%", "price": 54, "rarity": "rare", "effects": { "low_hp_dmg_bonus": 0.28, "dodge": 0.05 } },
-	{ "id": "i-luckypouch", "ico": "👝", "name": "聚宝囊", "desc": "材料获取 +50%，拾取范围 +60", "price": 48, "rarity": "rare", "effects": { "harvesting": 0.50, "pickup_range": 60.0 } },
+	{ "id": "i-frostmirror", "ico": "🪞", "name": "霜心镜", "desc": "命中时 14% 概率冻结，异常持续 +50%；重复购买概率相加", "price": 72, "rarity": "epic", "effects": { "on_hit_freeze": 0.14, "status_dur_mult": 0.50 } },
+	{ "id": "i-ragecloak", "ico": "🧥", "name": "怒血披风", "desc": "濒死时最高 +28% 伤害，闪避 +5%；代价：护甲 -1", "price": 54, "rarity": "rare", "effects": { "low_hp_dmg_bonus": 0.28, "dodge": 0.05, "armor": -1.0 } },
+	{ "id": "i-luckypouch", "ico": "👝", "name": "聚宝囊", "desc": "材料获取 +50%，拾取范围 +60；代价：伤害 -8%", "price": 48, "rarity": "rare", "effects": { "harvesting": 0.50, "pickup_range": 60.0, "dmg_mult": -0.08 } },
 	# ---- 前期过渡道具（Phase 6 平衡）：common 低价小件，补开局与前 3 波的空窗 ----
 	# 数值温和但覆盖移动 / 续航 / 元素三大前期需求，让新手开局也有明确的可选方向
 	{ "id": "i-boots", "ico": "👢", "name": "旧皮靴", "desc": "移速 +6%，闪避 +3%", "price": 20, "rarity": "common", "effects": { "speed_mult": 0.06, "dodge": 0.03 } },

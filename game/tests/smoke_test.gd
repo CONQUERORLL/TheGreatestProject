@@ -7723,6 +7723,24 @@ func _check_balance_log() -> void:
 	var wd2: Dictionary = (d2.get("latest", {}) as Dictionary).get("wave_data", {})
 	if float(wd2.get("damage_dealt", -1.0)) != 0.0 or int(wd2.get("spawned", -1)) != 0:
 		_fail("BalanceLog: 波次之间未清零累计（第 2 波的数字滚进了第 3 波）%s" % str(wd2))
+	# ---- ⑦ 正式根形态：`_root` 必须恒以 "/" 结尾 ----
+	# ⚠️⚠️ 这一条是**真机 P0 的回归闸门**（2026-09-18 第 11 轮）。正式包里 `_root == "user://"`，
+	#    而 `_write` 曾经对它做 `trim_suffix("/")` → `"user:/"`（**单斜杠**）→ `globalize_path`
+	#    认不出这个 scheme、**原样返回** → `make_dir_recursive_absolute("user:/")` 去建一个名为
+	#    `user:` 的目录 → 必失败 → `_write` 直接 return → `balance_log.json` **从未落盘过**。
+	#    当时冒烟全绿，正是因为测试根被设成了**无尾斜杠**，`trim_suffix` 恰好是空操作。
+	#    ⇒ 修法：`_root` 归一化成恒以 "/" 结尾（测试根与正式根**同形**），`_write` 直接用 `abs_dir()`。
+	if not BalanceLog.storage_root().ends_with("/"):
+		_fail("BalanceLog: _root 未归一化成以 / 结尾（%s）—— 正是真机不落盘的那个坑"
+			% BalanceLog.storage_root())
+	# 反向对照：先证明「单斜杠形态」确实解析不了，否则上面那条断言只是走过场
+	if ProjectSettings.globalize_path("user:/") != "user:/":
+		_fail("BalanceLog: globalize_path 竟然能解析 \"user:/\"，本断言的依据已失效")
+	if ProjectSettings.globalize_path("user://").begins_with("user:"):
+		_fail("BalanceLog: globalize_path(\"user://\") 未解析成绝对路径")
+	# 正向：写盘目录必须真的存在（`_write` 每次都会先建它）
+	if not DirAccess.dir_exists_absolute(BalanceLog.abs_dir()):
+		_fail("BalanceLog: abs_dir() 指向的目录不存在：%s" % BalanceLog.abs_dir())
 	# ⚠️ 刻意**不**还原存储根：本用例之后还有别的用例会跑到 BOSS 波 / 收波
 	#    （`_on_boss_killed` → victory 落盘），根一旦还原，那些落盘就会写进开发者**真实的**
 	#    user://balance_log.json。与 SaveRun 一样全程留在测试目录，进程结束自然消失。

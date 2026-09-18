@@ -584,8 +584,12 @@ func _ensure_affinity_goods() -> void:
 			continue
 		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
 		if m > 1.0:
-			pool.append({ "item": u,
-				"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m })
+			var uw := Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m
+			# ⚠️ 只收**正权重**：`rarity_weight` 会把高品阶按波次压到 0（epic <W3 / mythic <W6）。
+			#    0 权重条目留在池里，`GameRng.weighted_pick` 会 push_error 并返回 null ——
+			#    池子看着「非空」，实际一条都挑不出来。
+			if uw > 0.0:
+				pool.append({ "item": u, "w": uw })
 	for it in Registry.item_list():
 		if taken.has(String(it.get("id", ""))):
 			continue
@@ -595,13 +599,20 @@ func _ensure_affinity_goods() -> void:
 			continue
 		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
 		if m2 > 1.0:
-			pool.append({ "item": it,
-				"w": Config.rarity_weight(String(it.get("rarity", "common")), _wave) * m2 })
+			var iw := Config.rarity_weight(String(it.get("rarity", "common")), _wave) * m2
+			if iw > 0.0:   # 同上：0 权重不入池
+				pool.append({ "item": it, "w": iw })
 	if pool.is_empty():
 		return
 	# 注意 GameRng.weighted_pick 返回的是 entry.item（条目本身），不是整条包装 ——
 	# 所以 kind 只能靠条目归属反查，别指望从池里带出来
-	var e: Dictionary = GameRng.weighted_pick(pool)
+	# ⚠️ 必须用 `Variant` 接：池子万一一条正权重都没有，`weighted_pick` 返回 null，
+	#    直接赋给 `Dictionary` 是**运行期 SCRIPT ERROR**（第 11 轮实测踩到），
+	#    而不是「保底放弃」——保底失败本该是静默的。
+	var picked: Variant = GameRng.weighted_pick(pool)
+	if typeof(picked) != TYPE_DICTIONARY:
+		return
+	var e: Dictionary = picked
 	if e.is_empty():
 		return
 	var kind := "upgrade" if Registry.upgrades.has(String(e.get("id", ""))) else "item"

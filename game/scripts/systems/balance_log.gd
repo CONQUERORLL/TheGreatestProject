@@ -40,6 +40,13 @@ const CURVE_STATS := [
 	"pickup_range", "harvesting", "status_chance", "status_dmg_mult",
 ]
 
+## ⚠️⚠️ `_root` **恒以 "/" 结尾**（`"user://"` / `"user://tests/x/"`）—— 这是硬约束。
+##    写盘前要用 `ProjectSettings.globalize_path(_root)` 取绝对目录，而 Godot 只认 `user://`
+##    这个 scheme。曾经在这里对 `_root` 做了 `trim_suffix("/")` → `"user://"` 变成 **`"user:/"`**
+##    （单斜杠）→ `globalize_path` 认不出、**原样返回** → 去建一个名为 `user:` 的目录 → 必失败
+##    → `_write` 直接 return，正式包里 `balance_log.json` **从未落盘**（每波刷一对 ERROR/WARNING）。
+##    而冒烟把测试根设成**无尾斜杠**，`trim_suffix` 恰好是空操作 → 一直是绿的。
+##    ⇒ 教训：**测试根必须与正式根同形**，否则等于没测。
 static var _root := "user://"
 static var _active := false
 
@@ -89,13 +96,22 @@ static func close_run() -> void:
 
 ## 冒烟 / 自动化测试隔离：把日志写进临时目录
 static func set_storage_root_for_tests(path: String) -> void:
-	_root = path.trim_suffix("/")
+	_root = path.trim_suffix("/") + "/"   # 归一化成与正式根同形（见 _root 的注释）
 
 static func reset_storage_root_after_tests() -> void:
 	_root = "user://"
 
 static func path() -> String:
 	return _root.path_join(FILE)
+
+## 写盘目录的**绝对**路径。独立成函数只为一件事：让冒烟能直接断言这一行 ——
+## 本模块曾静默失效整整一轮，就是坏在这个 globalize 的入参形态上。
+static func abs_dir() -> String:
+	return ProjectSettings.globalize_path(_root)
+
+## 只读访问器：冒烟用它断言「测试根 == 正式根形态」（尾斜杠这条不变式）。
+static func storage_root() -> String:
+	return _root
 
 # ------------------------------------------------------------
 # 每波累计
@@ -293,8 +309,7 @@ static func _history_entry(wave: int, outcome: String, at: String,
 ## 与 `SaveRun._write_json_atomic` 相比刻意少了 `.bak` 轮转：日志不需要备份，
 ## 保留上一版只会让目录里多一份同样会过期的文件。
 static func _write(at: String) -> bool:
-	var dir_err := DirAccess.make_dir_recursive_absolute(
-		ProjectSettings.globalize_path(_root.trim_suffix("/")))
+	var dir_err := DirAccess.make_dir_recursive_absolute(abs_dir())
 	if dir_err != OK and dir_err != ERR_ALREADY_EXISTS:
 		push_warning("BalanceLog: 无法创建目录 " + _root)
 		return false

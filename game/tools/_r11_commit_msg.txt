@@ -1,0 +1,42 @@
+第11轮(1/2)：BalanceLog P0、金剑与近战射程再平衡、阈值制副作用、暂停/悬浮修复
+
+用户 7 项反馈中的 5 项落地；另修两个不报错的真 bug。冒烟 86 条 SMOKE / 0 FAIL / PASS。
+
+P0 BalanceLog 从不落盘（balance_log.gd + smoke_test.gd）
+- 根因：`_root.trim_suffix("/")` 把 "user://" 变成 "user:/"（单斜杠），
+  `globalize_path` 不认 → `make_dir_recursive_absolute` 失败 → 逐波平衡日志从未产出。
+- 修法：新增 `abs_dir()`（不 trim，直接 globalize），`_root` 恒以 "/" 结尾并在
+  `set_storage_root_for_tests` 里归一化 → 测试根与正式根**同形**。
+- 补冒烟回归闸：断言 storage_root() 以 "/" 结尾、globalize_path("user:/") 未解析、
+  globalize_path("user://") 开头非 "user:"、abs_dir() 目录确实存在。
+
+金剑与近战射程道具再平衡（config.gd）
+- `knife` cd 0.45→0.55、range 95→88；`knife_ex` 同步 cd 0.55 / range 106。
+  实测：单体合计 19.91→16.29（−18%）、reach 95→88、扇形面积 11,814→10,137（−14%）。
+- 近战 range 道具降幅并提品：`edge` +18%→+11%（保持 rare）、`swordmanual` +22%→+13%（epic→mythic）、
+  `i-whetstone`/`i-swordcase` +35%→+21%（epic→mythic）。
+- 根因注释：近战 AOE = ½r²θ **∝ reach²** → 每 +10% range ≈ +21% 面积，多张叠乘雪崩。
+- `edge` 刻意留 rare：`rarity_weight` 按波次压权重（epic≥W3 / mythic≥W6），而商店「亲和保底」
+  要求任意波次都能找到契合商品 —— 4 张全提 epic+ 会让 W1~W2 近战构筑没有可保底条目。
+
+阈值制副作用（config.gd）
+- 规则：品质 ≤ rare 且（单条加成 ≥20% 或两条合计 ≥30%）→ 附带代价。
+- 覆盖 `barrel`/`velocity`/`warhead`/`i-harv`/`i-ember`/`i-venom`/`i-hemo`/`i-fuse`/
+  `i-accelerator`/`i-venomsac`/`i-emberdust`/`i-venomgland`/`i-bloodvial`/`i-ragecloak`/`i-luckypouch`。
+- 玄冰类补「重复购买概率相加」文案（`i-frost`/`i-frostshard`/`i-frostmirror`/`frostmantra`）。
+- 重名修复：`i-frostcore` 名 "霜核"→"霜爆核心"（与 `i-frost` 区分）。
+
+暂停界面与悬浮详情（hint_bubble.gd / entry_text.gd / main.gd）
+- `hint_bubble` 正文恒 0 高（探针实测 `scroll.min=(348,0)`，AUTO 模式最小高恒 0，旧 else 分支
+  又把它复位 ZERO）→ 新增 `_layout_body()` 共用测量：先按「完整显示正文」设最小高，超上限才压回。
+- 点别处关不掉：`_unhandled_input` → `_input`（原钩子被 GUI 消费后不触发）。
+- `EntryText`：新增 `HOVER_HELP := ["武器","五行同化","异常强化"]` + `needs_help()`；
+  悬浮粒度收窄为「只有需要解释的才挂」，基础属性不再悬浮。
+- 暂停面板右侧新增武器区（按类型分组 xN，点名出详情）；同化度行改为**当场算实际生效值**，
+  白板角色显式标注「不生效」。
+- 五行同化说明补「要求角色自身有五行属性」；`on_hit_*` 补「同类可叠加，概率相加」。
+
+商店亲和保底真 bug（shop_ui.gd）
+- 池子不按正权重过滤：`rarity_weight` 会把高品阶压到 0，0 权重条目留在池里 →
+  `GameRng.weighted_pick` push_error 并返回 null → 直接赋给 `Dictionary` 是运行期 SCRIPT ERROR。
+- 修：两处 `pool.append` 加 `if w > 0.0`；`weighted_pick` 结果用 `Variant` 接 + 校验 TYPE_DICTIONARY。
