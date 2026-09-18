@@ -6,6 +6,13 @@ extends Control
 
 var player  # characters/player.gd 引用，由 main 注入
 var _choices: Array = []   # 当前三张升级卡（Registry.upgrades 元素）
+## 波末结算期间的「压住」开关（main._on_wave_ended 置位）：掉落结算会把经验一次性
+## 结清，若当场弹卡，进化/盒子/商店会叠在同一屏上。压住期间级数只积压 level_queue，
+## 等下一波回到 PLAYING 由 _on_phase_changed 补弹（流程由 main 排序，详见 godot-game-ui）
+var _hold := false
+
+func set_hold(v: bool) -> void:
+	_hold = v
 
 ## 卡阵参数（桌面设计尺寸；小屏由 UiMetrics.card_grid 压缩/换行，见 _build_cards）
 const CARD_WANT := Vector2(200.0, 220.0)
@@ -30,10 +37,17 @@ func _ready() -> void:
 	GameState.phase_changed.connect(_on_phase_changed)
 
 func _on_leveled_up(_new_level: int) -> void:
+	if _hold:
+		return   # 波末结算中：级数已入 level_queue，等下一波开场补弹，不与进化/商店叠屏
 	if GameState.phase == GameState.Phase.PLAYING and GameState.level_queue > 0:
 		open()
 
 func _on_phase_changed(new_phase: int) -> void:
+	# 流程进入商店（波末结算-进化-盒子走完）即解除压住；此后回到 PLAYING 时补弹积压升级
+	if new_phase == GameState.Phase.SHOP:
+		_hold = false
+	if _hold:
+		return
 	if new_phase == GameState.Phase.PLAYING and GameState.level_queue > 0 and not visible:
 		open()
 

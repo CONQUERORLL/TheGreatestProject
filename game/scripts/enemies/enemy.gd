@@ -109,8 +109,8 @@ func setup(type_name: String, wave: int = 1) -> void:
 	if boss_flag:
 		# BOSS 不吃普通怪的 `wave_hp_scale`，血量曲线**唯一真值** = `Config.boss_hp_scale(w)`：
 		#   · 无尽 = 1 + 0.30(w−10)（W10 = 1.0，与改动前逐字一致）；
-		#   · 标准最终波 = 1.0（W20 既有平衡不受影响）；
-		#   · 中间 BOSS（W4/8/12/16）= `MIDBOSS_HP_FRAC` 随区块成长；非 BOSS 波 = 1.0。
+		#   · 标准最终波 = 0.85（第 14 轮 W20 再砍 15%）；
+		#   · 中间 BOSS（W4/8/12/16）= `BOSS_HP_FRAC` 随区块成长；非 BOSS 波 = 1.0。
 		#
 		# ⚠️⚠️ 第 9 轮踩过的静默坑（**不报错、冒烟当时也全绿**）：`boss_hp_scale` 当时只写进了
 		#    Config 并配了纯函数断言，**这里从没调用过它** —— 于是中间 BOSS 与最终 BOSS 血量
@@ -118,7 +118,7 @@ func setup(type_name: String, wave: int = 1) -> void:
 		#    → 必然打不死 →「时间结束没有击杀则不掉落」变成常态、法宝盒子永远拿不到。
 		#    教训：**新加的公式必须确认它有消费点**；只断言纯函数返回值 = 没断言「有人读」。
 		hp_s = Config.boss_hp_scale(wave)
-		dmg_s = 1.0 + 0.18 * float(wave - 1)
+		dmg_s = 1.0 + 0.13 * float(wave - 1)
 	else:
 		hp_s = Config.wave_hp_scale(wave)
 		dmg_s = Config.wave_dmg_scale(wave)
@@ -638,7 +638,8 @@ func _physics_process(delta: float) -> void:
 		var side := sin(wob) * 0.6
 		mv = (mv + Vector2(-ux.y, ux.x) * side) * spd
 		shoot_cd -= delta
-		if shoot_cd <= 0.0 and d < 620.0:
+		# 第 14 轮需求 1：前八波无远程弹幕 —— 远程怪照常出场（保元素闸门 / 图鉴完整）但不开火。
+		if spawn_wave > Config.RANGED_NO_SHOOT_THROUGH_WAVE and shoot_cd <= 0.0 and d < 620.0:
 			shoot_cd = float(cfg.shoot_cd)
 			_fire_shooter(ux.angle())
 	elif is_boss():

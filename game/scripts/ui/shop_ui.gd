@@ -23,6 +23,7 @@ var _temp_confirm = null     # 退出二次确认对话框（需求 3：临时�
 
 var _title: Label
 var _mat: Label
+var _weapon_bar: HBoxContainer   # 武器栏（HUD 同款聚合槽位，商店也要一眼看到当前武器）
 var _goods_box: GridContainer   # 第 9 轮：一排放不下就平均换行（见 _goods_grid），不再是单行 HBox
 var _left_box: VBoxContainer
 var _items_box: VBoxContainer
@@ -72,6 +73,13 @@ func _build() -> void:
 	center.add_child(_title)
 	_mat = _mk_label(18, Color("e8b84b"))
 	center.add_child(_mat)
+	# 武器栏：HUD 同款聚合槽位（永久槽聚合同名 xN + 空槽占位；临时槽标注「临时」）。
+	# 旧版只有左栏一行小字「持有：…」，且小屏模式整个左栏隐藏 —— 商店里看不到武器栏。
+	_weapon_bar = HBoxContainer.new()
+	_weapon_bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	_weapon_bar.add_theme_constant_override("separation", 6)
+	_weapon_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(_weapon_bar)
 	# 商品区容器：GridContainer 而不是 HBoxContainer（第 9 轮）。
 	# `columns == 商品数` 时行为与单行 HBox 完全一致；放不下时由 `_goods_grid()`
 	# 改小 columns，就变成「平均换行」（6 格 → 3+3，而不是 5+1 留一张孤卡）。
@@ -817,6 +825,7 @@ func _refresh() -> void:
 	# 记录当前焦点所在卡片，重建后优先原位恢复（避免焦点跳回第一张）
 	var focus_idx := _focused_card_index()
 	_mat.text = "◆ %d" % GameState.materials
+	_refresh_weapon_bar()
 	_refresh_left()
 	_refresh_right()
 	# 自定义规则：禁用刷新 / 禁用回血（按钮保留但灰掉，让玩家看得见"这是规则限制"）
@@ -837,6 +846,67 @@ func _refresh() -> void:
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
 	if visible:
 		_grab_focus_near(focus_idx)
+
+## 重建武器栏（需求：商店页要能一眼看到当前武器栏）。
+## 与 HUD `_rebuild_weapons` 同口径：永久槽按同名聚合 xN + 空槽占位，临时槽武器附后并标注。
+## 临时槽**不**显示空占位 —— 空临时槽是「没有溢出」，不是「少了武器」。
+func _refresh_weapon_bar() -> void:
+	for c in _weapon_bar.get_children():
+		_weapon_bar.remove_child(c)
+		c.queue_free()
+	var groups := {}   # 永久槽：type -> 持有数
+	for w in player.weapons:
+		var wt := String(w.get("type", ""))
+		groups[wt] = int(groups.get(wt, 0)) + 1
+	for k in groups:
+		_weapon_bar.add_child(_make_weapon_slot(String(k), int(groups[k]), false))
+	for _i in MetaProgress.weapon_slots() - player.weapons.size():
+		_weapon_bar.add_child(_make_weapon_slot("", 0, false))
+	var tgroups := {}   # 临时槽
+	for t in player.temp_weapons:
+		var tt := String(t.get("type", ""))
+		tgroups[tt] = int(tgroups.get(tt, 0)) + 1
+	for k in tgroups:
+		_weapon_bar.add_child(_make_weapon_slot(String(k), int(tgroups[k]), true))
+
+## 单个武器槽：HUD `_make_slot` 同款 48×48 面板；空槽半透明占位；悬浮查武器详情
+func _make_weapon_slot(wtype: String, count: int, is_temp: bool) -> Control:
+	var c: Dictionary = Registry.weapons.get(wtype, {})
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(48.0, 48.0)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.094, 0.106, 0.129, 0.78)
+	style.border_color = Color("3a4150")
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(9)
+	panel.add_theme_stylebox_override("panel", style)
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(box)
+	if c.is_empty():
+		panel.modulate.a = 0.3   # 空槽
+		return panel
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var ico := Label.new()
+	ico.text = String(c.get("ico", "🗡"))
+	ico.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ico.add_theme_font_size_override("font_size", 18)
+	ico.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(ico)
+	var nm := Label.new()
+	# 聚合同类武器：名字右侧带 xN；临时槽再带「临时」角标
+	nm.text = String(c.get("name", wtype)) + (" x%d" % count if count > 1 else "") \
+		+ ("（临时）" if is_temp else "")
+	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	nm.add_theme_font_size_override("font_size", 11)
+	nm.add_theme_color_override("font_color", Color("9aa3b2"))
+	nm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(nm)
+	# 悬浮查详情：与右栏出售行同一 detail provider（面板本身 STOP，整槽可点看说明）
+	HintBubble.attach_hover(panel, String(c.get("name", wtype)) + ("（临时）" if is_temp else ""),
+		EntryText.entry_detail(c, "武器").get("body", ""), self)
+	return panel
 
 ## 当前焦点位于哪张商品卡（buy/lock 钮均可），无焦点返回 -1
 func _focused_card_index() -> int:
@@ -906,13 +976,13 @@ func _rarity_style(r: String) -> StyleBoxFlat:
 func _goods_avail() -> Vector2:
 	var avail := UiMetrics.available()
 	if UiMetrics.prefers_full_page():
-		# 小屏：无左属性栏；扣右侧出售栏（dp(180)）+ 栏间距 + 外边距 + 标题/材料/动作区高度
+		# 小屏：无左属性栏；扣右侧出售栏（dp(180)）+ 栏间距 + 外边距 + 标题/材料/武器栏/动作区高度
 		avail.x -= UiMetrics.dp(180.0) + 14.0 + UiMetrics.dp(24.0)
-		avail.y -= UiMetrics.dp(130.0)
+		avail.y -= UiMetrics.dp(190.0)
 	else:
 		# 桌面：左属性栏 288 + 右出售栏 288 + 两个 14 栏间距 + 24 外边距
 		avail.x -= 288.0 * 2.0 + 14.0 * 2.0 + 24.0
-		avail.y -= 150.0
+		avail.y -= 210.0
 	return Vector2(maxf(avail.x, 200.0), maxf(avail.y, 200.0))
 
 func _goods_min_w() -> float:

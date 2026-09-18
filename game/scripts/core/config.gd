@@ -637,7 +637,7 @@ const WEAPONS := {
 	#     它本来就是全场第二大 AOE（仅次于土炸弹），现在回到「高频单体 + 小范围溅射」。
 	#     ⚠️ 这是**用户明确要求的削弱**，不是失衡修正 —— 不要因为「金剑反而更强」再把它加回去。
 	"flamethrower": { "name": "喷火枪", "ico": "🔥", "attack_type": "projectile", "sfx": "shoot_smg", "cd": 0.10, "dmg": 1.5, "bspeed": 300.0, "spread": 0.34, "bullet_life": 0.28, "splash": 40.0, "status": "burn", "status_chance": 0.80, "rarity": "common", "family": "element", "element": "fire", "desc": "五行·火：中近距离范围灼烧（射程≈110px），高频叠燃烧并带 40px 溅射（有效射程≈150px）", "price": 42, "shop_weight": 1.5, "evolve_need": 3, "evolve_branches": ["flamethrower_ex"] },
-	"frost_staff": { "name": "水枪", "ico": "💧", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.30, "dmg": 3.5, "bspeed": 560.0, "bullet_life": 1.1, "status": "slow", "status_chance": 0.60, "rarity": "common", "family": "element", "element": "water", "desc": "五行·水：单发伤害最低，高射速铺减速，为队伍创造输出窗口", "price": 72, "shop_weight": 0.9, "evolve_need": 3, "evolve_branches": ["frost_staff_ex"] },
+	"frost_staff": { "name": "水枪", "ico": "💧", "attack_type": "projectile", "sfx": "shoot_rocket", "cd": 0.30, "dmg": 5.0, "bspeed": 560.0, "bullet_life": 1.1, "status": "slow", "status_chance": 0.60, "rarity": "common", "family": "element", "element": "water", "desc": "五行·水：单发伤害最低，高射速铺减速，为队伍创造输出窗口", "price": 72, "shop_weight": 0.9, "evolve_need": 3, "evolve_branches": ["frost_staff_ex"] },
 	# ⚠️⚠️ 2026-09-17（第 8 轮）用户反馈「有个加子弹攻速的加成太变态了，土质炸弹吃子弹攻速加成太高了」。
 	#   查证：这里的「子弹攻速」指**弹速类道具**（`bullet_speed_bonus` / `bullet_range_bonus`）。
 	#   机制：`reach = bspeed × bullet_life + 26`（player.gd:321）→ 弹速 +38% 会让土炸弹弹体射程
@@ -656,7 +656,7 @@ const WEAPONS := {
 	#   4. 同时把 `bullet_life` 由「隐式默认」改成**显式 1.1**：射程自此写在表里、可审计。
 	#      （数值本身没变：340×1.1+26 = 400px，与第 7 轮体检表一致。）
 	"thunder_gong": { "name": "土质炸弹", "ico": "💣", "attack_type": "projectile", "proj_kind": "thrown", "sfx": "shoot_rocket", "cd": 1.35, "dmg": 15.0, "bspeed": 340.0, "bullet_life": 1.1, "splash": 95.0, "status": "stun", "status_chance": 0.35, "status_stacks": 1, "shake": 2.5, "rarity": "common", "family": "element", "element": "earth", "desc": "五行·土：投掷爆炸物，400px 外爆开 95px 范围（眩晕 35%）。⚠️ 只吃「投掷类」加成，不吃弹速/射程类", "price": 54, "shop_weight": 0.9, "evolve_need": 3, "evolve_branches": ["thunder_gong_ex"] },
-	"blight_bow": { "name": "木弓", "ico": "🏹", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.75, "dmg": 9.0, "bspeed": 620.0, "bullet_life": 1.1, "rarity": "common", "family": "element", "element": "wood", "desc": "五行·木：攻速最慢（0.75s），单发最重，靠高单发与吸血续航而非爆发", "price": 52, "shop_weight": 1.3, "evolve_need": 3, "evolve_branches": ["blight_bow_ex"] },
+	"blight_bow": { "name": "木弓", "ico": "🏹", "attack_type": "projectile", "sfx": "shoot_pistol", "cd": 0.75, "dmg": 12.0, "bspeed": 620.0, "bullet_life": 1.1, "rarity": "common", "family": "element", "element": "wood", "desc": "五行·木：攻速最慢（0.75s），单发最重，靠高单发与吸血续航而非爆发", "price": 52, "shop_weight": 1.3, "evolve_need": 3, "evolve_branches": ["blight_bow_ex"] },
 	# ---- 五行进化形态（S8 补做）：持满 3 把基础武器 → 波末自动合成；shop_weight 0 = 不进商店池 ----
 	"knife_ex": { "name": "庚金剑域", "ico": "⚔", "attack_type": "melee", "sfx": "shoot_knife", "cd": 0.55, "dmg": 14.0, "range": 106.0, "swing_arc": 3.054, "status": "bleed", "status_chance": 0.45, "rarity": "rare", "family": "blade", "element": "metal", "desc": "金剑·进化：reach 106px + 175° 剑域（面积 1.69×），单体 DPS 2.0×，流血 45%", "price": 84, "shop_weight": 0 },
 	#  ⚠️ dmg 3.0 是跟着基础体走的：基础 1.5 × 2.0（进化倍数）= 3.0 → 单体 30.0。
@@ -793,15 +793,15 @@ const ENEMIES := {
 	] },
 	"boss_spiral": { "name": "深渊织网者", "hp": 640000.0, "speed": 56.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 50.0, "color": "#7a3df0", "shape": "diamond", "ring_cd": 1.6, "ring_count": 6, "bspeed": 300.0, "spiral_mode": true, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "metal", "skills": [
 		{ "type": "aimed", "name": "织网锁定", "cd": 3.6, "count": 3, "interval": 0.16, "bspeed": 420.0, "dmg_mult": 0.7 },
-		{ "type": "nova", "name": "深渊落雷", "cd": 5.5, "count": 2, "radius": 105.0, "warn": 0.8, "dmg_mult": 0.9 },
+		{ "type": "nova", "name": "深渊落雷", "cd": 5.5, "count": 2, "radius": 78.75, "warn": 0.8, "dmg_mult": 0.9 },
 	] },
 	"boss_summoner": { "name": "腐土孵化者", "hp": 560000.0, "speed": 48.0, "dmg": 22.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#3d8a3d", "shape": "square", "ring_cd": 3.0, "ring_count": 10, "bspeed": 240.0, "summon_cd": 4.5, "summon_type": "swarm", "summon_count": 6, "death_skill": "miasma", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "wood", "skills": [
-		{ "type": "nova", "name": "腐土毒沼", "cd": 6.0, "count": 3, "radius": 80.0, "warn": 1.0, "dmg_mult": 0.7, "spread_radius": 200.0 },
+		{ "type": "nova", "name": "腐土毒沼", "cd": 6.0, "count": 3, "radius": 60.0, "warn": 1.0, "dmg_mult": 0.7, "spread_radius": 200.0 },
 		{ "type": "fan", "name": "腐蚀喷吐", "cd": 4.5, "count": 7, "arc": 1.2, "bspeed": 280.0, "dmg_mult": 0.6 },
 	] },
 	"boss_phoenix": { "name": "焚天凤凰", "hp": 720000.0, "speed": 78.0, "dmg": 26.0, "xp": 60, "mat": 100, "r": 52.0, "color": "#ff5e3a", "shape": "diamond", "ring_cd": 1.8, "ring_count": 12, "bspeed": 320.0, "death_skill": "rebirth", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "fire", "skills": [
 		{ "type": "charge", "name": "烈焰俯冲", "cd": 5.0, "warn": 0.45, "duration": 0.5, "speed_mult": 7.0 },
-		{ "type": "nova", "name": "天火坠落", "cd": 4.5, "count": 3, "radius": 85.0, "warn": 0.95, "dmg_mult": 0.7, "spread_radius": 210.0 },
+		{ "type": "nova", "name": "天火坠落", "cd": 4.5, "count": 3, "radius": 63.75, "warn": 0.95, "dmg_mult": 0.7, "spread_radius": 210.0 },
 	] },
 	"boss_leviathan": { "name": "沧溟蛟皇", "hp": 800000.0, "speed": 60.0, "dmg": 24.0, "xp": 60, "mat": 100, "r": 54.0, "color": "#5aa8d8", "shape": "circle", "ring_cd": 2.0, "ring_count": 18, "bspeed": 260.0, "summon_cd": 8.0, "summon_type": "water_nymph", "summon_count": 3, "death_skill": "double_ring", "status_resist": 0.55, "heart_chance": 1.0, "dmg_cap_pct": 0.005, "element": "water", "skills": [
 		{ "type": "aimed", "name": "寒水连狙", "cd": 3.2, "count": 4, "interval": 0.13, "bspeed": 440.0, "dmg_mult": 0.65 },
@@ -809,7 +809,7 @@ const ENEMIES := {
 	] },
 	"boss_titan": { "name": "玄武岩王", "hp": 900000.0, "speed": 42.0, "dmg": 32.0, "xp": 60, "mat": 100, "r": 58.0, "color": "#c8a030", "shape": "square", "ring_cd": 2.4, "ring_count": 10, "bspeed": 220.0, "death_skill": "shockwave", "status_resist": 0.70, "heart_chance": 1.0, "dmg_cap_pct": 0.004, "element": "earth", "skills": [
 		{ "type": "charge", "name": "山崩冲撞", "cd": 8.0, "warn": 0.7, "duration": 0.55, "speed_mult": 5.0 },
-		{ "type": "nova", "name": "落石", "cd": 5.0, "count": 2, "radius": 130.0, "warn": 0.9, "dmg_mult": 1.0 },
+		{ "type": "nova", "name": "落石", "cd": 5.0, "count": 2, "radius": 97.5, "warn": 0.9, "dmg_mult": 1.0 },
 	] },
 }
 
@@ -1574,8 +1574,9 @@ const ENEMY_HARD_CAP := 240      # 同屏敌人绝对上限（大规模敌群性
 ##    限时拉长会让「没击杀就不掉落」这条规则失去意义。
 const BOSS_BOX_CHOICES := 3          # 法宝盒子开出的候选数（三选一）
 
-## 中间 BOSS 血量占该 BOSS **基础血量**的比例，下标 = 区块 - 1（W4/W8/W12/W16 → 0..3）。
-const MIDBOSS_HP_FRAC := [0.03, 0.07, 0.14, 0.25]
+## 标准局 5 个 BOSS 波（W4/W8/W12/W16/W20）血量占该 BOSS **基础血量**的比例，下标 = 区块 - 1（→ 0..4）。
+## 第 14 轮：在「第 9 轮估价」上整体再砍一档 = 原值 ×(1 − 0.75/0.50/0.40/0.30/0.15)。
+const BOSS_HP_FRAC := [0.0075, 0.035, 0.084, 0.175, 0.85]
 
 ## 中间 BOSS 限时 = 同波普通波时长 × 本倍率。比普通波宽（要边躲弹幕边打），
 ## 但**必须有**限时 —— 它正是「时间到不掉落」的前提。
@@ -1659,7 +1660,7 @@ static func is_final_boss_wave(w: int) -> bool:
 ## 与最终 BOSS 的三点差别（全部有对应的消费点）：
 ##   ① **限时** `midboss_duration()` —— 时间到未击杀 = BOSS 退场且**不掉落**（用户明确要求）；
 ##   ② 击破只给「法宝盒子」（`GameState.boss_boxes`），波末开盒三选一，不进通关结算；
-##   ③ 血量按 `MIDBOSS_HP_FRAC` 压缩 —— 限时战不能照搬"无限时消耗战"的标定。
+##   ③ 血量按 `BOSS_HP_FRAC` 压缩 —— 限时战不能照搬"无限时消耗战"的标定。
 ## ⚠️ 无尽 BOSS **不是**中间 BOSS：它既不限时、也不换掉"击杀直掉法宝"的既有口径。
 static func is_mid_boss_wave(w: int) -> bool:
 	return not GameState.endless and is_boss_wave(w) and not is_final_boss_wave(w)
@@ -1667,7 +1668,7 @@ static func is_mid_boss_wave(w: int) -> bool:
 ## BOSS 血量倍率（第 9 轮 · 用户要求「血量随波次成长」）。
 ##   · 无尽：沿用既有曲线（W10 = 1.0，每深一波 +30%）—— **不动它**。
 ##   · 标准：最终波 = 1.0（与改动前**完全一致**，W20 的既有平衡不受影响）；
-##     中间 BOSS 查 `MIDBOSS_HP_FRAC`，是"随波次成长"的那条腿；
+##     中间 BOSS 查 `BOSS_HP_FRAC`，是"随波次成长"的那条腿；
 ##     **非 BOSS 波 = 1.0**（测试/工具会在任意波次造 BOSS，见下）。
 ##
 ## ⚠️⚠️ 本函数是 BOSS 血量的**唯一真值**，消费点在 `enemy.gd::setup()` 的 BOSS 分支。
@@ -1677,17 +1678,14 @@ static func is_mid_boss_wave(w: int) -> bool:
 static func boss_hp_scale(w: int) -> float:
 	if GameState.endless:
 		return 1.0 + 0.30 * float(maxi(0, w - 10))
-	if w >= RunRules.wave_total(WAVES_TOTAL):
-		return 1.0
-	# 只在**真正的中间 BOSS 波**压缩。非 BOSS 波返 1.0 的两个理由：
-	#   ① 测试 / 工具会在任意波次（如 W10）造 BOSS 验技能与 dmg_cap；那里若也按 frac 缩，
-	#      `dmg_cap = max_hp × 0.005` 会跟着变小，`_check_boss_skills` 里
-	#      `take_damage(1000)` 期望掉血 800 的断言会被**静默截断**成 430 而报红。
-	#   ② `boss_hp_scale(1)` 本无语义，返 frac 会给出「W1 血量 3%」的假事实。
+	# 非 BOSS 波返 1.0：测试 / 工具会在任意波次（如 W10）造 BOSS 验技能与 dmg_cap，
+	# 那里若也按 frac 缩，`dmg_cap = max_hp × 0.005` 会变小、断言被静默截断。
 	if not is_boss_wave(w):
 		return 1.0
-	var blk := block_of(w)
-	return float(MIDBOSS_HP_FRAC[clampi(blk - 1, 0, MIDBOSS_HP_FRAC.size() - 1)])
+	# 标准局 5 个 BOSS 波（含最终 W20）按区块查 BOSS_HP_FRAC。第 14 轮整体再砍一档
+	# （W20 终 = 0.85，不再是既有的 1.0）。
+	var blk := clampi(block_of(w), 1, BOSS_HP_FRAC.size())
+	return float(BOSS_HP_FRAC[blk - 1])
 
 ## 中间 BOSS 的限时时长（秒）。最终 BOSS / 无尽 BOSS 都不走这里（它们不限时）。
 static func midboss_duration(w: int) -> float:
@@ -2344,7 +2342,7 @@ const WAVE_HP_CURVE := [
 	[1, 1.00], [4, 2.15], [8, 2.85], [12, 4.10], [16, 5.45], [20, 6.70],
 ]
 const WAVE_DMG_CURVE := [
-	[1, 1.00], [4, 1.60], [8, 2.05], [12, 2.90], [16, 3.70], [20, 4.42],
+	[1, 1.00], [4, 1.15], [8, 1.55], [12, 2.05], [16, 2.60], [20, 3.15],
 ]
 
 ## 控制点查表 + 波间线性插值。越界按端点夹取（无尽局 W21+ 沿用末段斜率继续涨，
@@ -2500,6 +2498,13 @@ const WAVE_BAND_WEIGHTS := [
 	{ "elite": 1.7, "trash": 0.85 },
 ]
 
+## 第 14 轮需求 1「前八波无远程弹幕」：远程怪**照常出场、但 W1~W8 不开火**。
+## ⚠️ 为什么不是「把远程怪踢出早期池」：`ELEMENT_MOB_IDS` 五元素怪里有且只有火代表
+##    `fire_caster` 是远程（ai=shooter）；踢掉它 → W4 缺火 → 直接打破「W4 五行齐全」
+##    的元素闸门（难度=元素出场节奏），而区块 1 的三层池里也没有近战火怪可替补
+##    （`fire_imp` 从区块 2 才进池）。⇒ 压「弹幕」的正确落点是**不开火**，池与元素闸门一字不动。
+const RANGED_NO_SHOOT_THROUGH_WAVE := 8
+
 ## 给一张出怪池按波段倍率改写权重。**只改 `w`、不改条目集合** ——
 ## 「区块 5 必须含全部阵营怪」那条断言靠条目集合，动集合会挂。
 ## 未命中任何名单的 id（mod 新加的敌人）一律保持原权重，不被静默改动。
@@ -2519,6 +2524,8 @@ static func _apply_band_weights(pool: Array, block: int) -> Array:
 			mult *= float(band.get("elite", 1.0))
 		if BAND_TRASH_MOB_IDS.has(mid):
 			mult *= float(band.get("trash", 1.0))
+		if mult <= 0.0:
+			continue            # 权重被压到 ≤0 → 直接剔除，不留 w=0 条目让 weighted_pick 报错返回 null
 		if not is_equal_approx(mult, 1.0):
 			d["w"] = float(d.get("w", 0.0)) * mult
 		out.append(d)

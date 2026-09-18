@@ -251,6 +251,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("toggle_mute"):
 		Settings.toggle_mute()
 		EventBus.banner_requested.emit("声音", "已静音" if Settings.master_vol <= 0.0001 else "已恢复", 1.0)
+	# ---- 结算页 R 重开：按钮文案写「再来一局（R）」，R 必须真的生效 ----
+	elif event is InputEventKey and event.pressed and not event.echo \
+			and event.physical_keycode == KEY_R:
+		match GameState.phase:
+			GameState.Phase.GAME_OVER:
+				get_tree().reload_current_scene()
+			GameState.Phase.VICTORY:
+				_finish_victory_run()
+				get_tree().reload_current_scene()
+		get_viewport().set_input_as_handled()
 	# ---- 升级 UI 期间：根节点直接处理输入（最可靠，不依赖子节点 _unhandled_input 触发） ----
 	elif GameState.phase == GameState.Phase.LEVEL_UP and level_up_ui.visible:
 		if event.is_action_pressed("ui_accept"):
@@ -874,6 +884,10 @@ func _on_wave_ended(w: int) -> void:
 	_clear_terrain_zone()
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
+	# 波末掉落结算会把经验一次性结清，若当场弹出升级卡，后面的进化选择/法宝盒子/商店
+	# 都会叠在同一屏（多层 UI 叠加反馈）。结算期间压住升级卡（级数积压 level_queue），
+	# 由 level_up_ui 在下一波回到 PLAYING 时补弹；flow 进入商店时它会自行解除压住。
+	level_up_ui.set_hold(true)
 	for l in get_tree().get_nodes_in_group("loot"):
 		l.settle()
 	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、进商店前）。
@@ -1176,6 +1190,12 @@ func _handle_back() -> bool:
 	return false
 
 func toggle_pause() -> void:
+	# 进化/法宝盒子选择卡都发生在 phase 仍是 PLAYING 的波末流程里 —— 此时按暂停会把
+	# 暂停页叠在选择卡上（多层 UI 叠加反馈）。选择类界面打开期间暂停一律让位。
+	if evolve_choose_ui != null and evolve_choose_ui.visible:
+		return
+	if boss_box_ui != null and boss_box_ui.visible:
+		return
 	if GameState.phase == GameState.Phase.PLAYING or GameState.phase == GameState.Phase.INTRO:
 		_phase_before_pause = GameState.phase
 		GameState.set_phase(GameState.Phase.PAUSED)

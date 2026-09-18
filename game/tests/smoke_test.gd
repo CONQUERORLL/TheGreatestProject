@@ -648,6 +648,24 @@ func _check_shop() -> void:
 	if shop.get_viewport().gui_get_focus_owner() == null:
 		_fail("商店焦点丢失（手柄导航不可用）")
 		return
+	# 商店武器栏（UI 排序/可见性需求）：永久槽聚合 + 空槽占位 + 临时槽，槽位数与持有数一致
+	var wbar: HBoxContainer = shop._weapon_bar
+	if wbar == null:
+		_fail("商店未构建武器栏")
+		return
+	var _wperm_n: int = player.weapons.size()
+	var _wdistinct := {}
+	for _wp in player.weapons:
+		_wdistinct[String(_wp.get("type", ""))] = true
+	var _wtemp_d := {}
+	for _wtp in player.temp_weapons:
+		_wtemp_d[String(_wtp.get("type", ""))] = true
+	var _wexpect: int = _wdistinct.size() + maxi(0, MetaProgress.weapon_slots() - _wperm_n) \
+		+ _wtemp_d.size()
+	if wbar.get_child_count() != _wexpect:
+		_fail("商店武器栏槽数不对（%d != %d，武器 %d/临时 %d）"
+			% [wbar.get_child_count(), _wexpect, _wperm_n, player.temp_weapons.size()])
+		return
 	# 购买
 	GameState.materials += 999
 	var mats0: int = GameState.materials
@@ -698,6 +716,28 @@ func _check_shop() -> void:
 	if shop.get_viewport().gui_get_focus_owner() == null:
 		_fail("刷新后商店焦点丢失（手柄断导航）")
 		return
+	# 波末升级压住（UI 排序需求）：hold 期间升级只积压 level_queue、不弹卡，
+	# 解除后回到 PLAYING 才补弹 —— 保证进化/盒子/商店不与升级卡叠屏
+	var lu: Control = _main.get_node("UI/LevelUp")
+	var _q0: int = GameState.level_queue
+	GameState.set_phase(GameState.Phase.PLAYING)   # 模拟波末结算瞬间仍是 PLAYING（真实 bug 路径）
+	lu.set_hold(true)
+	GameState.gain_xp(Config.xp_need(GameState.level))
+	if GameState.level_queue != _q0 + 1 or lu.visible:
+		_fail("hold 期间升级卡不应弹出（queue=%d visible=%s）"
+			% [GameState.level_queue, lu.visible])
+		return
+	GameState.set_phase(GameState.Phase.SHOP)      # 结算流程收尾进商店 → 自动解除压住
+	lu.set_hold(false)
+	GameState.set_phase(GameState.Phase.PLAYING)   # 模拟下一波开场 → 补弹积压升级
+	if not lu.visible or GameState.level_queue != _q0 + 1:
+		_fail("回到 PLAYING 未补弹升级卡（queue=%d visible=%s）"
+			% [GameState.level_queue, lu.visible])
+		return
+	# 恢复现场（不真选卡：升级内容是随机的，随机不进断言，也不污染后续数值断言）
+	GameState.set_phase(GameState.Phase.SHOP)
+	lu.visible = false
+	GameState.level_queue = _q0
 	_check_shop_rules()
 	_check_shop_evolve()
 	# 下一波
@@ -2467,24 +2507,25 @@ func _check_run_rules() -> void:
 		_fail("waves 未 clamp 到下限 5")
 		return
 	# 4) 合成难度条目：字段完整 + 与规则值一致 + 无浮点尾差
-	# 基准固定为 normal（四维全 1.0 / 精英 0），此时"规则倍率"与"最终值"相等，
-	# 可以直接校验纯倍率；基准继承的正确性在 4b 单独验
+	# 最终值 = 基准值 × 规则值（与 4b 同口径）。⚠️ 第 14 轮起 normal 的 dmg_mult = 0.9，
+	# 不再是"四维全 1.0 的恒等基准"，所以这里**不能**写死 1.3 —— 按基准继承校验。
 	RunRules.base_difficulty_id = "normal"
 	RunRules.set_value("enemy_hp", 1.8)
 	RunRules.set_value("enemy_dmg", 1.3)
 	RunRules.set_value("spawn_density", 1.6)
 	RunRules.set_value("elite_chance", 0.25)
 	var injected := RunRules.inject_difficulty()
+	var nrm_base := Registry.get_difficulty("normal")
 	for field in ["id", "name", "hp_mult", "dmg_mult", "spawn_mult", "elite_chance"]:
 		if not injected.has(field):
 			_fail("合成难度条目缺字段：" + field)
 			return
 	if String(injected.id) != RunRules.CUSTOM_DIFF_ID \
-			or not is_equal_approx(float(injected.hp_mult), 1.8) \
-			or not is_equal_approx(float(injected.dmg_mult), 1.3) \
-			or not is_equal_approx(float(injected.spawn_mult), 1.6) \
-			or not is_equal_approx(float(injected.elite_chance), 0.25):
-		_fail("合成难度条目数值与规则不一致（基准 normal 时应等于规则值）")
+			or not is_equal_approx(float(injected.hp_mult), float(nrm_base.hp_mult) * 1.8) \
+			or not is_equal_approx(float(injected.dmg_mult), float(nrm_base.dmg_mult) * 1.3) \
+			or not is_equal_approx(float(injected.spawn_mult), float(nrm_base.spawn_mult) * 1.6) \
+			or not is_equal_approx(float(injected.elite_chance), float(nrm_base.elite_chance) + 0.25):
+		_fail("合成难度条目数值与规则不一致（基准 normal 时应等于 基准值×规则值）")
 		return
 	# 4b) **方案 A 核心：基准难度继承 + 倍率叠乘**
 	# 噩梦 hp 2.2 / dmg 1.6 / spawn 1.5 / elite 0.20；规则倍率 1.8 / 1.3 / 1.6 / +0.25
@@ -2533,11 +2574,12 @@ func _check_run_rules() -> void:
 	# 显式重新注入 —— 上面 4b 最后一次注入用的是噩梦基准，不重注入会读到那次的条目
 	RunRules.inject_difficulty()
 	var via_registry := Registry.get_difficulty(RunRules.CUSTOM_DIFF_ID)
-	if via_registry.is_empty() or not is_equal_approx(float(via_registry.hp_mult), 1.8) \
-			or not is_equal_approx(float(via_registry.dmg_mult), 1.3) \
-			or not is_equal_approx(float(via_registry.spawn_mult), 1.6) \
-			or not is_equal_approx(float(via_registry.elite_chance), 0.25):
-		_fail("Registry 未能读到自定义难度条目（难度系统未接通；hp=%.3f 应=1.8）" % float(via_registry.get("hp_mult", -1.0)))
+	if via_registry.is_empty() or not is_equal_approx(float(via_registry.hp_mult), float(nrm_base.hp_mult) * 1.8) \
+			or not is_equal_approx(float(via_registry.dmg_mult), float(nrm_base.dmg_mult) * 1.3) \
+			or not is_equal_approx(float(via_registry.spawn_mult), float(nrm_base.spawn_mult) * 1.6) \
+			or not is_equal_approx(float(via_registry.elite_chance), float(nrm_base.elite_chance) + 0.25):
+		_fail("Registry 未能读到自定义难度条目（难度系统未接通；hp=%.3f 应=%.3f）" % [
+			float(via_registry.get("hp_mult", -1.0)), float(nrm_base.hp_mult) * 1.8])
 		return
 	# 6) apply_to_run：启用 → 返回 "custom" 且记录基准；关闭 → 原样返回内置 id
 	RunRules.active = true   # 步骤 1 的往返测试把 active 关掉了，这里显式恢复
@@ -6219,9 +6261,9 @@ func _check_round9_boss_terrain() -> void:
 		_fail("无尽 BOSS 被误判为中间/最终 BOSS（会被限时或直接通关）")
 		return
 	GameState.endless = false
-	# ---- 4. 血量随波次成长 + 最终波锚点 1.0（既有 W20 平衡不变）+ 中间 BOSS 有时限 ----
-	if not is_equal_approx(Config.boss_hp_scale(total), 1.0):
-		_fail("最终 BOSS 血量锚点应为 1.0（= 改动前的值），实为 %.3f" % Config.boss_hp_scale(total))
+	# ---- 4. 血量随波次成长 + 最终波锚点 0.85（第 14 轮再砍 15%）+ 中间 BOSS 有时限 ----
+	if not is_equal_approx(Config.boss_hp_scale(total), 0.85):
+		_fail("最终 BOSS 血量锚点应为 0.85（第 14 轮 W20 再砍 15%），实为 %.3f" % Config.boss_hp_scale(total))
 		return
 	var s4 := Config.boss_hp_scale(4)
 	var s8 := Config.boss_hp_scale(8)
