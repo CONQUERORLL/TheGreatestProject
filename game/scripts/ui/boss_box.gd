@@ -51,9 +51,11 @@ func open(ids: Array) -> void:
 	_desc.text = "BOSS 的战利品 · 选一件带走"
 	if UiMetrics.prefers_full_page():
 		_desc.custom_minimum_size = Vector2(minf(520.0, UiMetrics.available().x), UiMetrics.dp(48.0))
+	# 第 13 轮：同 level_up_ui._build_cards —— remove_child 已先把旧卡摘出树，
+	# 用 queue_free 把销毁推到帧末，避免在信号发射途中销毁发射者（lock 报错 + 孤儿泄漏）
 	for c in _cards.get_children():
 		_cards.remove_child(c)
-		c.free()   # 立即删除：queue_free 会让本帧 get_children 返回旧+新混合
+		c.queue_free()
 	var grid := UiMetrics.card_grid(_ids.size(), CARD_WANT,
 		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),
 		UiMetrics.dp(BOX_RESERVE_H))

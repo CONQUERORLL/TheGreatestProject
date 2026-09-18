@@ -72,9 +72,11 @@ func _grab_default() -> void:
 		_buttons[0].grab_focus()
 
 func _build_choices() -> void:
+	# 第 13 轮：同 level_up_ui._build_cards —— remove_child 已先把旧卡摘出树，
+	# 用 queue_free 把销毁推到帧末，避免在信号发射途中销毁发射者（lock 报错 + 孤儿泄漏）
 	for c in _cards.get_children():
 		_cards.remove_child(c)
-		c.free()   # 立即删除：queue_free 会让本帧 get_children 返回旧+新混合
+		c.queue_free()
 	var choices: Array = _card.get("choices", [])
 	# 卡阵按可用区域自适应：桌面恒为一行 200×208，小屏自动收窄/换行（详见 UiMetrics.card_grid）
 	var grid := UiMetrics.card_grid(choices.size(), CARD_WANT,

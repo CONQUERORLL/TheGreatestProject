@@ -28,6 +28,8 @@ func _ready() -> void:
 	SaveRun.set_storage_root_for_tests(TEST_SAVE_ROOT)
 	# 逐波平衡日志（第 8 轮）同款隔离：用例会真的写 user:// 日志，绝不能落到正式档上
 	BalanceLog.set_storage_root_for_tests(TEST_SAVE_ROOT)
+	# 第 13 轮：整局轨迹日志同款隔离（它每 1s 落一次盘，不隔离会写进正式 run_trace/）
+	RunTrace.set_dir_for_tests(TEST_SAVE_ROOT + "/run_trace/")
 	_cleanup_test_storage(false)
 	# 隔离本机天赋档（必须在清理之后：清理会还原存储路径）
 	MetaProgress.set_storage_path_for_tests(TEST_META_PATH)
@@ -562,10 +564,29 @@ func _check_levelup() -> void:
 			[GameState.phase, GameState.level_queue, ui.card_count()])
 		return
 	# 逐次排空：每级弹一次、队列每次 -1（与波末排空同款写法，不另造时序）
+	# ⚠️ 第 13 轮：刻意走**真实 Button.pressed 发射**，不再直接调 ui._choose(0)。
+	#   直接调用绕开了 Button 的发射栈，会让「信号发射途中销毁发射者」这类缺陷
+	#   对冒烟完全隐形 —— 线上那次卡死的 22 条 object.cpp:2324 就是这么漏掉的：
+	#   全项目冒烟里没有一处是经由真实点击驱动选卡的。
 	var pops := 0
 	while GameState.level_queue > 0 or ui.visible:
 		if ui.visible:
-			ui._choose(0)
+			var cards_node: Node = ui.get_node("Center/Box/Cards")
+			var btn := cards_node.get_child(0) as Button
+			if btn == null:
+				_fail("升级卡按钮缺失（Cards 子节点数=%d）" % cards_node.get_child_count())
+				return
+			btn.pressed.emit()
+			# 回归闸一：queue_free 是帧末销毁，发射返回时按钮必须仍然有效。
+			if not is_instance_valid(btn):
+				_fail("选卡后发射者按钮被同步销毁（信号发射途中销毁了发射者）")
+				return
+			# 回归闸二：重建卡阵后旧按钮必须处于「已排队删除」状态，
+			# 不能是「已脱离场景树但没人管」的孤儿节点。
+			# 若哪天改回 free()：Godot 的 lock 会拦下销毁 → 既脱树又未排队 → 这里必须红。
+			if btn.get_parent() == null and not btn.is_queued_for_deletion():
+				_fail("重建卡阵后按钮成了孤儿节点（已脱离场景树但未排队删除）")
+				return
 			pops += 1
 		else:
 			_fail("一级选一次：还有 %d 级没弹卡就关窗了" % GameState.level_queue)
@@ -2226,6 +2247,7 @@ func _check_items() -> void:
 	# 无论断言是否失败都要还原规则状态：_check_run_rules 会打开自定义规则并把
 	# 波次总数改成 18，留着会污染后续 BOSS 波 / 无尽用例（曾因此出现假失败）
 	_restore_run_rules()
+	_check_shop_diminishing()
 	if _failed:
 		return
 	await _check_endless()
@@ -2499,6 +2521,101 @@ func _check_run_rules() -> void:
 	#    曾经它"碰巧"还能过（两个错误互相抵消），改成 20 波制后立刻暴露。
 	RunRules.apply_from_save("garbage")
 	print("SMOKE: run rules OK")
+
+## 第 13 轮：商店刷新的「边际递减」+「补短板」倾向
+## 起因：范围类属性收益是**面积**（DPS ∝ (1+b)²），边际收益随投入递增 —— 越叠越强；
+## 而 dmg_mult 之类是线性的。对策是按当前投入降低它继续出现的概率。
+## ⚠️ 全部走**纯函数**断言（不抽商店、不看刷到了什么），避免随机性进断言。
+func _check_shop_diminishing() -> void:
+	var p: Node2D = _main.get_node("Player")
+	var stats_backup: Dictionary = p.stats.duplicate()
+	var e_geo := { "effects": { "aoe_radius_bonus": 0.20 } }
+	var e_lin := { "effects": { "dmg_mult": 0.20 } }
+	# ---- ① 免费额度内完全不衰减（期望取自被测常量，不写死数值）----
+	var st: Dictionary = stats_backup.duplicate()
+	st["aoe_radius_bonus"] = Config.DIM_GEO_FREE
+	var m_free: float = Config.diminish_mult(e_geo, st)
+	if m_free > 1.001:
+		_fail("边际递减：免费额度内不该衰减（得到 %.3f）" % m_free)
+		return
+	# ---- ② 超过免费额度后确实下降，且极端投入不击穿下限 ----
+	st["aoe_radius_bonus"] = Config.DIM_GEO_FREE + Config.DIM_GEO_SOFT
+	var m_mid: float = Config.diminish_mult(e_geo, st)
+	if m_mid >= m_free - 0.001:
+		_fail("边际递减：投入增加后权重未下降（%.3f → %.3f）" % [m_free, m_mid])
+		return
+	st["aoe_radius_bonus"] = 100.0   # 极端投入
+	var m_max: float = Config.diminish_mult(e_geo, st)
+	if m_max < Config.DIM_GEO_FLOOR - 0.001 or m_max >= m_mid:
+		_fail("边际递减：极端投入未落在下限（%.3f，下限 %.3f）" % [m_max, Config.DIM_GEO_FLOOR])
+		return
+	# ---- ③ 几何类必须比线性类衰减更狠（同类属性，同投入）----
+	#    dmg_mult 是 **1.0 基准的倍率**，投入量要按 `stats - 1.0` 算，
+	#    这里刻意给到与几何例相同的「投入量」，才能做同尺度比较。
+	st["dmg_mult"] = 1.0 + Config.DIM_GEO_FREE + Config.DIM_GEO_SOFT
+	var m_lin: float = Config.diminish_mult(e_lin, st)
+	if m_lin <= m_mid:
+		_fail("边际递减：几何类未比线性类更狠（geo=%.3f lin=%.3f）" % [m_mid, m_lin])
+		return
+	# ---- ④ 反向对照：dmg_mult 若被当成 0 基准，投入量会多算 1.0 → 这里就不该还是 1.0 ----
+	st["dmg_mult"] = 1.0 + Config.DIM_LIN_FREE + Config.DIM_LIN_SOFT
+	if Config.diminish_mult(e_lin, st) >= 1.0:
+		_fail("边际递减：dmg_mult 未按 1.0 基准计入投入")
+		return
+	# ---- ⑤ 负值（代价）不该被抑制，否则「带代价的强力道具」会反向更好刷 ----
+	st["dmg_mult"] = 1.0 - 0.5
+	var e_neg := { "effects": { "dmg_mult": -0.10 } }
+	if Config.diminish_mult(e_neg, st) < 0.999:
+		_fail("边际递减：负值（代价）不应被抑制")
+		return
+	# ---- ⑥ 复合条目取**最狠的一档**而非连乘（连乘会双重惩罚，可强度并没翻倍）----
+	var st2: Dictionary = stats_backup.duplicate()
+	st2["aoe_radius_bonus"] = 2.0
+	st2["dmg_mult"] = 1.0   # 线性侧零投入 → 该侧不衰减
+	var m_mix: float = Config.diminish_mult(
+		{ "effects": { "aoe_radius_bonus": 0.10, "dmg_mult": 0.10 } }, st2)
+	var m_geo_only: float = Config.diminish_mult(
+		{ "effects": { "aoe_radius_bonus": 0.10 } }, st2)
+	if absf(m_mix - m_geo_only) > 0.001:
+		_fail("边际递减：复合条目应取最狠一档而非连乘（%.3f vs %.3f）" % [m_mix, m_geo_only])
+		return
+	# ---- ⑦ 补短板：投入最少的维度提权，最多的不提权 ----
+	var counts := { "offense": 9, "area": 3, "tank": 0, "utility": 4 }
+	var s_tank: float = Config.shortfall_mult({ "effects": { "max_hp": 20.0 } }, counts)
+	var s_off: float = Config.shortfall_mult({ "effects": { "dmg_mult": 0.10 } }, counts)
+	if s_tank <= 1.0:
+		_fail("补短板：投入最少的维度未提权（%.3f）" % s_tank)
+		return
+	if s_off > 1.001:
+		_fail("补短板：投入最多的维度不该提权（%.3f）" % s_off)
+		return
+	# 反向对照：没有任何投入记录（刚开局）→ 不做引导
+	if Config.shortfall_mult({ "effects": { "max_hp": 20.0 } }, {}) > 1.001:
+		_fail("补短板：无投入记录时不该引导")
+		return
+	# ---- ⑧ 波次放宽：后期波次免费额度更大 → 同一投入被压得更轻 ----
+	var st_w: Dictionary = stats_backup.duplicate()
+	st_w["aoe_radius_bonus"] = Config.DIM_GEO_FREE + Config.DIM_GEO_SOFT
+	var m_w1: float = Config.diminish_mult(e_geo, st_w, 1)
+	var m_w20: float = Config.diminish_mult(e_geo, st_w, 20)
+	if m_w1 > 1.001:
+		_fail("波次放宽：前期免费额度内不应衰减（w1=%.3f）" % m_w1)
+		return
+	if m_w20 <= m_w1 + 0.001:
+		_fail("波次放宽：后期波次未比前期压得更轻（w1=%.3f w20=%.3f）" % [m_w1, m_w20])
+		return
+	# ---- ⑨ 角标键：投入超该波免费额度时返回受抑属性名，未超额时为空 ----
+	var keys_sup := Config.dim_suppressed_keys({ "effects": { "aoe_radius_bonus": 0.20 } }, st_w, 1)
+	if keys_sup.is_empty():
+		_fail("边际递减角标：超额度未返回受抑属性键")
+		return
+	var keys_free: PackedStringArray = Config.dim_suppressed_keys(
+		{ "effects": { "aoe_radius_bonus": 0.20 } }, st_w, 20)
+	if not keys_free.is_empty():
+		_fail("边际递减角标：后期波次免费额度内不应仍标为受抑")
+		return
+	p.stats = stats_backup
+	print("SMOKE: shop diminishing + shortfall OK")
 
 ## HUD 状态图例：无来源隐藏 / 同状态武器取最大命中率 / 道具独立概率合并 / 强化加成行
 func _check_status_legend() -> void:

@@ -11,6 +11,7 @@ var wave_manager: Node   # systems/wave_manager.gd 引用，由 main 注入
 var main: Node           # scripts/main.gd 引用（商店关闭后询问是否先弹江湖奇遇）
 var goods: Array = []    # 商品 [{kind, wtype/id, ico, name, desc, rarity, base_price, sold, locked}]
 var _affinity_cache: Array = []   # 本次商店的构筑亲和标签（开店时算一次，见 _affinity）
+var _dim_cache: Dictionary = {}   # 第 13 轮：各维度已投入条目数（开店时算一次，见 _dim_counts）
 
 var _reroll_cost := 0
 var _wave := 0
@@ -442,6 +443,7 @@ func set_lock(i: int, on: bool) -> void:
 func _roll_goods() -> void:
 	goods = []
 	_affinity_cache.clear()   # 开店时重算一次构筑亲和（本店期间武器/法宝不会变）
+	_dim_cache.clear()        # 第 13 轮：短板维度统计同样开店重算一次
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	for _i in Config.SHOP_SLOTS:
 		goods.append(_roll_one(weapon_full))
@@ -656,12 +658,16 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
 			"base_price": int(u.get("price", 22)), "synergy": _synergy(u),
+			"dim": Config.diminish_mult(u, player.stats, _wave),   # 第 13 轮：观测用
+			"dim_keys": Config.dim_suppressed_keys(u, player.stats, _wave),
 			"sold": false, "locked": false }
 	var it: Dictionary = GameRng.weighted_pick(
 		_rarity_pool(Registry.item_list(), player.items_owned))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
 		"base_price": int(it.price), "synergy": _synergy(it),
+		"dim": Config.diminish_mult(it, player.stats, _wave),   # 第 13 轮：观测用
+		"dim_keys": Config.dim_suppressed_keys(it, player.stats, _wave),
 		"sold": false, "locked": false }
 
 ## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
@@ -679,10 +685,39 @@ func _rarity_pool(entries: Array, owned: Dictionary) -> Array:
 			continue   # 金/红唯一件已持有 → 不再出现
 		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
 			* Config.affinity_mult(Config.entry_tags(e), aff)
+		# 第 13 轮两层倾向：
+		#   ① 边际递减 —— 该族已经投入越多，越难再刷到（范围类是面积收益，边际递增）
+		#   ② 补短板   —— 当前投入最少的维度提权，形成「别再堆了，去补另一维」的引导
+		# 两者互斥不了也不该互斥：一是「别过火」，一是「补空白」，叠乘才是完整意图。
+		w *= Config.diminish_mult(e, player.stats, _wave)
+		w *= Config.shortfall_mult(e, _dim_counts())
 		if Config.is_assim_entry(e):
 			w *= _assim_weight_mult()   # 连续没刷到 → 越刷越容易出（第 9 轮）
 		pool.append({ "item": e, "w": w })
 	return pool
+
+## 第 13 轮：统计玩家已在各「短板维度」投入了多少件（升级 + 道具，按持有份数累加）。
+## 用**件数**而不是 stats 数值做基准 —— 不同维度的属性量纲不同（max_hp 是百级、
+## crit_ch 是零点零几），直接比数值没有可比性，件数是天然的公共尺子。
+func _dim_counts() -> Dictionary:
+	if not _dim_cache.is_empty():
+		return _dim_cache
+	# ⚠️ 四个维度**恒先置 0**：空字典会让 _dim_cache.is_empty() 永远为真（反复重算），
+	#    也会让 Config.shortfall_mult 走「刚开局不引导」分支，补短板永远不生效。
+	var counts := { "offense": 0, "area": 0, "tank": 0, "utility": 0 }
+	for uid in player.upgrades_owned:
+		_bump_dim(counts, Registry.upgrades.get(String(uid), {}),
+			int(player.upgrades_owned[uid]))
+	for iid in player.items_owned:
+		_bump_dim(counts, Registry.items.get(String(iid), {}), int(player.items_owned[iid]))
+	_dim_cache = counts
+	return _dim_cache
+
+static func _bump_dim(counts: Dictionary, e: Dictionary, n: int) -> void:
+	var d := Config.entry_dim(e)
+	if d == "":
+		return
+	counts[d] = int(counts.get(d, 0)) + n
 
 ## 唯一件闸门要用的「当前持有表」：升级看 upgrades_owned，道具看 items_owned。
 ## 法宝不在此列 —— 它一直走 Registry.artifact_pool(artifacts_owned, …) 的独立通道。
@@ -904,6 +939,25 @@ func _make_good_card(i: int) -> Control:
 				else:
 					g.desc = "进化 %d/%d → %s（再买 %d 把）" % [owned, need, ex_name, need - owned]
 	var desc := Label.new()
+	# 第 13 轮补充：边际递减压制角标 —— 让玩家看见「这件为什么老不出 / 出现概率被压」。
+	# 只压到一定程度才亮标（dim < 0.999 即已被压），并显示具体是哪个属性超额。
+	var dim: float = float(g.get("dim", 1.0))
+	if dim < 0.999:
+		var badge := Label.new()
+		var btxt := "↓ 边际递减 ×%.2f" % dim
+		var keys: PackedStringArray = PackedStringArray(g.get("dim_keys", []))
+		if keys.size() > 0:
+			var parts: PackedStringArray = []
+			for kk in keys:
+				parts.append(Config.dim_key_label(String(kk)))
+			btxt += " · " + "、".join(parts)
+		badge.text = btxt
+		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		badge.add_theme_font_size_override("font_size", 10)
+		badge.add_theme_color_override("font_color", Color("e8a13a"))
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		box.add_child(badge)
 	# 契合标记：让「这件东西跟你的角色 / 武器是一路的」一眼可见
 	if int(g.get("synergy", 0)) > 0:
 		desc.text = "✦ 契合当前构筑\n" + String(g.desc)

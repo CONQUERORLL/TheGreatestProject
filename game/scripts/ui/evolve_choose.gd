@@ -31,9 +31,11 @@ func setup(choice: Dictionary) -> void:
 	# 触屏没有数字键/方向键，提示换成点按
 	var how := "点按选择分支" if UiMetrics.is_touch else "按 1~N · 手柄方向键 + A · 鼠标点击"
 	_sub.text = "持有 %d 把 %s · %s" % [int(choice.get("need", 0)), String(cfg.get("name", "")), how]
+	# 第 13 轮：同 level_up_ui._build_cards —— remove_child 已先把旧卡摘出树，
+	# 用 queue_free 把销毁推到帧末，避免在信号发射途中销毁发射者（lock 报错 + 孤儿泄漏）
 	for c in _cards.get_children():
 		_cards.remove_child(c)
-		c.free()
+		c.queue_free()
 	# 进化分支可能多达 4 条：窄屏横排放不下时自动落成 2×2，而不是被 CenterContainer 裁掉
 	var grid := UiMetrics.card_grid(branches.size(), CARD_WANT,
 		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),

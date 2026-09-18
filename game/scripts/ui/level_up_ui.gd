@@ -162,9 +162,13 @@ func card_count() -> int:
 	return _choices.size()
 
 func _build_cards() -> void:
+	# 第 13 轮：改用 queue_free（销毁推到帧末）。remove_child 已先把旧卡摘出树，
+	# 所以 get_children() 不会返回「旧+新混合」——原注释担心的问题并不存在；
+	# 反过来 free() 才是真隐患：若撞上「该按钮自己正在发射 pressed」，Godot 的 lock
+	# 会拦下销毁（报 "Object is locked and can't be freed"），按钮变成孤儿节点泄漏。
 	for c in _cards.get_children():
 		_cards.remove_child(c)
-		c.free()   # 立即删除：不用 queue_free，否则帧末 get_children 返回旧+新混合
+		c.queue_free()
 	# 卡阵按可用区域自适应：桌面恒为一行 200×220，小屏自动收窄/换行（详见 UiMetrics.card_grid）
 	var grid := UiMetrics.card_grid(_choices.size(), CARD_WANT,
 		UiMetrics.dp(CARD_MIN_W), UiMetrics.dp(CARD_MIN_H), UiMetrics.dp(CARD_GAP),

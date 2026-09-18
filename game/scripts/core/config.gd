@@ -1922,6 +1922,170 @@ static func affinity_mult(item_tags: Array, affinity: Array) -> float:
 		return 1.0
 	return 1.0 + AFFINITY_BONUS * float(hit)
 
+## ╭──────────────────────────────────────────────────────────────────╮
+## │ 第 13 轮：商店刷新的「边际递减」+「补短板」倾向                    │
+## ╰──────────────────────────────────────────────────────────────────╯
+##
+## 起因（用户反馈）：「炸弹的范围这类属性，越大收益率越高，不合理」。
+## 数学根因**不是数值填错**，而是收益的次数不同：
+##   · 范围类作用于**面积**：覆盖面积 ∝ (1+b)²，敌人密度固定 → DPS ∝ (1+b)²
+##     边际收益 dDPS/db ∝ (1+b) —— **越叠越强**（递增）
+##   · dmg_mult / as_mult / crit 是**线性**的：边际收益恒定
+## 所以同样一件「+20%」，第 4 张范围给的**绝对面积增量**远大于第 1 张。
+## 例：土炸弹 splash 95px，叠 3 张高爆装药(+20%) → 半径 ×1.728 → 覆盖面积 2.99×，
+##     而代价只是 3 个格子 + dmg −15%。
+##
+## 对策刻意**不改数值**（那会动到体检表与冒烟的既有口径），而是降低它继续出现的概率：
+## 投入越多 → 该族在商店里越难刷到 → 强度增长被压回波次曲线附近。
+
+## 几何类：收益是二次的（面积），边际递增 —— 抑制最狠的一族
+const GEOMETRIC_STATS := ["melee_range_bonus", "aoe_radius_bonus",
+	"bullet_range_bonus", "throw_range_bonus", "proj_spread_mult"]
+## 线性乘法类：边际恒定，但堆高后绝对值同样会超出波次难度 —— 轻度抑制
+const LINEAR_STATS := ["dmg_mult", "as_mult", "crit_ch", "crit_mult", "status_dmg_mult"]
+
+## ⚠️⚠️ 受控属性的**基准值**：dmg_mult / as_mult / crit_mult 是**倍率语义**（1.0 基准），
+## 其余是**增量语义**（0.0 基准）。apply_item / apply_effects 一律走**加法**
+## （player.gd:686 `stats[k] = stats.get(k,0.0) + effects[k]`），
+## 所以「玩家额外投入了多少」= stats[k] − 基准[k]。混用会差一个数量级（实测坑）。
+const DIM_BASE := {
+	"melee_range_bonus": 0.0, "aoe_radius_bonus": 0.0, "bullet_range_bonus": 0.0,
+	"throw_range_bonus": 0.0, "proj_spread_mult": 0.0,
+	"dmg_mult": 1.0, "as_mult": 1.0, "crit_ch": 0.05, "crit_mult": 2.0,
+	"status_dmg_mult": 0.0,
+}
+
+## 衰减参数：free = 免费额度（投入不超过它完全不衰减）／soft = 陡度／floor = 权重下限
+## 曲线：w = max(floor, 1 / (1 + (cur − free) / soft))
+## 几何类（用户选「中等」）：+25% 内不衰减 → +50%:0.67 → +100%:0.40 → +200%:0.22 → 下限 0.20
+const DIM_GEO_FREE := 0.25
+const DIM_GEO_SOFT := 0.50
+const DIM_GEO_FLOOR := 0.20
+## 线性类「轻度」（用户选「几何类 + 线性乘法类」里的线性那一档）：
+## +50% 内不衰减 → +100%:0.67 → +200%:0.45，下限 0.45 —— 不至于让输出件彻底绝迹
+const DIM_LIN_FREE := 0.50
+const DIM_LIN_SOFT := 1.00
+const DIM_LIN_FLOOR := 0.45
+
+## 波次放宽（第 13 轮补充）：免费额度随波次增大。
+## 后期波次怪物 / BOSS 强度本就按曲线指数级上涨，玩家相应的数值投入也应被允许更高，
+## 不该在波次早期就被边际递减压死。公式：
+##   free(wave) = base + min(CAP, max(0, wave − 1) × PER_WAVE)
+## 几何类与线性类各用各自的 base，享受同一个放宽节奏；CAP 封顶避免无尽模式里免费额度无限膨胀。
+const DIM_FREE_PER_WAVE := 0.03
+const DIM_FREE_CAP_BONUS := 0.60
+static func dim_free_geo(wave: int) -> float:
+	return DIM_GEO_FREE + minf(DIM_FREE_CAP_BONUS, maxf(0.0, float(wave) - 1.0) * DIM_FREE_PER_WAVE)
+static func dim_free_lin(wave: int) -> float:
+	return DIM_LIN_FREE + minf(DIM_FREE_CAP_BONUS, maxf(0.0, float(wave) - 1.0) * DIM_FREE_PER_WAVE)
+
+## 补短板用的维度归属（键 → 维度），与上面两张 STATS 表同源
+const DIM_OF_KEY := {
+	"dmg_mult": "offense", "as_mult": "offense", "crit_ch": "offense",
+	"crit_mult": "offense", "status_dmg_mult": "offense", "status_chance": "offense",
+	"melee_range_bonus": "area", "aoe_radius_bonus": "area", "bullet_range_bonus": "area",
+	"throw_range_bonus": "area", "proj_spread_mult": "area",
+	"max_hp": "tank", "armor": "tank", "dodge": "tank", "regen": "tank", "lifesteal": "tank",
+	"speed_mult": "utility", "base_speed": "utility", "harvesting": "utility",
+	"pickup_range": "utility",
+}
+## 短板提权：投入最少的维度 ×1.35，次少 ×1.15，其余 1.0
+const SHORTFALL_MULT_WORST := 1.35
+const SHORTFALL_MULT_SECOND := 1.15
+
+## 玩家在该属性上**额外投入**了多少（相对基准，负值归 0）
+static func dim_invested(stats: Dictionary, key: String) -> float:
+	var base: float = float(DIM_BASE.get(key, 0.0))
+	return maxf(0.0, float(stats.get(key, base)) - base)
+
+static func _dim_curve(cur: float, free_q: float, soft: float, floor_v: float) -> float:
+	var over := maxf(0.0, cur - free_q)
+	if over <= 0.0:
+		return 1.0
+	return maxf(floor_v, 1.0 / (1.0 + over / soft))
+
+## 边际递减系数：条目每命中一个受控属性，就按该属性的**当前投入量**衰减。
+## ⚠️ 命中多个时取**最狠的一个**（min）而不是连乘 —— 连乘会让「范围+暴击」这类复合条目
+##    被双重惩罚，可它的实际强度并没有翻倍。
+## ⚠️ 只惩罚**正投入**：dmg_mult / proj_spread_mult 可能为**负**（那是代价不是收益），
+##    负值若也抑制，会出现「带代价的强力道具反而更好刷」的反向激励。
+static func diminish_mult(entry: Dictionary, stats: Dictionary, wave: int = 1) -> float:
+	var eff: Dictionary = entry.get("effects", {})
+	if eff.is_empty():
+		return 1.0
+	var gfree := dim_free_geo(wave)
+	var lfree := dim_free_lin(wave)
+	var m := 1.0
+	for k in GEOMETRIC_STATS:
+		if eff.has(k):
+			m = minf(m, _dim_curve(dim_invested(stats, String(k)),
+				gfree, DIM_GEO_SOFT, DIM_GEO_FLOOR))
+	for k2 in LINEAR_STATS:
+		if eff.has(k2):
+			m = minf(m, _dim_curve(dim_invested(stats, String(k2)),
+				lfree, DIM_LIN_SOFT, DIM_LIN_FLOOR))
+	return m
+
+## 返回当前**正在被抑制**的受控属性键（投入已超该波次的免费额度）。
+## 空数组 = 未受抑制。货架角标用它告诉玩家「这件为什么老不出 / 出现概率被压」。
+static func dim_suppressed_keys(entry: Dictionary, stats: Dictionary, wave: int = 1) -> PackedStringArray:
+	var eff: Dictionary = entry.get("effects", {})
+	var out: PackedStringArray = []
+	var gfree := dim_free_geo(wave)
+	var lfree := dim_free_lin(wave)
+	for k in GEOMETRIC_STATS:
+		if eff.has(k) and dim_invested(stats, String(k)) > gfree:
+			out.append(String(k))
+	for k2 in LINEAR_STATS:
+		if eff.has(k2) and dim_invested(stats, String(k2)) > lfree:
+			out.append(String(k2))
+	return out
+
+## 货架角标用的中文名：告诉玩家「这件为什么被压」（具体是哪个属性）
+const DIM_KEY_LABEL := {
+	"melee_range_bonus": "近战范围", "aoe_radius_bonus": "AOE范围", "bullet_range_bonus": "弹程",
+	"throw_range_bonus": "投掷范围", "proj_spread_mult": "散射角",
+	"dmg_mult": "增伤", "as_mult": "攻速", "crit_ch": "暴击率", "crit_mult": "暴伤",
+	"status_dmg_mult": "异常增伤",
+}
+
+static func dim_key_label(k: String) -> String:
+	return String(DIM_KEY_LABEL.get(k, k))
+
+## 条目属于哪个短板维度（取命中的第一个；复合条目按第一个算，够用且稳定）
+static func entry_dim(entry: Dictionary) -> String:
+	var eff: Dictionary = entry.get("effects", {})
+	for k in eff:
+		var d := String(DIM_OF_KEY.get(String(k), ""))
+		if d != "":
+			return d
+	return ""
+
+## 补短板系数：投入到最少的那个维度时提权。
+## `counts` = 各维度已持有条目数（shop_ui 开店时统计一次，见 _dim_counts）。
+## ⚠️ counts 为空（刚开局一件没买）→ 一律 1.0，不做任何引导。
+static func shortfall_mult(entry: Dictionary, counts: Dictionary) -> float:
+	if counts.is_empty():
+		return 1.0
+	var d := entry_dim(entry)
+	if d == "":
+		return 1.0
+	var mine: int = int(counts.get(d, 0))
+	var worst := -1
+	var second := -1
+	for k in counts:
+		var c: int = int(counts[k])
+		if worst < 0 or c < worst:
+			second = worst
+			worst = c
+		elif second < 0 or c < second:
+			second = c
+	if mine <= worst:
+		return SHORTFALL_MULT_WORST
+	if second >= 0 and mine <= second:
+		return SHORTFALL_MULT_SECOND
+	return 1.0
+
 ## 判断一个道具/升级是否与当前武器阵容相关（过滤掉「对当前武器无用」的武器专属强化）。
 ## 规则：
 ##   - melee_range_bonus 需要至少一把近战（melee）武器，否则是废属性

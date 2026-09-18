@@ -39,6 +39,8 @@ Leaderboard="*res://scripts/core/leaderboard.gd"
 MetaProgress="*res://scripts/core/meta_progress.gd"
 Unlocks="*res://scripts/core/unlocks.gd"
 RunRules="*res://scripts/core/run_rules.gd"
+; RunTrace 放最后：它的 _ready 要连 EventBus / GameState 的信号，必须排在二者之后
+RunTrace="*res://scripts/core/run_trace.gd"
 
 [display]
 
