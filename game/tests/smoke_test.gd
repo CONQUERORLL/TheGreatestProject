@@ -549,10 +549,11 @@ func _check_levelup() -> void:
 	if player.stats == stats_before and is_equal_approx(player.hp, hp_before):
 		_fail("升级未产生任何属性变化")
 		return
-	# ---- 单次跨两级：第 9 轮起**合并成一次选择**，收益 ×2 ----
-	# 旧行为：每个等级各弹一次、每次重抽三张 → 连升 N 级要点 N 次（用户反馈次数太多）。
-	# 本段钉两件事：① 只弹一次（仍是三选一）  ② 收益真的按级数兑现。
-	# ⚠️ 第 3 条「第二组卡有焦点」的断言已随本次行为变更删除 —— 不再有第二组卡。
+	# ---- 单次跨两级：第 12 轮起**改回「一级选一次」**（撤回第 9 轮的连升合并）----
+	# 第 9 轮：N 级合并成一次选择、收益 ×N，只弹一次（玩家看不出自己升了几级）。
+	# 第 12 轮：每级各弹一次三选一、每次重抽三张，`level_queue` 每次只 -1。
+	# 判据用**弹卡次数**：合并版跨两级只弹 1 次，逐级版必须弹 2 次。
+	# （不比较 upgrades_owned 增量：金/红唯一件会被硬闸门拦下，增量本就不确定。）
 	var need_two := Config.xp_need(GameState.level) + Config.xp_need(GameState.level + 1)
 	GameState.gain_xp(need_two + 1)
 	await get_tree().process_frame
@@ -560,31 +561,25 @@ func _check_levelup() -> void:
 		_fail("单次跨两级未生成首组卡（phase=%d queue=%d cards=%d）" %
 			[GameState.phase, GameState.level_queue, ui.card_count()])
 		return
-	if ui.merged_count() != 2:
-		_fail("连升两级未合并成一次选择（merged=%d）" % ui.merged_count())
+	# 逐次排空：每级弹一次、队列每次 -1（与波末排空同款写法，不另造时序）
+	var pops := 0
+	while GameState.level_queue > 0 or ui.visible:
+		if ui.visible:
+			ui._choose(0)
+			pops += 1
+		else:
+			_fail("一级选一次：还有 %d 级没弹卡就关窗了" % GameState.level_queue)
+			return
+		await get_tree().process_frame
+	# 反向对照：合并版这里只会是 1
+	if pops < 2:
+		_fail("一级选一次：跨两级只弹了 %d 次（应 ≥2）" % pops)
 		return
-	var pick_rarity := "common"
-	var pick_id := ""
-	if typeof(ui._choices[0]) == TYPE_DICTIONARY:
-		pick_rarity = String(ui._choices[0].get("rarity", "common"))
-		pick_id = String(ui._choices[0].get("id", ""))
-	# 期望次数从**被测数据**算：金/红唯一件的第二次会被硬闸门拒绝 → 只 +1；
-	# 其余强化吃满 merged 次。不写死 2，否则一抽到神话卡就假红。
-	var want_times := 1 if Config.is_unique_rarity(pick_rarity) else 2
-	var own_before := int(player.upgrades_owned.get(pick_id, 0))
-	ui._choose(0)
-	await get_tree().process_frame
 	if GameState.phase != GameState.Phase.PLAYING or GameState.level_queue != 0:
-		_fail("连升完成后未恢复 PLAYING（phase=%d queue=%d）" %
+		_fail("两级选完后未恢复 PLAYING（phase=%d queue=%d）" %
 			[GameState.phase, GameState.level_queue])
 		return
-	if pick_id != "":
-		var got := int(player.upgrades_owned.get(pick_id, 0)) - own_before
-		print("SMOKE: merge pick=%s rarity=%s applied=%d want=%d" %
-			[pick_id, pick_rarity, got, want_times])
-		if got != want_times:
-			_fail("连升收益未按级数兑现（%s 期望 +%d，实际 +%d）" % [pick_id, want_times, got])
-			return
+	print("SMOKE: per-level level-up OK（跨两级弹了 %d 次）" % pops)
 	# ---- 空白卡回归：品阶门槛把亲和保底池清零时（契合升级全是 epic 且 Lv<3），
 	# weighted_pick 曾返回 null → 第三张卡只剩 [3] 的空白卡。复现路径：
 	# 火焰喷射器开局 → 亲和标签 {burn} → 契合升级只有 epic 的 burningheart（Lv 1 权重 0）----
