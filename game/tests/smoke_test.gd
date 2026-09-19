@@ -666,6 +666,77 @@ func _check_shop() -> void:
 		_fail("商店武器栏槽数不对（%d != %d，武器 %d/临时 %d）"
 			% [wbar.get_child_count(), _wexpect, _wperm_n, player.temp_weapons.size()])
 		return
+	# #7 同店去重：货架上不得出现两件相同的唯一件（金/红道具升级、或同一法宝）
+	var seen_uniq := {}
+	for g_u in shop.goods:
+		var gid_u := String(g_u.get("id", ""))
+		if gid_u == "":
+			continue
+		var is_uniq: bool = String(g_u.get("kind", "")) == "artifact" \
+			or Config.is_unique_rarity(String(g_u.get("rarity", "common")))
+		if not is_uniq:
+			continue
+		if seen_uniq.has(gid_u):
+			_fail("#7 商店出现两件相同的唯一件（%s）" % gid_u)
+			return
+		seen_uniq[gid_u] = true
+	# #7 确定性验证过滤本身：把某件唯一件标为「本店已摆出」后必须从池中消失
+	var uniq_probe: Dictionary = {}
+	for cand_u in Registry.item_list():
+		if not Config.is_unique_rarity(String(cand_u.get("rarity", "common"))):
+			continue
+		if not Config.unique_pool_ok(cand_u, player.items_owned):
+			continue
+		if not Config.entry_weapon_relevant(cand_u, player.weapons):
+			continue
+		uniq_probe = cand_u
+		break
+	if uniq_probe.is_empty():
+		_fail("找不到可用作 #7 验证的金/红道具")
+		return
+	var puid := String(uniq_probe.get("id", ""))
+	if shop._rarity_pool([uniq_probe], player.items_owned, { puid: true }).size() != 0:
+		_fail("#7 同店去重失效：已摆出的唯一件仍进池（%s）" % puid)
+		return
+	if shop._rarity_pool([uniq_probe], player.items_owned, {}).size() != 1:
+		_fail("#7 反向对照失败：未被占用时该唯一件应可进池（%s）" % puid)
+		return
+	# #4a 饱和闸：用人造条目验证判据本身（不依赖具体内容数据）
+	var sat_entry: Dictionary = { "id": "probe_sat", "effects": { "status_chance": 0.10 } }
+	var st_probe: Dictionary = { "status_chance": 0.5 }
+	if Config.is_saturated_entry(sat_entry, st_probe):
+		_fail("#4a 未顶格却判为饱和（status_chance=0.5）")
+		return
+	st_probe["status_chance"] = 1.0
+	if not Config.is_saturated_entry(sat_entry, st_probe):
+		_fail("#4a 已顶格却未判为饱和（status_chance=1.0）")
+		return
+	# 反向：条目还有别的未顶格键时不算饱和（不能因为一个键满了就整件判死）
+	var mix_entry: Dictionary = { "id": "probe_mix",
+		"effects": { "status_chance": 0.10, "dmg_mult": 0.2 } }
+	if Config.is_saturated_entry(mix_entry, st_probe):
+		_fail("#4a 多键条目应只在**全部**可饱和键顶格时才判饱和")
+		return
+	# 不可饱和键（heal_flat 不在 STAT_LIMITS 内）不计入判定 → 永不被判饱和
+	var heal_entry: Dictionary = { "id": "probe_heal", "effects": { "heal_flat": 20.0 } }
+	if Config.is_saturated_entry(heal_entry, {}):
+		_fail("#4a 不可饱和键（heal_flat）不应被判饱和")
+		return
+	# #2 经济：物价指数必须加速增长（线性 + 二次项），刷新费 / 回血费同步吃指数
+	var m1 := Config.shop_price_mult(1)
+	var m10 := Config.shop_price_mult(10)
+	var m20 := Config.shop_price_mult(20)
+	if not is_equal_approx(m1, 1.0) or m10 <= 2.0 * m1 or m20 <= 2.0 * m10:
+		_fail("#2 物价指数未按加速曲线增长（W1=%.2f W10=%.2f W20=%.2f）" % [m1, m10, m20])
+		return
+	if Config.heal_price(20) <= Config.heal_price(1):
+		_fail("#2 回血费未随波次上浮（W1=%d W20=%d）"
+			% [Config.heal_price(1), Config.heal_price(20)])
+		return
+	if Config.shop_reroll_cost(20) <= Config.shop_reroll_cost(1) * 3:
+		_fail("#2 刷新费未随物价指数上浮（W1=%d W20=%d）"
+			% [Config.shop_reroll_cost(1), Config.shop_reroll_cost(20)])
+		return
 	# 购买
 	GameState.materials += 999
 	var mats0: int = GameState.materials
@@ -8012,6 +8083,9 @@ func _check_assim_gain() -> void:
 	if from_el == "" or to_el == "":
 		_fail("反应 %s 缺 from/to —— 同化度加成会静默失效" % rid)
 		return
+	# ⚠️ 反应同化度按 reaction_id 冷却发放（Config.REACTION_ASSIM_COOLDOWN_MS），
+	#    前序用例可能刚触发过同一反应 —— 先清冷却，否则下面的增益断言会假失败。
+	_main.reset_reaction_assim_for_tests()
 	EventBus.element_reaction.emit(rid, Vector2.ZERO, [])
 	var got_from: float = float(pl.stats.get("assim_" + from_el, 0.0))
 	var got_to: float = float(pl.stats.get("assim_" + to_el, 0.0))
@@ -8029,10 +8103,17 @@ func _check_assim_gain() -> void:
 			_fail("反应只应给参与的两个元素加同化度（assim_%s=%.3f 应为 0）"
 				% [ed, float(pl.stats.get("assim_" + ed, 0.0))])
 			return
+	# 冷却闸：同一次冷却窗口内再触发，不得再加（否则增益会随同屏怪数膨胀）
+	EventBus.element_reaction.emit(rid, Vector2.ZERO, [])
+	if not is_equal_approx(float(pl.stats.get("assim_" + from_el, 0.0)), got_from):
+		_fail("反应同化度冷却未生效（连续两次触发又加了 %.3f）"
+			% (float(pl.stats.get("assim_" + from_el, 0.0)) - got_from))
+		return
 	# 上限：灌满再触发，不得溢出（否则存档校验 2.0 会反过来拒档）
 	var lim: Vector2 = Registry.STAT_LIMITS["assim_" + from_el]
 	var cap: float = float(lim.y)
 	pl.stats["assim_" + from_el] = cap
+	_main.reset_reaction_assim_for_tests()   # 再清冷却，真正走到 clamp 分支
 	EventBus.element_reaction.emit(rid, Vector2.ZERO, [])
 	if float(pl.stats.get("assim_" + from_el, 0.0)) > cap + 1e-6:
 		_fail("反应同化度未 clamp 到上限（%.3f > %.3f）"

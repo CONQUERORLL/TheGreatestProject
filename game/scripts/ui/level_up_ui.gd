@@ -66,14 +66,18 @@ func open() -> void:
 	# 金/红升级 = 「唯一件」：已获得过的不再出现在三选一里
 	# （闸门本体在 player.apply_upgrade，这里只是不把它摆到台面上）
 	var up_owned: Dictionary = {}
+	var p_stats: Dictionary = {}
 	if player != null and is_instance_valid(player):
 		up_owned = player.upgrades_owned
+		p_stats = player.stats
 	var weighted: Array = []
 	for u in Registry.upgrade_list():
 		if not Config.unique_pool_ok(u, up_owned):
 			continue
 		if not Config.entry_weapon_relevant(u, wps):
 			continue   # 过滤「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
+		if Config.is_saturated_entry(u, p_stats):
+			continue   # #4a：效果已全部顶格（如命中率 100%）→ 买了不涨，不摆到台面上
 		var w: float = Config.rarity_weight(String(u.get("rarity", "common")), GameState.level) \
 			* Config.affinity_mult(Config.entry_tags(u), aff)
 		weighted.append({ "item": u, "w": w })
@@ -147,6 +151,7 @@ func _ensure_affinity_choice(aff: Array) -> void:
 	var pool: Array = []
 	var wps2: Array = player.weapons if player != null and is_instance_valid(player) else []
 	var up_owned2: Dictionary = player.upgrades_owned if player != null and is_instance_valid(player) else {}
+	var p_stats2: Dictionary = player.stats if player != null and is_instance_valid(player) else {}
 	for u in Registry.upgrade_list():
 		if taken.has(String(u.get("id", ""))):
 			continue
@@ -154,6 +159,8 @@ func _ensure_affinity_choice(aff: Array) -> void:
 			continue
 		if not Config.entry_weapon_relevant(u, wps2):
 			continue
+		if Config.is_saturated_entry(u, p_stats2):
+			continue   # #4a：保底也不能塞一件「买了不涨」的
 		var m := Config.affinity_mult(Config.entry_tags(u), aff)
 		if m <= 1.0:
 			continue

@@ -23,6 +23,10 @@ const REACTION_POPUP_CD_MS := 400    # 同名反应提示节流
 var _reaction_juice_cd := 0
 var _reaction_count := 0             # 测试观测：反应打击感触发次数
 var _reaction_popup_cd: Dictionary = {}   # reaction_id -> 下次可弹提示时间戳
+## reaction_id -> 下次可发放「反应同化度」的时间戳（2026-09-19）。
+## ⚠️ `EventBus.element_reaction` 是**每只怪各发一次**，AOE/扩散打中 N 只怪就是一帧 N 次；
+##    不加这个闸，同化度增益就随「同屏怪数」线性膨胀（实测 W7 五系全灌到 2.0）。
+var _assim_cd: Dictionary = {}
 var _reaction_label: Label = null
 var _reaction_tween: Tween = null
 
@@ -335,17 +339,25 @@ func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) ->
 	var reaction: Dictionary = Registry.get_reaction(reaction_id)
 	var accent := _reaction_color(reaction)
 	var overcome := String(reaction.get("type", "")) == "overcome"
-	# §7.4 五行反应：每触发一次，参与的两个元素（`from` / `to`）各 +3% 同化度。
+	# §7.4 五行反应：给参与的两个元素（`from` / `to`）各加一点同化度。
 	# ⚠️ **必须放在下面「特效节流」的 early return 之前** —— 那段节流管的是打击感
 	#    （震屏 / 顿帧 / 中央提示），同化度是**玩法数值**，不该被视觉节流吃掉。
 	# ⚠️ 若 reaction 缺 `from`/`to`，这里会**静默什么都不加** —— 由冒烟断言兜底。
-	for r_el in [String(reaction.get("from", "")), String(reaction.get("to", ""))]:
-		if r_el == "":
-			continue
-		# ⚠️ 必须显式标 String：`r_el` 取自 Array 是 Variant，`"assim_" + r_el` 推不出类型
-		var r_key: String = "assim_" + r_el
-		player.stats[r_key] = float(player.stats.get(r_key, 0.0)) + Config.REACTION_ASSIM_GAIN
-	player._sanitize_stats()
+	#
+	# ⚠️⚠️ 按 reaction_id 冷却发放（2026-09-19）：本信号是**每只怪各发一次**，
+	#    AOE / 中毒扩散一次打中 N 只怪就是一帧 N 次 → 增益本会随同屏怪数线性膨胀
+	#    （实测 W7 就把五系全灌到上限 2.0）。加闸后增益只由**时间**决定，
+	#    与怪数解耦；反应本身的伤害 / 特效 / 图鉴完全不受影响。
+	var assim_now := Time.get_ticks_msec()
+	if assim_now >= int(_assim_cd.get(reaction_id, 0)):
+		_assim_cd[reaction_id] = assim_now + Config.REACTION_ASSIM_COOLDOWN_MS
+		for r_el in [String(reaction.get("from", "")), String(reaction.get("to", ""))]:
+			if r_el == "":
+				continue
+			# ⚠️ 必须显式标 String：`r_el` 取自 Array 是 Variant，`"assim_" + r_el` 推不出类型
+			var r_key: String = "assim_" + r_el
+			player.stats[r_key] = float(player.stats.get(r_key, 0.0)) + Config.REACTION_ASSIM_GAIN
+		player._sanitize_stats()
 	# 2026-09-19 卡顿修复：反应特效（粒子 + 震屏 + 顿帧 + 中央提示）整体并入节流。
 	# 之前 Burst.spawn 在节流**之外**，连杆局面每秒几十~上百次反应各 spawn 一次粒子，
 	# 实测与场上积压掉落物叠加把 144fps 打到 10fps。同化度（上面的数值）不受节流影响。
@@ -360,6 +372,11 @@ func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) ->
 	_on_screen_shake(float(reaction.get("shake", fallback_shake)))
 	_trigger_hit_stop(REACTION_HIT_STOP_MS, HIT_STOP_SCALE)
 	_show_reaction_popup(reaction, accent, overcome, now)
+
+## 测试钩子：清空「反应同化度」的冷却表。
+## 冒烟直接 emit `element_reaction` 来断言增益，若被前序用例留下的冷却挡掉会假失败。
+func reset_reaction_assim_for_tests() -> void:
+	_assim_cd.clear()
 
 ## 反应主色：两五行配色混合（key = "elemA+elemB"）；无 key 时退回稀有度色
 func _reaction_color(reaction: Dictionary) -> Color:

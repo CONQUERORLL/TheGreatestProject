@@ -519,8 +519,12 @@ func _roll_goods() -> void:
 	_affinity_cache.clear()   # 开店时重算一次构筑亲和（本店期间武器/法宝不会变）
 	_dim_cache.clear()        # 第 13 轮：短板维度统计同样开店重算一次
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
+	# #7 同店去重：边掷边记「已摆出的唯一件」，后续格子把它们剔出池子
+	var taken := {}
 	for _i in Config.SHOP_SLOTS:
-		goods.append(_roll_one(weapon_full))
+		var g := _roll_one(weapon_full, taken)
+		goods.append(g)
+		_note_shelf_unique(g, taken)
 	_after_roll()
 
 ## 一轮抽取后的收尾（第 9 轮）。两个保底都只抢「最后一格」，所以必须互斥 ——
@@ -581,6 +585,8 @@ func _force_assim_slot() -> bool:
 			continue
 		if not Config.unique_pool_ok(u, player.upgrades_owned):
 			continue
+		if Config.is_saturated_entry(u, player.stats):
+			continue   # #4a：该系同化度已顶格，塞进来也是白买
 		pool.append({ "item": u,
 			"w": Config.rarity_weight(String(u.get("rarity", "common")), _wave) })
 	for it in Registry.item_list():
@@ -590,6 +596,8 @@ func _force_assim_slot() -> bool:
 			continue
 		if not Config.unique_pool_ok(it, player.items_owned):
 			continue
+		if Config.is_saturated_entry(it, player.stats):
+			continue   # #4a 同上
 		pool.append({ "item": it, "w": Config.rarity_weight(String(it.get("rarity", "common")), _wave) })
 	if pool.is_empty():
 		return false
@@ -658,6 +666,8 @@ func _ensure_affinity_goods() -> void:
 			continue   # 金/红唯一件已持有 → 不再出现
 		if not Config.entry_weapon_relevant(u, player.weapons):
 			continue
+		if Config.is_saturated_entry(u, player.stats):
+			continue   # #4a：效果已全部顶格 → 保底塞它等于浪费承诺
 		var m := Config.affinity_mult(Config.entry_tags(u), _affinity())
 		if m > 1.0:
 			var uw := Config.rarity_weight(String(u.get("rarity", "common")), _wave) * m
@@ -673,6 +683,8 @@ func _ensure_affinity_goods() -> void:
 			continue   # 金/红唯一件已持有 → 不再出现
 		if not Config.entry_weapon_relevant(it, player.weapons):
 			continue
+		if Config.is_saturated_entry(it, player.stats):
+			continue   # #4a 同上
 		var m2 := Config.affinity_mult(Config.entry_tags(it), _affinity())
 		if m2 > 1.0:
 			var iw := Config.rarity_weight(String(it.get("rarity", "common")), _wave) * m2
@@ -700,11 +712,18 @@ func _ensure_affinity_goods() -> void:
 		"forced_synergy": true,   # 测试观测：这一格是保底塞进来的
 	}
 
-func _roll_one(weapon_full: bool) -> Dictionary:
+## 掷一格商品。`taken` = **本店已占用的唯一件 id 集合**（#7 同店去重，见 _note_shelf_unique）：
+## 唯一品阶（金/红道具与升级）与法宝（本就每种限 1 件）在同一个货架上只应出现一次 ——
+## 摆出两件同款时，第二件买了会被硬闸门拒掉、只能折材料，是纯废格。
+func _roll_one(weapon_full: bool, taken: Dictionary) -> Dictionary:
 	# 法宝先掷：独立于下面武器/升级/道具的 42/29/29 分配，不改动原有比例
 	# artifact_pool 已排除持有中的（每种限 1 件），池空时自然落到常规商品，不浪费这一格
 	if GameRng.chance(Config.ARTIFACT_SHOP_CHANCE):
-		var apool := Registry.artifact_pool(player.artifacts_owned, _wave, false, _affinity())
+		var apool: Array = []
+		for ae in Registry.artifact_pool(player.artifacts_owned, _wave, false, _affinity()):
+			if taken.has(String(ae.get("item", ""))):
+				continue   # #7 本店已有同款法宝
+			apool.append(ae)
 		if not apool.is_empty():
 			var aid := String(GameRng.weighted_pick(apool))
 			var a: Dictionary = Registry.get_artifact(aid)
@@ -728,7 +747,7 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 			"sold": false, "locked": false }
 	if r < wch + uch:
 		var u: Dictionary = GameRng.weighted_pick(
-			_rarity_pool(Registry.upgrade_list(), player.upgrades_owned))
+			_rarity_pool(Registry.upgrade_list(), player.upgrades_owned, taken))
 		return { "kind": "upgrade", "id": u.id, "ico": u.ico, "name": u.name,
 			"desc": u.desc, "rarity": u.get("rarity", "common"),
 			"base_price": int(u.get("price", 22)), "synergy": _synergy(u),
@@ -736,7 +755,7 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 			"dim_keys": Config.dim_suppressed_keys(u, player.stats, _wave),
 			"sold": false, "locked": false }
 	var it: Dictionary = GameRng.weighted_pick(
-		_rarity_pool(Registry.item_list(), player.items_owned))
+		_rarity_pool(Registry.item_list(), player.items_owned, taken))
 	return { "kind": "item", "id": it.id, "ico": it.ico, "name": it.name,
 		"desc": it.desc, "rarity": it.rarity,
 		"base_price": int(it.price), "synergy": _synergy(it),
@@ -744,19 +763,40 @@ func _roll_one(weapon_full: bool) -> Dictionary:
 		"dim_keys": Config.dim_suppressed_keys(it, player.stats, _wave),
 		"sold": false, "locked": false }
 
+## 记住本店已摆出的「唯一件」（#7）。两类都算唯一：
+##   ① 唯一品阶（金/红）的道具与升级 —— `Config.is_unique_rarity`
+##   ② 法宝 —— 本就「每种限 1 件」，**与品阶无关**（rare 档法宝同样唯一）
+## 刻意不记武器与普通/稀有道具升级 —— 它们可叠层，货架重复出现是正常的（甚至是想要的：
+## 同名武器攒 3 把才能进化）。
+func _note_shelf_unique(g: Dictionary, taken: Dictionary) -> void:
+	if g.is_empty():
+		return
+	var gid := String(g.get("id", ""))
+	if gid == "":
+		return
+	if String(g.get("kind", "")) == "artifact" \
+			or Config.is_unique_rarity(String(g.get("rarity", "common"))):
+		taken[gid] = true
+
 ## 稀有度加权池：[{ item: 条目, w: rarity_weight(稀有度, 当前波次) × 亲和倍率 }]
 ## 亲和倍率让与当前角色 / 武器相关的条目更容易出现（见 Config.affinity_tags）；
 ## 同时过滤掉「对当前武器无用」的武器专属强化（纯枪构筑不出近战范围加成）
 ## `owned` 传该池对应的「当前持有表」（升级 → upgrades_owned，道具 → items_owned），
 ## 用于剔除金/红「唯一件」（Config.unique_pool_ok）—— 取表见 _owned_for。
-func _rarity_pool(entries: Array, owned: Dictionary) -> Array:
+## `taken` = 本店货架已占用的唯一件 id（#7 同店去重）：**已持有**与**本店已摆出**
+## 是两回事，前者靠 owned、后者靠它，两个都要挡。
+func _rarity_pool(entries: Array, owned: Dictionary, taken: Dictionary = {}) -> Array:
 	var aff := _affinity()
 	var pool: Array = []
+	var relaxed: Array = []   # 不做「饱和闸」的兜底池（理由见函数尾）
 	for e in entries:
 		if not Config.entry_weapon_relevant(e, player.weapons):
 			continue
 		if not Config.unique_pool_ok(e, owned):
 			continue   # 金/红唯一件已持有 → 不再出现
+		if Config.is_unique_rarity(String(e.get("rarity", "common"))) \
+				and taken.has(String(e.get("id", ""))):
+			continue   # #7 本店已摆出同款唯一件 → 不再重复（第二件买了也用不上）
 		var w: float = Config.rarity_weight(String(e.get("rarity", "common")), _wave) \
 			* Config.affinity_mult(Config.entry_tags(e), aff)
 		# 第 13 轮两层倾向：
@@ -767,8 +807,15 @@ func _rarity_pool(entries: Array, owned: Dictionary) -> Array:
 		w *= Config.shortfall_mult(e, _dim_counts())
 		if Config.is_assim_entry(e):
 			w *= _assim_weight_mult()   # 连续没刷到 → 越刷越容易出（第 9 轮）
-		pool.append({ "item": e, "w": w })
-	return pool
+		var entry_pack: Dictionary = { "item": e, "w": w }
+		relaxed.append(entry_pack)
+		if Config.is_saturated_entry(e, player.stats):
+			continue   # #4a 该条目的效果已全部顶格 → 买了不涨，剔出池
+		pool.append(entry_pack)
+	# ⚠️ 饱和闸不得把池子清空：极端构筑（相关属性几乎全顶格）下若返回空池，
+	#    调用方的 `GameRng.weighted_pick` 会 push_error 并返回 null → 整格商品变空/报错。
+	#    宁可给一件「白买」的，也不能让货架开天窗。
+	return pool if not pool.is_empty() else relaxed
 
 ## 第 13 轮：统计玩家已在各「短板维度」投入了多少件（升级 + 道具，按持有份数累加）。
 ## 用**件数**而不是 stats 数值做基准 —— 不同维度的属性量纲不同（max_hp 是百级、
@@ -839,8 +886,10 @@ func _refresh() -> void:
 		_heal_btn.text = "回血（规则禁用）"
 		_heal_btn.disabled = true
 	else:
-		_heal_btn.text = "回血 50%% (%d ◆)" % Config.SHOP_HEAL_PRICE
-		_heal_btn.disabled = GameState.materials < Config.SHOP_HEAL_PRICE \
+		# #2：回血费随波次上浮（固定 15 ◆ 在后期等于免费）
+		var hprice := Config.heal_price(_wave)
+		_heal_btn.text = "回血 50%% (%d ◆)" % hprice
+		_heal_btn.disabled = GameState.materials < hprice \
 			or player.hp >= player.stats.max_hp
 	_build_goods()
 	# 卡片重建会销毁旧焦点节点，重新抓焦保证手柄不断导航
@@ -1226,23 +1275,29 @@ func reroll() -> void:
 	var old := goods.duplicate(true)
 	var weapon_full: bool = player.weapons.size() >= MetaProgress.weapon_slots()
 	goods = []
+	# #7：原位保留的格（已售/锁定）也要先占住它们唯一件的名额，否则新掷的格子会撞车
+	var taken := {}
 	for i in Config.SHOP_SLOTS:
 		if i < old.size() and (old[i].sold or old[i].locked):
 			goods.append(old[i])   # 原位保留
+			_note_shelf_unique(old[i], taken)
 		else:
-			goods.append(_roll_one(weapon_full))
+			var g := _roll_one(weapon_full, taken)
+			goods.append(g)
+			_note_shelf_unique(g, taken)
 	_after_roll()
 	_refresh()
 	_save_checkpoint()   # 刷新扣费后即时重存
 
-## 回血：15 ◆ 回复 50% 最大生命（原型 btnHeal）
+## 回血：回复 50% 最大生命（原型 btnHeal）。费用随波次上浮（#2，见 Config.heal_price）
 func heal() -> void:
 	if RunRules.heal_disabled():
 		EventBus.banner_requested.emit("规则禁用", "本局已禁用商店回血", 1.6)
 		return
-	if GameState.materials < Config.SHOP_HEAL_PRICE:
+	var hprice := Config.heal_price(_wave)
+	if GameState.materials < hprice:
 		return
-	GameState.add_materials(-Config.SHOP_HEAL_PRICE)
+	GameState.add_materials(-hprice)
 	player.hp = minf(player.stats.max_hp, player.hp + player.stats.max_hp * 0.5)
 	Haptics.rumble(0.25, 0.0, 0.08)
 	Sfx.play("heal")

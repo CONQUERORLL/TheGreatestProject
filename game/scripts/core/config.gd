@@ -1563,12 +1563,20 @@ static func terrain_zone_for_wave(player_element: String, wave: int) -> Dictiona
 ##    `SaveRun.restore()` 会整体覆盖 `stats` —— 与 MetaProgress 天赋同一个防重模式。
 const CHAR_START_ASSIM := 0.25
 
-## §7.4 五行反应：每触发一次反应，给**参与的两个元素**（`REACTIONS[].from` / `.to`）各加这么多。
+## §7.4 五行反应：给**参与的两个元素**（`REACTIONS[].from` / `.to`）各加这么多。
 ## 目的是「围绕反应打就能加深对该元素的同化」，鼓励围绕反应构筑。
 ## ⚠️ 会 clamp 到 `Registry.STAT_LIMITS` 的 assim 上限（2.0），不会溢出。
-## ⚠️ 触发频率已在 enemy 侧节流（同帧只触发一个，enemy.gd:385）；
-##    若实测发现同化度过快打满，**优先降本值**而不是加冷却（冷却会让机制变得看不见）。
-const REACTION_ASSIM_GAIN := 0.03
+##
+## ⚠️⚠️ 2026-09-19 实测修正：原为 `0.03` 且**无频率闸**。而 `EventBus.element_reaction`
+##   是**每只怪各发一次**（AOE / 中毒扩散打中 N 只怪 = 一帧 N 次），增益因此随
+##   「同屏怪数」而不是「时间」增长 —— 实测 W7 就把五系全部灌到 2.0（日志 assim_sum=10.0）。
+##   现改为「单次 1% + 按 reaction_id 冷却 `REACTION_ASSIM_COOLDOWN_MS`」：
+##   增益只由时间决定、与怪数解耦，20 波全力堆也未必五系全满。
+const REACTION_ASSIM_GAIN := 0.01
+
+## 同一反应 id 两次「发放同化度」之间的最小间隔（毫秒）。理由见上。
+## ⚠️ 只约束同化度发放；反应本身的伤害 / 特效 / 图鉴完全不受影响。
+const REACTION_ASSIM_COOLDOWN_MS := 5000
 
 const WAVES_TOTAL := 20
 const BOSS_WAVE := 20
@@ -1785,6 +1793,35 @@ static func unique_pool_ok(entry: Dictionary, owned: Dictionary) -> bool:
 	if not is_unique_rarity(String(entry.get("rarity", "common"))):
 		return true
 	return not owned.has(String(entry.get("id", "")))
+
+## ---- 属性饱和闸门（2026-09-19 · 用户需求 8-a）----
+## 「概率/上限类」属性一旦顶格，再加就是白买。典型：`status_chance` 到 100%、
+## `crit_ch` 到 90% 上限、某个 `on_hit_*` 到 100% —— 此时再刷出「只加这些」的条目
+## 就是废格（玩家买完发现数值没动）。商店与升级三选一都应把它剔出池。
+##
+## 判据（刻意保守，只砍真正没用的）：
+##   · 「可饱和键」= 出现在 `Registry.STAT_LIMITS` 里的键（上限即饱和线）；
+##     `heal_flat` / `heal_pct` 等不在表内的一次性效果**永远算有用**，不被本闸门吃掉。
+##   · 条目至少要有 1 个可饱和键，且**每个**可饱和键都已到上限，才判饱和。
+##     例：`on_hit_burn` 满了但同时给 `status_dmg_mult`（上限 10，远未到）→ 仍有用。
+##   · `dmg_mult`(上限100) / `armor`(1000) / `max_hp`(10000) 这类上限极宽松，
+##     实际永远不会被判饱和 —— 这正是想要的效果，不需要另立一张「有效上限表」。
+## ⚠️ 与 `unique_pool_ok` 同一层次：只负责「让玩家看不到」，
+##    硬闸门仍由 `player.apply_item` / `apply_upgrade` 兜底。
+static func is_saturated_entry(entry: Dictionary, stats: Dictionary) -> bool:
+	var effects: Dictionary = entry.get("effects", {})
+	if effects.is_empty():
+		return false
+	var saturable := 0
+	for k in effects:
+		var key := String(k)
+		if not Registry.STAT_LIMITS.has(key):
+			continue          # 不可饱和的键（heal_* 等）→ 不算数，也不阻止判定
+		saturable += 1
+		var lim: Vector2 = Registry.STAT_LIMITS[key]
+		if float(stats.get(key, 0.0)) < float(lim.y) - 1e-6:
+			return false      # 还有没顶格的可饱和键 → 这件仍然有用
+	return saturable > 0
 
 # ============================================================
 # 构筑亲和（Affinity）：让商店 / 升级三选一 / 法宝掉落的抽取
@@ -2720,13 +2757,30 @@ static func _endless_composition(w: int) -> Array:
 
 # ---- 商店公式 ----
 
-static func shop_reroll_cost(wave: int) -> int:
-	return 8 + wave * 3
+## 商店物价指数（#2 · 2026-09-19）：售价 / 刷新费 / 回血费共用的「随波次上浮」倍率。
+## 形式 = 线性 + 二次项：前期几乎不动（W1 = 1.00），后期显著加速。
+##
+## 依据（balance_log 实测）：原线性口径 `1 + 0.11(w-1)` 下 W14 物价仅 ×2.43，
+## 而该波材料收入已达 4843 —— 一波收入能清空整店，「买哪几件」不再构成取舍。
+## 现口径：W5 ×2.16 / W10 ×5.64 / W14 ×10.04 / W20 ×19.34，
+## 目标是「每波大致买得起 4~5 件」：购买力全程稳定，而不是越到后期越富。
+## ⚠️ 只影响**买入价**；出售返还仍按 `base_price × 0.5` 计算、不含该指数
+##    （见 shop_ui._sell）—— 后期「买了又卖」会亏差价，这是刻意设计。
+const SHOP_PRICE_LINEAR := 0.11
+const SHOP_PRICE_QUAD := 0.045
 
-## 商店售价随波次上浮：第 1 波原价，之后每波 +11%（第 10 波约 ×1.99）。
-## 系数从 0.08 上调到 0.11 是配合「货架扩到 6 格」——商品多了选择面变宽，
-## 靠价格上浮压住「后期一波收入清空半店」的滚雪球，让买哪几件重新变成取舍。
-## 注意：只作用于商店**售价**；出售返还按 base_price × 0.5 计算，不含这个上浮
-## （见 shop_ui._sell，所以后期「买了又卖」会亏差价，这是刻意设计）。
+static func shop_price_mult(wave: int) -> float:
+	var t := maxf(0.0, float(wave - 1))
+	return 1.0 + SHOP_PRICE_LINEAR * t + SHOP_PRICE_QUAD * t * t
+
+## 刷新费同样吃物价指数 —— 否则后期「刷新 68 ◆ vs 商品 1900 ◆」会让刷新
+## 变成无脑最优解（#2 的连带面）。
+static func shop_reroll_cost(wave: int) -> int:
+	return int(round(float(8 + wave * 3) * shop_price_mult(wave)))
+
+## 回血费同理：固定 15 ◆ 在后期等于免费（#2 的连带面）。
+static func heal_price(wave: int) -> int:
+	return int(round(float(SHOP_HEAL_PRICE) * shop_price_mult(wave)))
+
 static func shop_price(base_price: int, wave: int) -> int:
-	return int(round(float(base_price) * (1.0 + 0.11 * (wave - 1))))
+	return int(round(float(base_price) * shop_price_mult(wave)))
