@@ -931,7 +931,8 @@ func _ranged_share_of(c: Array) -> float:
 	return _r / _tot if _tot > 0.0 else 0.0
 
 ## 商店·需求 3 集成验证：① 永久槽满时买武器进临时槽且买够 need 把即时进化；
-## ② 永久+临时都满时武器购买按钮禁用；③ 临时槽有武器时「下一波」先弹二次确认框、
+## ② 永久+临时都满时改为弹「换掉哪把」换装面板（第 15 轮 · 需求 4b：就地替换 + 退旧价 50% +
+## 取消不动任何状态）；③ 临时槽有武器时「下一波」先弹二次确认框、
 ## 不立即进波，取消后临时槽保留。全程快照/还原实况 Player，避免污染后续 HUD/进波流程。
 func _check_shop_evolve() -> void:
 	var shop: Control = _main.get_node("UI/Shop")
@@ -957,22 +958,77 @@ func _check_shop_evolve() -> void:
 		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
 		shop._refresh()
 		return
-	# ② 满槽门禁：永久5 + 临时2 → 武器购买按钮禁用
+	# ② 满槽**换装**（第 15 轮 · 需求 4b）：按钮不再置灰，点下去弹「换掉哪把」面板，
+	#    选定后旧武器按 50% 折算返还、新武器落到被换下的那个槽位上（原子动作，无空窗）
 	pl.weapons = []
 	pl.temp_weapons = []
 	for _i in 5:
 		pl.weapons.append({ "type": "frost_staff", "cd": 0.1 })
 	for _i in 2:
 		pl.temp_weapons.append({ "type": "knife", "cd": 0.1 })
-	shop.goods[0] = { "kind": "weapon", "wtype": "knife", "ico": "🗡",
-		"name": "金剑", "desc": "", "rarity": "common", "base_price": 28,
+	# 新的那把用进化体（evolve_need = 0），避免换装顺带触发即时进化把断言搅乱
+	shop.goods[0] = { "kind": "weapon", "wtype": "knife_ex", "ico": "🗡",
+		"name": "金剑·进化", "desc": "", "rarity": "common", "base_price": 28,
 		"sold": false, "locked": false }
 	GameState.materials += 999
 	shop._refresh()
 	var card0: Control = shop._goods_box.get_child(0)
 	var btn0: Button = card0.get_meta("buy_btn")
-	if btn0 == null or not btn0.disabled:
-		_fail("永久+临时槽全满时武器购买按钮应禁用")
+	if btn0 == null or btn0.disabled:
+		_fail("满槽时武器购买按钮不应禁用（第 15 轮起改为弹换装面板）")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	if btn0.text.find("替换") < 0:
+		_fail("满槽时武器按钮文案应为「替换 ...」，实际「%s」" % btn0.text)
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	var mat_before: int = GameState.materials
+	var swap_price: int = shop._price_of(shop.goods[0])
+	var swap_refund := roundi(float(Registry.weapon_price("frost_staff")) * 0.5)
+	shop.buy(0)
+	if shop._swap_panel == null or not is_instance_valid(shop._swap_panel):
+		_fail("满槽点武器卡应弹出换装面板")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	# 换掉永久槽第 0 把（frost_staff）
+	shop._do_weapon_swap(false, 0, 0)
+	if String(pl.weapons[0].get("type", "")) != "knife_ex" \
+			or String(pl.weapons[1].get("type", "")) != "frost_staff" \
+			or pl.weapons.size() != 5:
+		_fail("换装应**就地**替换（永久槽 = %s）" % str(pl.weapons))
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	if GameState.materials != mat_before + swap_refund - swap_price:
+		_fail("换装结算应为「扣新价 + 退旧价 50%%」：%d → %d（应 %d）"
+			% [mat_before, GameState.materials, mat_before + swap_refund - swap_price])
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	if not bool(shop.goods[0].get("sold", false)):
+		_fail("换装后该商品格应标记已售出")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	if shop._swap_panel != null and is_instance_valid(shop._swap_panel):
+		_fail("换装完成后换装面板应关闭")
+		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
+		shop._refresh()
+		return
+	# 取消路径：弹出后不选任何一项直接关，材料与槽位都不许动
+	shop.goods[0] = { "kind": "weapon", "wtype": "knife_ex", "ico": "🗡",
+		"name": "金剑·进化", "desc": "", "rarity": "common", "base_price": 28,
+		"sold": false, "locked": false }
+	shop._refresh()
+	var mat_before2: int = GameState.materials
+	var perm_before2: Array = pl.weapons.duplicate(true)
+	shop.buy(0)
+	shop._close_weapon_swap()
+	if GameState.materials != mat_before2 or pl.weapons != perm_before2:
+		_fail("取消换装不应扣材料 / 改槽位")
 		pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
 		shop._refresh()
 		return
@@ -996,7 +1052,7 @@ func _check_shop_evolve() -> void:
 		_fail("取消退出后临时槽应仍保留")
 	pl.weapons = w_bak; pl.temp_weapons = t_bak; GameState.materials = m_bak
 	shop._refresh()
-	print("SMOKE: shop temp-slot + instant evolve + capacity gate + exit confirm OK")
+	print("SMOKE: shop temp-slot + instant evolve + full-slot swap + exit confirm OK")
 
 func _check_hud() -> void:
 	var hud: Control = _main.get_node("UI/HUD")

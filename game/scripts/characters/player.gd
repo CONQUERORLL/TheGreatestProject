@@ -763,6 +763,22 @@ func sell_weapon(wtype: String) -> int:
 	queue_redraw()
 	return roundi(float(Registry.weapon_price(wtype)) * 0.5)
 
+## 满槽换武器（第 15 轮 · 需求 4b）：把指定槽位里的那把武器**就地换成** new_type，
+## 被换下的那把按 50% 基础价折算材料返还。`is_temp` = 换的是临时槽里的那把。
+## 返回返还材料数；槽位越界 / new_type 非法返回 -1（调用方据此判「没换成」）。
+##
+## ⚠️ 用**下标**定位而不是武器名：同名武器可能同时存在于永久槽与临时槽，
+##    按名字删会删错槽（那正是 `sell_weapon` 的既有语义，这里刻意不复用它）。
+func swap_weapon(slot_idx: int, new_type: String, is_temp: bool = false) -> int:
+	var arr: Array = temp_weapons if is_temp else weapons
+	if slot_idx < 0 or slot_idx >= arr.size() or not Registry.weapons.has(new_type):
+		return -1
+	var old_type := String(arr[slot_idx].get("type", ""))
+	arr[slot_idx] = { "type": new_type, "cd": 0.1 }
+	refresh_family_synergy()
+	queue_redraw()
+	return roundi(float(Registry.weapon_price(old_type)) * 0.5)
+
 ## 某武器在「永久槽 + 临时槽」中的合计持有数（即时进化判定用）
 func weapon_count(wtype: String) -> int:
 	var n := 0

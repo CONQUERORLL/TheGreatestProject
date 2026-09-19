@@ -20,6 +20,7 @@ var _save_pending := false  # 合并写定时器已排队
 var _assim_pity := 0        # 连续「整店没出同化度」的店数，刷到即归零（第 9 轮保底）
 var _forced_assim := false  # 本店是否由同化度保底塞了一格（测试观测，同 forced_synergy）
 var _temp_confirm = null     # 退出二次确认对话框（需求 3：临时槽有武器时退出需确认）
+var _swap_panel: Control = null   # 满槽换武器面板（第 15 轮 · 需求 4b：武器槽满了换装用）
 
 var _title: Label
 var _mat: Label
@@ -616,9 +617,10 @@ func _force_assim_slot() -> bool:
 	}
 	return true
 
-## 武器出现概率的折扣系数（1.0 = 原样）。满槽 → 买不了（`buy()` 会拦）= 死格，
-## 武器侧饱和（满槽 + 全是进化体）另给一档，便于以后只放开其中一个。
-## ⚠️ 刻意不在这两个分支之间留「部分降权」：满槽时无论是哪种，格子里放武器都是浪费。
+## 武器出现概率的折扣系数（1.0 = 原样）。满槽 → **降权**（不是归零，见 Config 常量的注释），
+## 武器侧饱和（满槽 + 全是进化体）另给一档，换装收益最低但仍留口子。
+## ⚠️ 第 15 轮（2026-09-19）之前这两个分支都是 0.0，理由是「满槽时买了会被 buy() 拦下 = 死格」；
+##    加了换装面板之后这条理由不成立 —— 满槽时武器卡点下去是「换掉哪把」的入口。
 func _weapon_chance_ratio(weapon_full: bool) -> float:
 	if not weapon_full:
 		return 1.0
@@ -734,8 +736,9 @@ func _roll_one(weapon_full: bool, taken: Dictionary) -> Dictionary:
 				"synergy": _synergy(a), "sold": false, "locked": false }
 	var r := GameRng.range_f(0.0, 1.0)
 	# 武器概率与「让出的份额去哪」在这里一次算清（第 9 轮）：
-	# 满槽 / 武器侧饱和时武器概率降为 0，**腾出的比例全部并进升级池**（wch + uch 恒等于
-	# 原来的 0.42 + 0.29），而不是流向普通道具 —— 这才是「道具挤占核心构筑件」的根治点。
+	# 满槽 / 武器侧饱和时武器概率**降权**（第 15 轮前是降为 0），**腾出的比例全部并进升级池**
+	# （wch + uch 恒等于原来的 0.42 + 0.29），而不是流向普通道具 ——
+	# 这才是「道具挤占核心构筑件」的根治点。
 	var wch := Config.WEAPON_SHOP_CHANCE * _weapon_chance_ratio(weapon_full)
 	var uch := Config.SHOP_UPGRADE_CHANCE + (Config.WEAPON_SHOP_CHANCE - wch)
 	if r < wch:
@@ -1177,9 +1180,12 @@ func _make_good_card(i: int) -> Control:
 		btn.disabled = true
 	else:
 		btn.text = "%d ◆" % price
-		# 满槽武器拦截在扣钱前（修正原型 buyGood 先扣钱后检查的坑）
-		btn.disabled = GameState.materials < price \
-			or (g.kind == "weapon" and player.weapon_capacity_full())
+		# 满槽武器**不再置灰**（第 15 轮 · 需求 4b）：点下去弹「换掉哪把」面板，
+		# 文案改成「替换」让入口一眼可见。旧版这里 `disabled = ... or weapon_capacity_full()`
+		# 把满槽武器变成死格，叠加当时武器概率被压到 0 ——「想换武器」在商店里彻底没出口。
+		btn.disabled = GameState.materials < price
+		if g.kind == "weapon" and player.weapon_capacity_full():
+			btn.text = "替换 %d ◆" % price
 		btn.pressed.connect(buy.bind(i))
 	row.add_child(btn)
 	panel.set_meta("buy_btn", btn)
@@ -1206,8 +1212,10 @@ func buy(i: int) -> void:
 	var price := _price_of(g)
 	if g.sold or GameState.materials < price:
 		return
-	# 武器满槽（永久 + 临时都满）才拦截；否则买武器由下面的路由送进对应槽
+	# 武器满槽（永久 + 临时都满）：**不再直接拦截**，改为弹「换掉哪把」（第 15 轮 · 需求 4b）。
+	# 扣钱发生在换装确认里 —— 先弹面板再扣钱，取消 = 什么也没发生。
 	if g.kind == "weapon" and player.weapon_capacity_full():
+		_open_weapon_swap(i)
 		return
 	# 商店开着期间已通过掉落/事件拿到同一件法宝：直接标售罄且不扣钱。
 	# 否则玩家会为一件已拥有的法宝付 110~300 只换回 60 材料补偿（apply_artifact 的重复分支）
@@ -1258,6 +1266,144 @@ func buy(i: int) -> void:
 	EventBus.item_purchased.emit(purchased_id)
 	_refresh()
 	_save_checkpoint()   # 商店内即时重存，退出不丢购物
+
+# ---------------- 满槽换武器（第 15 轮 · 需求 4b） ----------------
+
+## 满槽时点武器卡：弹出「用这把新武器换掉哪一把」的选择面板。
+## 只列当前持有的武器（永久槽在前、临时槽在后），点哪一把就换哪一把。
+## ⚠️ 刻意**不做**「先卖旧的、再买新的」两步走：两步之间会出现「旧的已卖、新的还没买到」
+##    的空窗（货架可能被锁定/刷新带走），而换装是**一个原子动作**，不该有这种中间态。
+## 材料在确认时一次性结算（扣新武器价 + 返还旧武器 50%），取消则分文不动。
+func _open_weapon_swap(i: int) -> void:
+	if _swap_panel != null and is_instance_valid(_swap_panel):
+		return
+	if i < 0 or i >= goods.size():
+		return
+	var g: Dictionary = goods[i]
+	if g.sold or GameState.materials < _price_of(g):
+		return
+	var wrap := Control.new()
+	wrap.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(wrap)
+	_swap_panel = wrap
+	# 遮罩用默认 mouse_filter(STOP)：盖住下层商店，防误点。非交互节点才设 IGNORE。
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.72)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(_swap_panel_w(), 0.0)
+	panel.add_theme_stylebox_override("panel", _side_style())
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	panel.add_child(vb)
+	var head := _mk_label(17, Color("e8b84b"))
+	head.text = "武器槽已满 · 用「%s」替换哪一把？" % String(g.name)
+	vb.add_child(head)
+	var hint := _mk_label(12, Color("9aa3b2"))
+	hint.text = "被换下的武器按 50%% 基础价折算材料返还"
+	vb.add_child(hint)
+	var first_btn: Button = null
+	for k in player.weapons.size():
+		var b := _swap_row(String(player.weapons[k].get("type", "")), false, k, i)
+		vb.add_child(b)
+		if first_btn == null:
+			first_btn = b
+	for k2 in player.temp_weapons.size():
+		var b2 := _swap_row(String(player.temp_weapons[k2].get("type", "")), true, k2, i)
+		vb.add_child(b2)
+		if first_btn == null:
+			first_btn = b2
+	var cancel := Button.new()
+	cancel.text = "取消（什么都不换）"
+	cancel.custom_minimum_size = Vector2(0.0, UiMetrics.touch_at_least(UiMetrics.dp(32.0)))
+	cancel.pressed.connect(_close_weapon_swap)
+	vb.add_child(cancel)
+	# 模态期间把商店自身的按钮移出焦点链，手柄只能在面板内导航（见该函数注释）
+	_set_shop_focus_enabled(false)
+	if first_btn != null:
+		first_btn.grab_focus()
+	else:
+		cancel.grab_focus()
+
+## 面板宽度：桌面 460；小屏取 dp(320) 与「可用宽 − 24」的较小值，避免顶出屏幕
+func _swap_panel_w() -> float:
+	var want := 460.0 if not UiMetrics.prefers_full_page() else UiMetrics.dp(320.0)
+	return maxf(220.0, minf(want, UiMetrics.available().x - UiMetrics.dp(24.0)))
+
+## 换装面板里的一行：武器名（按稀有度着色）+ 返还额。点它 = 换掉这一把。
+func _swap_row(wtype: String, is_temp: bool, slot_idx: int, good_idx: int) -> Button:
+	var c: Dictionary = Registry.weapons.get(wtype, {})
+	var b := Button.new()
+	b.text = "%s %s%s\n    换掉它 → 返还 %d ◆" % [
+		c.get("ico", "🗡"), c.get("name", wtype),
+		"（临时槽）" if is_temp else "",
+		roundi(float(Registry.weapon_price(wtype)) * 0.5)]
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.custom_minimum_size = Vector2(0.0, UiMetrics.touch_at_least(UiMetrics.dp(38.0)))
+	b.add_theme_color_override("font_color", Config.rarity_color(String(c.get("rarity", "common"))))
+	b.pressed.connect(_do_weapon_swap.bind(is_temp, slot_idx, good_idx))
+	return b
+
+## 确认换装：扣新武器价 → 就地替换 → 返还旧武器 50% → 视同名数量即时进化。
+## 任一步的前置条件不成立（格子已售 / 钱不够 / 槽位越界）→ 只关面板，不动任何状态。
+func _do_weapon_swap(is_temp: bool, slot_idx: int, good_idx: int) -> void:
+	var ok := good_idx >= 0 and good_idx < goods.size()
+	if ok:
+		var g: Dictionary = goods[good_idx]
+		var price := _price_of(g)
+		ok = not g.sold and String(g.kind) == "weapon" and GameState.materials >= price
+	if not ok:
+		_close_weapon_swap()
+		return
+	var g2: Dictionary = goods[good_idx]
+	var price2 := _price_of(g2)
+	var wt := String(g2.wtype)
+	var refund: int = player.swap_weapon(slot_idx, wt, is_temp)
+	if refund < 0:
+		_close_weapon_swap()
+		return
+	GameState.add_materials(refund - price2)
+	g2.sold = true
+	_close_weapon_swap()
+	Haptics.rumble(0.5, 0.2, 0.3)
+	Sfx.play("buy")
+	# 与 buy() 的武器分支同口径：换上来正好凑够同名数就立刻进化（进化体会落进永久槽）
+	var _need := int(Registry.weapons.get(wt, {}).get("evolve_need", 0))
+	if _need > 0 and player.weapon_count(wt) >= _need:
+		var _txt: String = player.instant_evolve(wt)
+		if _txt != "":
+			Haptics.rumble(0.5, 0.2, 0.3)
+			Sfx.play("victory")
+			EventBus.banner_requested.emit("⚔ 武器进化！", _txt, 3.0)
+	EventBus.item_purchased.emit(wt)
+	_refresh()          # 会重建卡片并重新抓焦（换装后货架变了）
+	_save_checkpoint()
+
+## 关闭换装面板并交还焦点（面板销毁后焦点不能留在里面，否则手柄导航断掉）
+func _close_weapon_swap() -> void:
+	if _swap_panel != null and is_instance_valid(_swap_panel):
+		_swap_panel.queue_free()
+	_swap_panel = null
+	_set_shop_focus_enabled(true)
+	if visible:
+		_grab_first_focus()
+
+## 模态开关：把商店自身的按钮（动作区 + 货架卡上的购买/锁定钮）移出/放回焦点链。
+## 不做这一步的话，手柄方向键能从面板里"走"到下层货架上，面板看着是模态、实际不是。
+## 货架卡是每次 `_build_goods()` 重建的，所以"放回"只在**当前**这批卡上生效 ——
+## 而面板关闭后紧接着就会 `_refresh()` 重建，两处合起来才是完整的。
+func _set_shop_focus_enabled(on: bool) -> void:
+	var mode := Control.FOCUS_ALL if on else Control.FOCUS_NONE
+	for b: Button in [_reroll_btn, _heal_btn, _next_btn]:
+		b.focus_mode = mode
+	for card in _goods_box.get_children():
+		(card.get_meta("buy_btn") as Button).focus_mode = mode
+		(card.get_meta("lock_btn") as Button).focus_mode = mode
 
 ## 刷新：费用 ×1.4 递增（吃砍价折扣）；已售格与锁定格原位保留，其余重 roll
 ## 注意：**购买本身不触发重掷** —— 买掉的格子只标「已售出」留在原位（见 buy()），
@@ -1388,6 +1534,12 @@ func _grab_first_focus() -> void:
 ## 手柄 A / Enter 回退：焦点在哪个按钮就触发哪个操作
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
+		return
+	# 换装面板是模态：B / Esc = 取消换装，且不再往下传（第 15 轮 · 需求 4b）
+	if event.is_action_pressed("ui_cancel") \
+			and _swap_panel != null and is_instance_valid(_swap_panel):
+		_close_weapon_swap()
+		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("ui_accept"):
 		var focus := get_viewport().gui_get_focus_owner()
