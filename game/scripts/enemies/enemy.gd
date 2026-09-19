@@ -1107,6 +1107,19 @@ func _spawn_artifact(id: String) -> void:
 	l.player = player
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
+	# 场上掉落物预算闸（Config.LOOT_MAX，2026-09-19 卡顿修复）：组数量到顶时直接入账，
+	# 不再往场上加节点。收益与「等波末全场回收」等价（波末本就兜底 settle），
+	# 但场上节点数被钉在上限内 —— 事件波/高收获构筑不会再积压几百件把帧率打穿。
+	if get_tree().get_nodes_in_group("loot").size() >= Config.LOOT_MAX:
+		match kind_name:
+			"xp":
+				GameState.gain_xp(value)
+			"mat":
+				GameState.add_materials(value)
+			"heart":
+				if player != null and is_instance_valid(player):
+					player.hp = minf(float(player.stats.max_hp), player.hp + float(value))
+		return
 	var l = ObjectPool.acquire("loot", LootScene, get_parent())
 	l.setup(kind_name, value, global_position + Vector2(GameRng.range_f(-6.0, 6.0),
 		GameRng.range_f(-6.0, 6.0)), velocity)

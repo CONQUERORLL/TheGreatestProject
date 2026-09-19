@@ -3798,6 +3798,15 @@ func _check_phase3_artifacts() -> void:
 		return
 
 	# ---- 焚天印：火系反应追加 40% 攻击力伤害 ----
+	# 前置（2026-09-19）：loot 预算闸（Config.LOOT_MAX）让击杀经验可即时入账，
+	# 测试走到这里时可能已弹出升级卡（phase=LEVEL_UP）——而法宝反应处理要求战斗态
+	# （_active() 判 is_running()）。“升级卡打开时战斗暂停”是正确设计，这里按现实
+	# 流程收尾：恢复战斗态 + 清掉积压的选卡队列，回到可以验证反应伤害的上下文。
+	GameState.level_queue = 0   # 先清队列：防止 set_phase(PLAYING) 触发补弹又开一张卡
+	if GameState.phase != GameState.Phase.PLAYING:
+		GameState.set_phase(GameState.Phase.PLAYING)
+	var _lu2: Control = _main.get_node("UI/LevelUp")
+	_lu2.visible = false        # 已弹出的升级卡收掉，回到干净的战斗上下文
 	var e_c: Node2D = _spawn_reaction_target("grunt", far_corner + Vector2(-120.0, 0.0), p2)
 	made.append(e_c)
 	var ap: float = ArtifactSystem.attack_power(p2)

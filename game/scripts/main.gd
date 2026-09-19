@@ -346,13 +346,16 @@ func _on_element_reaction(reaction_id: String, pos: Vector2, _targets: Array) ->
 		var r_key: String = "assim_" + r_el
 		player.stats[r_key] = float(player.stats.get(r_key, 0.0)) + Config.REACTION_ASSIM_GAIN
 	player._sanitize_stats()
-	# 相克爆发更猛（复用 Burst，无额外场景开销）
-	Burst.spawn(self, pos, accent, 22 if overcome else 12, 300.0 if overcome else 190.0)
+	# 2026-09-19 卡顿修复：反应特效（粒子 + 震屏 + 顿帧 + 中央提示）整体并入节流。
+	# 之前 Burst.spawn 在节流**之外**，连杆局面每秒几十~上百次反应各 spawn 一次粒子，
+	# 实测与场上积压掉落物叠加把 144fps 打到 10fps。同化度（上面的数值）不受节流影响。
 	var now := Time.get_ticks_msec()
 	if now < _reaction_juice_cd:
 		return
 	_reaction_juice_cd = now + REACTION_JUICE_CD_MS
 	_reaction_count += 1
+	# 相克爆发更猛（复用 Burst，无额外场景开销）
+	Burst.spawn(self, pos, accent, 22 if overcome else 12, 300.0 if overcome else 190.0)
 	var fallback_shake := 4.0 if overcome else 1.8
 	_on_screen_shake(float(reaction.get("shake", fallback_shake)))
 	_trigger_hit_stop(REACTION_HIT_STOP_MS, HIT_STOP_SCALE)
