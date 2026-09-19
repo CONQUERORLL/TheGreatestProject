@@ -57,8 +57,9 @@ var map_theme := "bamboo"
 ## 用途：横幅显示、区块偏置、BOSS 元素、出怪加权。
 var area_element := ""
 ## 已经发过区域加成的区块号（1 起；0 = 一个都还没发）。
-## ⚠️ 必须有这个护栏：区域加成是「进新区一次性 +同化度」，而读档会重新走
-##    `start_wave(restored_wave)`。没有它，反复读同一档就能反复白拿同化度。
+## ⚠️ 必须有这个护栏：区域加成是「进新区一次性 +永久属性增益」
+##    （第 16 轮 · 需求 6 从同化度改来，见 `Config.area_bonus_player`），而读档会重新走
+##    `start_wave(restored_wave)`。没有它，反复读同一档就能反复白拿属性。
 ##    不落存档，由 main 在 _ready 里按 restored_wave 反推（见 main._ready）。
 var area_bonus_block := 0
 

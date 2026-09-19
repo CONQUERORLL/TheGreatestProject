@@ -626,15 +626,22 @@ func _on_wave_started(w: int) -> void:
 	if player != null and is_instance_valid(player):
 		player.on_wave_start()   # 角色特性：战意按"本波击杀"重新累积
 
-## 区域加成（§5.5.3 · S3.5）：**进入某区块的第一波**给玩家该元素同化度 +`AREA_BONUS`。
+## 区域加成（§5.5.3 · S3.5）：**进入某区块的第一波**给玩家该元素的**永久属性增益**
+## （`Config.area_bonus_player`，与地面圆区同一套数值）。
 ##
-## 为什么是「进区一次性」而不是「每波都发」：同化度是**养成轴**（§7），
+## 为什么是「进区一次性」而不是「每波都发」：这是**养成轴**（§7），
 ## 每波都发会把它变成纯计时奖励；一次性发放才让它成为「选择在哪个区深耕」的取舍。
 ##
 ## ⚠️ 幂等护栏走 `GameState.area_bonus_block`（不落存档，由 _ready 按 restored_wave 反推）：
 ##    没有它，读档重进同一波就会重复领取（`start_wave` 会被读档路径重新调用）。
 ## ⚠️ 只在 `block > 已发区块` 时发 —— 用 `>` 而不是 `!=`，这样哪怕玩家因为某种
 ##    异常路径回到更早的波次，也不会把已经到手的区块重新发一遍。
+##
+## ⚠️ 第 16 轮（需求 6）二次改造：发放内容由 `assim_<元素> +0.10` 改为属性增益。
+##    写进 `player.stats` 的是**永久值**（不是区域临时增益），所以**不能**走
+##    `player.set_zone_buff`（那条由 `_suspend_terrain_buffs` 在波末撤销）。
+##    与区域临时增益的互不干扰靠 `player._zone_buff_applied` 的差量记账保证：
+##    这里加的是"底数"，区域撤销时减的是它自己记的差量，不会吃掉这一笔。
 func _grant_area_bonus(w: int) -> void:
 	var block := Config.block_of(w)
 	if block <= GameState.area_bonus_block:
@@ -643,18 +650,21 @@ func _grant_area_bonus(w: int) -> void:
 	var area := GameState.area_element
 	if area == "" or player == null or not is_instance_valid(player):
 		return
-	var key := "assim_" + area
-	player.stats[key] = float(player.stats.get(key, 0.0)) + Config.AREA_BONUS
-	player._sanitize_stats()   # 受 §7.2 上限约束
+	var gain: Dictionary = Config.area_bonus_player(area)
+	if gain.is_empty():
+		return
+	for k in gain:
+		var key := String(k)
+		player.stats[key] = float(player.stats.get(key, 0.0)) + float(gain[key])
+	player._sanitize_stats()   # 受 §7.2 / Registry.STAT_LIMITS 上限约束
 	# 横幅顺带交代**地面新增的那片区域**（第 16 轮 · 需求 6）：区域现在是"双方都能吃的
 	# 增益"，不写出来玩家只能靠猜 —— 而它恰恰是"要不要在这一区开战"的决策依据。
 	var ztxt := Config.zone_buff_text(area)
-	var zdesc := String(Config.zone_buff(area).get("desc", ""))
+	var bz: Dictionary = Config.zone_buff(area)
 	EventBus.banner_requested.emit(
 		"第 %d 区块 · %s" % [block, Config.map_theme_name(GameState.map_theme)],
-		"区域加成：%s同化度 +%d%%%s" % [String(Config.ELEMENT_NAME.get(area, area)),
-			int(round(Config.AREA_BONUS * 100.0)),
-			("　地上新增 %s（%s，敌我通用）" % [ztxt, zdesc]) if ztxt != "" else ""], 3.0)
+		"永久获得 %s（%s）%s" % [String(bz.get("name", "")), String(bz.get("desc", "")),
+			("　地上新增 %s（敌我通用，可进出）" % ztxt) if ztxt != "" else ""], 3.0)
 
 ## 场景属性地形区域（第 9 轮引入 · 第 16 轮按用户需求 6 重做）：
 ## 进入**新区块**（每 4 波）时**新增**一片圆形地形；**旧区不销毁** —— 用户原话

@@ -5632,17 +5632,20 @@ func _check_element_engine() -> void:
 	if w2_mobs != want_w2:
 		_fail("W2 元素怪与渐入白名单不符（实际 %s / 期望 %s）" % [str(w2_mobs), str(want_w2)])
 		return
-	# 8) 区域加成（§5.5.3）：进新区首波发一次，**同区块重复调用必须无效**。
-	#    这是「反复读档就能反复白拿同化度」的唯一护栏，必须有行为断言 ——
+	# 8) 区域加成（§5.5.3）：进新区首波发一次**永久属性增益**，**同区块重复调用必须无效**。
+	#    这是「反复读档就能反复白拿属性」的唯一护栏，必须有行为断言 ——
 	#    光看 `_grant_area_bonus` 里那个 `block > area_bonus_block` 是看不出漏洞的。
+	#    ⚠️ 第 16 轮（需求 6）：发放内容已从 `assim_earth +0.10` 改为区域增益表里的
+	#      玩家侧属性（earth = 护甲 +3.0）。断言据此改成比较 `armor` 的**增量** ——
+	#      不能再假设基线是 0（角色特性 / 道具 / 局外天赋都可能已经给过护甲）。
 	var pl_r: Node = _main.get_node("Player")
 	var blk_bak: int = GameState.area_bonus_block
 	var area_bak := String(GameState.area_element)
-	var key_r := "assim_earth"
+	var key_r := "armor"
 	var stat_bak: float = float(pl_r.stats.get(key_r, 0.0))
+	var want_gain: float = float(Config.area_bonus_player("earth").get(key_r, 0.0))
 	GameState.area_element = "earth"
 	GameState.area_bonus_block = 0
-	pl_r.stats[key_r] = 0.0
 	_main._grant_area_bonus(1)
 	var after_first: float = float(pl_r.stats.get(key_r, 0.0))
 	_main._grant_area_bonus(1)   # 同一区块再来一次：必须无效
@@ -5650,12 +5653,30 @@ func _check_element_engine() -> void:
 	pl_r.stats[key_r] = stat_bak          # 先还原再断言，避免中途 return 污染后续用例
 	GameState.area_bonus_block = blk_bak
 	GameState.area_element = area_bak
-	if not is_equal_approx(after_first, Config.AREA_BONUS):
-		_fail("区域加成未发放（assim_earth = %.4f，应为 %.2f）"
-			% [after_first, Config.AREA_BONUS])
+	if want_gain <= 0.0:
+		_fail("区域增益表 earth 未登记 armor（`Config.area_bonus_player` 与 ZONE_BUFFS 脱节）")
+		return
+	if not is_equal_approx(after_first - stat_bak, want_gain):
+		_fail("区域加成未发放（armor %.4f → %.4f，应为 +%.2f）"
+			% [stat_bak, after_first, want_gain])
 		return
 	if not is_equal_approx(after_second, after_first):
 		_fail("区域加成不幂等：同一区块重复领取（%.4f → %.4f）" % [after_first, after_second])
+		return
+	# 8b) 同化度必须**不再**被区域加成碰过 —— 这正是需求 6 的原始诉求，
+	#     只断言 armor 涨了的话，「assim 也在涨」这种半改状态会判绿。
+	var assim_bak: float = float(pl_r.stats.get("assim_earth", 0.0))
+	GameState.area_element = "earth"
+	GameState.area_bonus_block = 0
+	_main._grant_area_bonus(1)
+	var assim_after: float = float(pl_r.stats.get("assim_earth", 0.0))
+	GameState.area_bonus_block = blk_bak
+	GameState.area_element = area_bak
+	pl_r.stats["assim_earth"] = assim_bak
+	pl_r.stats[key_r] = stat_bak        # 8b 又发了一次 armor，一并还原（否则污染后续用例）
+	if not is_equal_approx(assim_after, assim_bak):
+		_fail("区域加成仍在加同化度（assim_earth %.3f → %.3f，需求 6 要求改为纯增益）"
+			% [assim_bak, assim_after])
 		return
 	# ---- 51. 角色五行推导：空串合法，非空必须合法，且金印记不再缺失 ----
 	for cid in Registry.characters:
@@ -5667,7 +5688,7 @@ func _check_element_engine() -> void:
 		if not Config.SIGILS.has(elem):
 			_fail("五行印记缺失：%s（每个五行都要有印记，否则该行角色无印记可配）" % String(elem))
 			return
-	print("SMOKE: element engine OK (5x5 关系解算 / 标定 / 区域序推导 / 区块轮转 / 区域加成幂等 全部对上 §2.3+§8)")
+	print("SMOKE: element engine OK (5x5 关系解算 / 标定 / 区域序推导 / 区块轮转 / 区域加成幂等且不再加同化度 全部对上 §2.3+§8)")
 
 ## 五行伤害通道：8 条通道是否真的把元素传到了终点。
 ## 分两半 —— 输出侧（玩家→怪）与受击侧（怪→玩家），各自拿真实节点跑一次。
@@ -8272,7 +8293,7 @@ func _check_dot_contribution() -> void:
 ##   ② 五行反应：每触发一次，参与的两个元素（`from` / `to`）各 `+REACTION_ASSIM_GAIN`，clamp 到上限
 ##
 ## ⚠️ ① 必须**新建** Player：主场景那个的 `_ready()` 早跑过了，它的 assim 混着
-##    前面用例发的道具/升级/区域加成，**无法反推「开局值」**。
+##    前面用例发的道具/升级（区域加成自第 16 轮起已不再改同化度），**无法反推「开局值」**。
 ## ⚠️ 两条都配**反向对照**：只测正向的话，「全元素都加了」或「全都没加」都可能判绿。
 func _check_assim_gain() -> void:
 	var saved_cid: String = GameState.character_id
