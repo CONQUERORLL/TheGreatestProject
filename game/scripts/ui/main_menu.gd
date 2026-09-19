@@ -124,6 +124,7 @@ func _ready() -> void:
 	#      loop.paused = false
 	#      loop.set_radius(minf(vp.x, vp.y) * 0.30)
 	_build_home()
+	_build_version_tag()
 	_build_wizard()
 	_build_back_hint()
 	_build_leaderboard_panel()
@@ -317,6 +318,40 @@ func _home_specs() -> Array:
 	specs.append(["创 意 工 坊", 220.0, func() -> void: get_tree().change_scene_to_file("res://scenes/ui/workshop.tscn")])
 	specs.append(["退　　出", 220.0, func() -> void: get_tree().quit()])
 	return specs
+
+# ---------------- 版本号角标 ----------------
+
+## 右下角版本号（用户 2026-09-19 需求）。
+## 版本号真值来自 `Config.version_string()` —— 这里**只负责显示**，不自己拼字符串。
+##
+## ⚠️ 三条约束（改这里前先读）：
+##  ① **必须挂在 self（主菜单根）上，不能进 `_home`**：`_home` 会在打开向导/图鉴/
+##     排行榜等面板时被 `visible = false`，挂进去会导致进面板时角标一起消失。
+##     挂根节点才是**常驻覆盖层**，各面板切换都不影响它。
+##  ② `mouse_filter = IGNORE`：右下角在手机上是手势区，绝不能被一个标签吃掉触摸。
+##  ③ 锚点贴右下角 + 用 `UiMetrics.margin()` 让开安全区（手机刘海/手势条）；
+##     `z_index` 抬高，确保压在任何面板暗底之上。
+func _build_version_tag() -> void:
+	var lbl := Label.new()
+	lbl.text = Config.version_string()
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lbl.add_theme_font_size_override("font_size", 12 if _mov else 13)
+	# 弱化处理：版本号是「需要时能找到」的信息，不该抢主菜单的视觉重心
+	lbl.add_theme_color_override("font_color", Color(0.55, 0.6, 0.68, 0.75))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	lbl.anchor_left = 1.0
+	lbl.anchor_top = 1.0
+	lbl.anchor_right = 1.0
+	lbl.anchor_bottom = 1.0
+	var m := UiMetrics.margin()
+	var pad := 8.0 if _mov else 10.0
+	lbl.offset_left = -180.0
+	lbl.offset_right = -(m.x + pad)
+	lbl.offset_top = -40.0
+	lbl.offset_bottom = -(m.y + pad)
+	lbl.z_index = 90   # 压在面板暗底(dim)之上；< 100 不干扰弹窗内部层级
+	add_child(lbl)
 
 # ---------------- 开局向导 ----------------
 
