@@ -429,7 +429,8 @@ func _weapon_runtime_cfg(c: Dictionary) -> Dictionary:
 	if rb > 0.0:
 		wc["bullet_life"] = float(c.get("bullet_life", 1.1)) * (1.0 + rb)
 	if ab > 0.0 and c.has("splash"):
-		wc["splash"] = float(c.get("splash", 0.0)) * (1.0 + ab)
+		# ⚠️ #9：`aoe_radius_bonus` 按**面积**定义 → 半径走 sqrt（见 Config.radius_scale）
+		wc["splash"] = float(c.get("splash", 0.0)) * Config.radius_scale(ab)
 	if not is_zero_approx(sm) and c.has("spread"):
 		wc["spread"] = float(c.get("spread", 0.0)) * proj_spread_scale()
 	return wc
@@ -444,8 +445,10 @@ func proj_spread_scale() -> float:
 	return clampf(1.0 + float(stats.get("proj_spread_mult", 0.0)), 0.15, 4.0)
 
 func _melee_slash(c: Dictionary, ang: float) -> void:
-	# 斩击范围受角色的近战范围特性加成（视觉与判定用同一个 reach）
-	var reach := float(c["range"]) * (1.0 + float(stats.melee_range_bonus))
+	# 斩击范围受角色的近战范围特性加成（视觉与判定用同一个 reach）。
+	# ⚠️ #9：加成按**面积**定义，半径只能涨 sqrt(1+bonus)（见 Config.radius_scale）——
+	#    用 `1 + bonus` 当半径倍率会把面积放大成平方（+20% → 面积 +44%）。
+	var reach := float(c["range"]) * Config.radius_scale(float(stats.melee_range_bonus))
 	var s := Slash.new()
 	# 外观族 / 特性强调色 / 状态配色一起给到刀光：太刀是月牙、长鞭会甩、重锤推冲击波
 	s.setup(global_position, ang, reach, c.swing_arc,
@@ -1358,7 +1361,8 @@ func _play_skill_vfx() -> void:
 func weapon_reach(cfg: Dictionary) -> float:
 	var wc := _weapon_runtime_cfg(cfg)
 	if String(wc.get("attack_type", "projectile")) == "melee":
-		return float(wc.get("range", 0.0)) * (1.0 + float(stats.melee_range_bonus))
+		# ⚠️ 必须与 `_melee_slash` 同一算法（含 #9 的 sqrt 面积换算），否则展示口径与实际判定分叉
+		return float(wc.get("range", 0.0)) * Config.radius_scale(float(stats.melee_range_bonus))
 	return float(wc.get("bspeed", 0.0)) * float(wc.get("bullet_life", 1.1)) + 26.0 \
 		+ float(wc.get("splash", 0.0))
 

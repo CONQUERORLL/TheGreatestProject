@@ -1990,6 +1990,21 @@ static func affinity_mult(item_tags: Array, affinity: Array) -> float:
 ## 对策刻意**不改数值**（那会动到体检表与冒烟的既有口径），而是降低它继续出现的概率：
 ## 投入越多 → 该族在商店里越难刷到 → 强度增长被压回波次曲线附近。
 
+## ---- 范围类加成：面积 → 半径 的换算（#9 · 2026-09-19 用户需求）----
+##
+## 约定：范围类加成一律按**面积**定义 ——「范围 +20%」= 覆盖面积 +20%。
+## 半径因此只能涨 `sqrt(1.2) − 1 ≈ 9.5%`，而不是 20%：
+## 直接用 `1 + bonus` 当半径倍率，面积会变成 `(1.2)² = 1.44` 倍（平方放大），
+## 这就是「范围道具一多就雪崩」的几何根因（第 11 轮金剑复盘）。
+##
+## ⚠️ 只用于**半径**通道：
+##    · `melee_range_bonus` → 近战扇形 reach（面积 ∝ reach²）
+##    · `aoe_radius_bonus`  → 爆炸 / 溅射 splash（面积 ∝ splash²）
+## ⚠️ **不用于** `bullet_range_bonus` / `throw_range_bonus` —— 那是**射程（距离）**，
+##    收益线性（弹道扫过的是一条带，长度翻倍面积才翻倍），不当平方处理。
+static func radius_scale(area_bonus: float) -> float:
+	return sqrt(maxf(0.0, 1.0 + area_bonus))
+
 ## 几何类：收益是二次的（面积），边际递增 —— 抑制最狠的一族
 const GEOMETRIC_STATS := ["melee_range_bonus", "aoe_radius_bonus",
 	"bullet_range_bonus", "throw_range_bonus", "proj_spread_mult"]

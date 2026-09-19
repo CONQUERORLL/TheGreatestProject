@@ -7593,6 +7593,61 @@ func _check_reach_safety() -> void:
 			_fail("S8: 近战武器 %s reach=%.0f 不该达到远程敌人最小 keep_dist=%.0f（贴脸风险就是它的定价）"
 				% [wid3, rr, shooter_min])
 			return
+	# ---- #9 范围加成按面积：半径只能涨 sqrt(1+加成) ----
+	var rs20 := Config.radius_scale(0.20)
+	if not is_equal_approx(Config.radius_scale(0.0), 1.0):
+		_fail("#9 无加成时半径倍率必须恒为 1.0（=%.4f）" % Config.radius_scale(0.0))
+		return
+	if not is_equal_approx(rs20, sqrt(1.20)) or rs20 >= 1.20:
+		_fail("#9 半径换算错误（radius_scale(0.20)=%.4f，期望 %.4f，且必须 < 1.20）"
+			% [rs20, sqrt(1.20)])
+		return
+	# 面积守恒：半径倍率的**平方**必须等于「1 + 加成」—— 这就是「按面积」的定义
+	for b9 in [0.10, 0.20, 0.42, 1.0]:
+		var area_gain: float = Config.radius_scale(float(b9)) * Config.radius_scale(float(b9))
+		if not is_equal_approx(area_gain, 1.0 + float(b9)):
+			_fail("#9 面积守恒被破坏（加成 %.2f → 实际面积 ×%.4f）" % [b9, area_gain])
+			return
+	# 集成：玩家侧实际算出来的 reach / splash 必须走同一换算（不能只有纯函数对）
+	var p9: Node2D = _main.get_node("Player")
+	var keep9: Dictionary = {}
+	for k9 in ["melee_range_bonus", "aoe_radius_bonus"]:
+		keep9[k9] = float(p9.stats[k9])
+		p9.stats[k9] = 0.20
+	var melee_probe: Dictionary = {}
+	for wid9 in Registry.weapons:
+		if String(Registry.weapons[wid9].get("attack_type", "projectile")) == "melee":
+			melee_probe = Registry.weapons[wid9]
+			break
+	if melee_probe.is_empty():
+		_restore_stat_keys(p9, keep9)
+		_fail("#9 找不到近战武器用于集成验证")
+		return
+	var want_reach: float = float(melee_probe.get("range", 0.0)) * Config.radius_scale(0.20)
+	if not is_equal_approx(p9.weapon_reach(melee_probe), want_reach):
+		_restore_stat_keys(p9, keep9)
+		_fail("#9 近战 reach 未走面积换算（实得 %.2f，期望 %.2f）"
+			% [p9.weapon_reach(melee_probe), want_reach])
+		return
+	var splash_probe: Dictionary = {}
+	for wid10 in Registry.weapons:
+		var wc10: Dictionary = Registry.weapons[wid10]
+		if float(wc10.get("splash", 0.0)) > 0.0:
+			splash_probe = wc10
+			break
+	if splash_probe.is_empty():
+		_restore_stat_keys(p9, keep9)
+		_fail("#9 找不到带 splash 的武器用于集成验证")
+		return
+	var rt9: Dictionary = p9._weapon_runtime_cfg(splash_probe)
+	var want_splash: float = float(splash_probe.get("splash", 0.0)) * Config.radius_scale(0.20)
+	if not is_equal_approx(float(rt9.get("splash", 0.0)), want_splash):
+		_restore_stat_keys(p9, keep9)
+		_fail("#9 溅射半径未走面积换算（实得 %.2f，期望 %.2f）"
+			% [float(rt9.get("splash", 0.0)), want_splash])
+		return
+	_restore_stat_keys(p9, keep9)
+	print("SMOKE: #9 范围加成按面积（radius_scale 面积守恒 + 近战 reach / 溅射 splash 集成）OK")
 	print("SMOKE: S8 综合战力（reach / AOE 面积 / %d 只内置远程怪 keep_dist %.0f~%.0f）OK"
 		% [n_shooter, shooter_min, shooter_max])
 
@@ -8427,10 +8482,13 @@ func _check_balance_log() -> void:
 			float(gcfg.bspeed) * float(gcfg.bullet_life) * 1.5 + 26.0 + float(gcfg.splash)):
 		_fail("BalanceLog: 投掷物应吃「投掷距离」类加成（存活时长 ×1.5）")
 	p.stats.throw_range_bonus = 0.0
-	# 爆炸半径加成改的是 splash（「爆多大」），与「飞多远」正交 → 两类武器都吃
+	# 爆炸半径加成改的是 splash（「爆多大」），与「飞多远」正交 → 两类武器都吃。
+	# ⚠️ #9：`aoe_radius_bonus` 按**面积**定义 → 半径走 sqrt(1+0.5)，不是 ×1.5。
 	p.stats.aoe_radius_bonus = 0.5
-	if not is_equal_approx(p.weapon_reach(gcfg), r_expect + float(gcfg.splash) * 0.5):
-		_fail("BalanceLog: 投掷物应吃「爆炸半径」类加成（加在 splash 上）")
+	var splash_boosted: float = float(gcfg.splash) * Config.radius_scale(0.5)
+	if not is_equal_approx(p.weapon_reach(gcfg),
+			r_expect - float(gcfg.splash) + splash_boosted):
+		_fail("BalanceLog: 投掷物应吃「爆炸半径」类加成（加在 splash 上、按面积换算）")
 	p.stats.aoe_radius_bonus = 0.0
 	# 近战：射程 = range（不含枪口 26，也不含 splash）
 	var mcfg: Dictionary = Registry.weapons.get("knife", {})
@@ -8438,8 +8496,10 @@ func _check_balance_log() -> void:
 	if not is_equal_approx(m_base, float(mcfg.range)):
 		_fail("BalanceLog: 近战射程应等于 range（%.1f vs %.1f）" % [m_base, float(mcfg.range)])
 	p.stats.melee_range_bonus = 0.5
-	if not is_equal_approx(p.weapon_reach(mcfg), float(mcfg.range) * 1.5):
-		_fail("BalanceLog: 近战射程未吃「近战范围」加成")
+	# ⚠️ #9：近战 reach 同样按**面积**定义 → ×sqrt(1.5)，不是 ×1.5
+	if not is_equal_approx(p.weapon_reach(mcfg),
+			float(mcfg.range) * Config.radius_scale(0.5)):
+		_fail("BalanceLog: 近战射程未吃「近战范围」加成（按面积换算）")
 	p.stats.melee_range_bonus = 0.0
 	# 原样还回去
 	p.stats.bullet_range_bonus = keep_bullet
