@@ -40,10 +40,23 @@ var _aura_self_active := false
 ## S3.5 只需在 spawn 时写 `enemy.block_bias = Config.RESIST_BLOCK_BIAS` 再调
 ## `refresh_element_resist()`，不必回头改公式。
 var block_bias := 0.0
-## 地形区域加成（第 9 轮 · 需求 4）：站在本区地形圆内、且元素与本区相同时 R +该值。
-## 由 `fx/terrain_zone.gd` 每 0.35s 低频扫描写入（与 BOSS 光环同一口径）；离开圆即归零。
-## 与 block_bias / aura_bonus 进同一个加法项 → 天然被 `_resist_cap()` 压住（普通 0.75）。
-var zone_bonus := 0.0
+## 地形区域增益（第 16 轮 · 需求 6）：站在区域圆内的**任何怪**（不分元素）都吃该区 buff。
+## 由 `fx/terrain_zone.gd` 每 0.35s 低频扫描写入（与 BOSS 光环同一口径）；离开圆即撤销。
+##
+## 四个通道（见 `Config.ZONE_BUFFS[].enemy`）：
+##   `zone_resist` 元素抗性加项，与 block_bias / aura_bonus 进同一个加法项 →
+##                 天然被 `_resist_cap()` 压住（普通 0.75、同属性 BOSS 0.90）；
+##   `_zone_dmg_mult` / `_zone_spd_mult` 分别乘在 `touch_dmg`（接触 + 技能弹幕）与 `speed` 上；
+##   `_zone_regen_add` 加到 `regen`（HP/s）。
+var zone_resist := 0.0
+## 生效中的区域槽位：zone_id -> 该区的 enemy buff 字典（区域可重叠，故按区记而不是记一份）
+var _zone_ids: Dictionary = {}
+## 已经乘进 `touch_dmg` / `speed` 的区域倍率，以及已经加进 `regen` 的量（撤销/替换用）。
+## ⚠️ 不能用"基础值重算"：`speed` 会被别的逻辑原地乘（BOSS 狂暴 ×1.35、凤凰涅槃 ×1.5），
+##    重算会把这些乘法一并抹掉且不报错。先把上一次的区域倍率除回去、再乘新的才等价。
+var _zone_dmg_mult := 1.0
+var _zone_spd_mult := 1.0
+var _zone_regen_add := 0.0
 ## ---- 五行机制字段（§12-S3），全部来自 cfg，setup 时快照 ----
 var shield := 0.0           # 当前护盾值（先扣盾、后扣血）
 var max_shield := 0.0
@@ -188,7 +201,7 @@ func setup(type_name: String, wave: int = 1) -> void:
 func _calc_element_resist() -> float:
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	return Config.mob_resist(spawn_wave, float(diff.get("resist_mult", 0.0)),
-		block_bias, aura_bonus, _resist_cap(), zone_bonus)
+		block_bias, aura_bonus, _resist_cap(), zone_resist)
 
 ## 本敌当前的抗性上限：普通怪 0.75；同属性 BOSS 自身吃光环时 0.90（唯一 90% 通道）。
 func _resist_cap() -> float:
@@ -199,14 +212,48 @@ func _resist_cap() -> float:
 func refresh_element_resist() -> void:
 	element_resist = _calc_element_resist()
 
-## 地形区域（第 9 轮 · 需求 4）：由 `fx/terrain_zone.gd` 写入。
+## 地形区域增益（第 16 轮 · 需求 6）：由 `fx/terrain_zone.gd` 每 0.35s 扫描写入。
+## 站进区域圆内 → 写该区的 buff；离区 → 写空字典撤销本区份额。
 ## 写前比较（照抄 `_refresh_boss_aura`）—— 距离判定每 0.35s 跑一次、怪又多，
-## 不做这个比较就是每次扫描把全场怪的抗性重算一遍，纯白烧 CPU。
-func set_zone_bonus(v: float) -> void:
-	if is_equal_approx(zone_bonus, v):
+## 不做这个比较就是每次扫描把全场怪的属性重算一遍，纯白烧 CPU。
+func set_zone_buff(zone_id: String, buff: Dictionary) -> void:
+	if buff.is_empty():
+		if not _zone_ids.has(zone_id):
+			return
+		_zone_ids.erase(zone_id)
+	elif _zone_ids.has(zone_id) and _zone_ids[zone_id] == buff:
 		return
-	zone_bonus = v
-	refresh_element_resist()
+	else:
+		_zone_ids[zone_id] = buff.duplicate(true)
+	_apply_zone_buffs()
+
+## 把所有生效区的 enemy buff 求和后落地（见 `_zone_*` 字段的注释：增量式替换，
+## 不做"基础值重算"，否则会抹掉 BOSS 狂暴 / 涅槃那些原地乘法）。
+func _apply_zone_buffs() -> void:
+	var dmg := 0.0
+	var spd := 0.0
+	var rg := 0.0
+	var res := 0.0
+	for zid in _zone_ids:
+		var b: Dictionary = _zone_ids[zid]
+		dmg += float(b.get("dmg", 0.0))
+		spd += float(b.get("speed", 0.0))
+		rg += float(b.get("regen", 0.0))
+		res += float(b.get("resist", 0.0))
+	var new_dmg := 1.0 + dmg
+	if not is_equal_approx(new_dmg, _zone_dmg_mult):
+		touch_dmg = touch_dmg / _zone_dmg_mult * new_dmg
+		_zone_dmg_mult = new_dmg
+	var new_spd := 1.0 + spd
+	if not is_equal_approx(new_spd, _zone_spd_mult):
+		speed = speed / _zone_spd_mult * new_spd
+		_zone_spd_mult = new_spd
+	if not is_equal_approx(rg, _zone_regen_add):
+		regen = maxf(0.0, regen - _zone_regen_add + rg)
+		_zone_regen_add = rg
+	if not is_equal_approx(res, zone_resist):
+		zone_resist = res
+		refresh_element_resist()
 
 ## BOSS 光环（§5.5.5）。两条规则：
 ##   规则 1 —— **玩家元素 == BOSS 元素**（同属性）时，BOSS 自身 R +0.15，

@@ -351,8 +351,9 @@ const BOSS_AURA_RADIUS := 400.0
 ##
 ## `cap` 由调用方按关系给：普通怪一律 ELEMENT_TAKEN_CAP_MOB.same = 0.75；
 ## 同属性 BOSS 存活且自身吃光环时传 CAP_MOB_SAME_BOSS = 0.90。
-## `zone` = 地形区域加成（第 9 轮 · 需求 4）：怪站在本区地形内且元素与本区相同时由
-## `enemy.zone_bonus` 传入。与 block_bias / aura 同一个加法项 —— 因此它**天然受 `cap` 约束**，
+## `zone` = 地形区域加成（第 9 轮引入 · 第 16 轮起改为「区内任何怪都吃」）：由
+## `enemy.zone_resist` 传入（第 16 轮起由 `Config.ZONE_BUFFS[].enemy.resist` 决定）。
+## 与 block_bias / aura 同一个加法项 —— 因此它**天然受 `cap` 约束**，
 ## 这正是用户要的「加成不超过上限」（普通怪 0.75、同属 BOSS 0.90）。
 ## ⚠️ 参数追加在**最后**且带默认值：既有的位置调用（含 5 条冒烟断言）一字不用改。
 static func mob_resist(wave: int, resist_mult: float, block_bias: float = 0.0,
@@ -1518,26 +1519,64 @@ static func wave_area_element(player_element: String, wave: int) -> String:
 ## 20 波走完 5 区，同一个元素最多被叠加到 0.50（区域序里每个元素只出现一次）。
 const AREA_BONUS := 0.10
 
-## ---- 场景属性地形区域（第 9 轮 · 用户需求 4）----
-## 每 4 波（= 一个区块）换一片**圆形**地形，属性 = 本区区域元素（`wave_area_element`）。
-##   · 玩家站进区内 → 对该元素的**同化度临时 +`TERRAIN_ZONE_BONUS`**；
-##   · 区内且元素与本区相同的**怪** → 抗性临时 +同值；
-##   · 离区即撤销（进出可逆）→ 它是"站位收益"，不是"进区奖励"。
+## ---- 场景属性地形区域（第 9 轮引入 · 第 16 轮按用户需求 6 重做）----
+## 每 4 波（= 一个区块）新增一片**圆形**地形，属性 = 本区区域元素（`wave_area_element`）。
 ##
-## 【与 `AREA_BONUS` 的分工，刻意并存】`AREA_BONUS` 是**进区首波一次性、永久**的养成轴
-##   （选择在哪个区深耕）；本机制是**区块内一片有边界的临时区域**（这四波你要不要站进去）。
-##   硬合并会同时破坏「一次性发放的幂等」与「站进去才有用」两条规则。
+## 【第 16 轮改了什么 —— 用户原话】「区域属性不要变成增加同化度了，改成各种增益buff，
+##   怪物，boss，玩家都能享受加成，而且场景轮转后，之前的区域不消失」。
+##   旧口径：玩家站进区内 → 该元素**同化度**临时 +；区内**同元素**怪 → 元素抗性 +。
+##   新口径三条：
+##     ① 增益不再是同化度，而是按元素分五套的**属性/战斗 buff**（见 `ZONE_BUFFS`）；
+##     ② 站进圆内的**任何单位**（玩家 / 普通怪 / BOSS）都吃这份 buff，**与双方的五行无关**
+##        —— 旧版「同元素才吃」的筛选一并取消（那是抗性加成的口径，不是 buff 的口径）；
+##     ③ 区域**跨区块累积**，场景轮转后旧区不销毁（见 `main._terrain_zones`）。
+##
+## 【为什么双方同 buff】区域从此是「争夺点」而不是「玩家专属补给」：站进去你变强，
+##   怪站进去也变强 —— 「在哪打」重新变成一个决策，而不是"看到圈就站进去"的纯收益。
 ##
 ## 【圆心是纯函数】圆心只由 `(玩家元素, 区块号)` 哈希得出，**不用 GameRng** ——
 ##   读档重进同一波、每日挑战全服，看到的都是同一片区域（与商店/BOSS 的确定性口径一致）。
-##   刻意**不使用波次**：同一区块四波位置固定，玩家才能记住"这片地在这"并据此规划走位；
-##   每波换位置只会让它退化成随机踩点。
+##   刻意**不使用波次**：同一区块四波位置固定，玩家才能记住"这片地在这"并据此规划走位。
 ##
-## 【上限】玩家侧：增量本身夹到 `TERRAIN_ZONE_CAP`，最终仍受 `_sanitize_stats` 的 assim ≤ 2.0
-##   与 `apply_hit_mult` 的逐关系 cap 约束；怪物侧：并入 `mob_resist` 的加法项，受其 cap 约束。
-const TERRAIN_ZONE_BONUS := 0.20
-const TERRAIN_ZONE_CAP := 0.30
+## 【与 `AREA_BONUS` 的分工，刻意并存】`AREA_BONUS` 是**进区首波一次性、永久**的养成轴
+##   （选择在哪个区深耕）；本机制是**有边界、可进出的站位收益**。两者语义不同，不合并。
 const TERRAIN_ZONE_RADIUS := 260.0
+
+## 场上同时保留的区域片数上限。标准 20 波只有 5 个区块，所以标准局**永远够用**；
+## 这条是给无尽局兜底的 —— 无尽每 4 波加一片，不设上限就是几百片地，
+## 每片地每 0.35s 扫一遍全场敌人，开销随片数线性涨。超出时踢掉**最早**的那片。
+const TERRAIN_ZONE_MAX := 5
+
+## 五套区域增益。键 = 元素 id。
+##   · `player` = 写进 `player.stats` 的**增量**（加成语义，与道具/升级同一套键）；
+##   · `enemy`  = 敌人侧通道，四个键：`dmg`（伤害倍率增量）/ `speed`（移速倍率增量）/
+##                `regen`（回血 HP/s，加算）/ `resist`（元素抗性加项，进 `mob_resist`）。
+## ⚠️ 两侧量级刻意接近：区域是争夺点，不该有一侧白拿。
+## ⚠️ 玩家侧的键必须同时存在于 `player._sanitize_stats` 的钳位列表里 ——
+##    这里给的是**临时增量**，落盘前会被 `main._suspend_terrain_buffs()` 撤掉（见那条注释）。
+const ZONE_BUFFS := {
+	"fire":  { "name": "炽热", "desc": "伤害 +12%", "player": { "dmg_mult": 0.12 },
+		"enemy": { "dmg": 0.12 } },
+	"water": { "name": "寒潭", "desc": "攻速 +12%", "player": { "as_mult": 0.12 },
+		"enemy": { "speed": 0.10 } },
+	"wood":  { "name": "生机", "desc": "回血 +1.2/s", "player": { "regen": 1.2 },
+		"enemy": { "regen": 1.5 } },
+	"metal": { "name": "锋锐", "desc": "暴击 +6%", "player": { "crit_ch": 0.06 },
+		"enemy": { "dmg": 0.10 } },
+	"earth": { "name": "磐石", "desc": "护甲 +3", "player": { "armor": 3.0 },
+		"enemy": { "resist": 0.08 } },
+}
+
+## 某元素的区域增益（空元素 / 未登记 → 空字典 = 该区无增益）
+static func zone_buff(element: String) -> Dictionary:
+	return ZONE_BUFFS.get(element, {})
+
+## 区域增益的一行说明（横幅/HUD 用）。空元素返回空串。
+static func zone_buff_text(element: String) -> String:
+	var b: Dictionary = zone_buff(element)
+	if b.is_empty():
+		return ""
+	return "%s区域：%s" % [String(ELEMENT_NAME.get(element, element)), String(b.get("name", ""))]
 
 static func terrain_zone_for_wave(player_element: String, wave: int) -> Dictionary:
 	var elem := wave_area_element(player_element, wave)
@@ -1554,8 +1593,7 @@ static func terrain_zone_for_wave(player_element: String, wave: int) -> Dictiona
 		"element": elem,
 		"center": center,
 		"radius": TERRAIN_ZONE_RADIUS,
-		"bonus": TERRAIN_ZONE_BONUS,
-		"cap": TERRAIN_ZONE_CAP,
+		"buff": zone_buff(elem),
 	}
 
 ## §7.4 角色特性：元素角色在**本元素**上开局自带的同化度（白板角色 `element==""` 不吃）。

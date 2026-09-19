@@ -40,10 +40,18 @@ var skill: Dictionary = {}        # 当前角色主动技能（空 = 无技能�
 var skill_cd := 0.0               # 技能冷却剩余秒
 var _skill_buff_t := 0.0          # 技能临时增益剩余秒
 var _skill_buff_effects: Dictionary = {}   # 技能临时增益的效果（结束后撤销）
-# ---- 地形区域临时同化度（第 9 轮 · 用户需求 4）----
-# 记的是「**实际写进 stats 的量**」，而不是「想要写的量」—— 见 set_zone_assim 的长注释。
-var _zone_assim_element := ""
-var _zone_assim_applied := 0.0
+# ---- 地形区域增益（第 16 轮 · 用户需求 6）----
+## zone_id -> 该区给的属性增量（player.stats 的键）。区域会累积、可重叠，所以
+## **按区记槽位**、由 `_apply_zone_buffs` 求和后统一落地 —— 若每个区各自往 stats 上加一笔，
+## 重叠时会重复累加，离区时又会把别的区的量撤掉（顺序相关，且完全不报错）。
+var _zone_buffs: Dictionary = {}
+## zone_id -> 该区的元素 id。**仅供展示**（HUD 增益条要写「火地脉」），不参与结算 ——
+## 结算只认 `_zone_buffs` 里的属性增量，所以它缺失也不会算错任何数值。
+var _zone_elem: Dictionary = {}
+## stat 键 -> 上一轮**实际写进 stats 的量**（撤销用）。
+## ⚠️ 记"实际生效量"而不是"想要写的量"：`_sanitize_stats()` 会钳位（如 crit_ch ≤ 0.90、
+##    armor ≥ −7.9）。按"想要写的量"撤会把玩家自己的属性吃掉一截 —— 不报错、只是悄悄变少。
+var _zone_buff_applied: Dictionary = {}
 
 @onready var camera: Camera2D = $Camera
 
@@ -607,16 +615,21 @@ func active_buffs() -> Array:
 			"remain": _skill_buff_t,
 			"color": Color("7ee0c0"),
 		})
-	# ② 地形属性区域（第 9 轮）：站进区块才有，**离区即撤**（所以没有倒计时）
-	if _zone_assim_element != "" and not is_zero_approx(_zone_assim_applied):
-		var en := String(Config.ELEMENT_NAME.get(_zone_assim_element, _zone_assim_element))
+	# ② 地形属性区域（第 9 轮引入 · 第 16 轮改为**增益 buff**）：站进区里才有、**离区即撤**
+	# （所以没有倒计时）。区域会累积、可重叠 → 有几个区在生效就列几条。
+	for zid in _zone_buffs:
+		var zeff: Dictionary = _zone_buffs[zid]
+		if zeff.is_empty():
+			continue
+		var el := String(_zone_elem.get(zid, ""))
+		var en := String(Config.ELEMENT_NAME.get(el, el))
 		out.append({
 			"ico": "🗺",
-			"name": "%s地脉" % en,
-			"effects": { "assim_" + _zone_assim_element: _zone_assim_applied },
-			"note": "站在%s区块内才有，离开区块立即失效" % en,
+			"name": "%s地脉 · %s" % [en, String(Config.zone_buff(el).get("name", "增益"))],
+			"effects": zeff.duplicate(),
+			"note": "站在%s区域内才有，离开立即失效（敌我通用）" % en,
 			"remain": -1.0,
-			"color": Color(String(Config.ELEMENT_COLOR.get(_zone_assim_element, "#9aa3b2"))),
+			"color": Color(String(Config.ELEMENT_COLOR.get(el, "#9aa3b2"))),
 		})
 	# ③ 战意（momentum 特性）：按本波击杀累积、**波末清零** → 同样无倒计时
 	if float(stats.get("momentum_dmg_bonus", 0.0)) > 0.0:
@@ -911,33 +924,52 @@ func heal(amount: float) -> float:
 			"+" + str(roundi(gained)), Color("7ec850"))
 	return gained
 
-## 地形区域：站在区内时对 `elem` 临时 +`v` 同化度；离开时传 `("", 0.0)` 撤销。
-## 由 `fx/terrain_zone.gd` 每 0.35s 扫描写入（波次切换会换元素，所以**每次扫描都写一遍**，
-## 由本函数自己判断"要不要撤销上一次"）。
+## 地形区域增益（第 16 轮 · 需求 6）：写入 / 撤销**某一个区**给的属性增量。
+## `zone_id` 是区域节点的唯一 id（`main` 按区块号生成），`effects` 形如 `{"dmg_mult": 0.12}`；
+## 离开该区传空字典即撤销本区的份额（别的区的份额照旧生效）。
 ##
-## ⚠️⚠️ 这里必须记「**实际生效量**」而不是「想要写的量」：
-##     `_sanitize_stats()` 会把 assim clamp 到 2.0。若玩家本来已经 1.95，
-##     写入 0.20 实际只生效 0.05；撤销时按 0.20 减就会**把玩家自己的同化度吃掉 0.15**——
-##     不报错、只是数值悄悄变少（正是本项目最怕的那类静默算错）。
-##     `after - before` 天然免疫这个上限，也免疫「同帧多来源同时写入」的重叠。
-##
-## ⚠️ 撤销走 `maxf(0.0, ...)`：读档会把 stats 整体覆盖（SaveRun.restore），
-##     此时残留的"已应用量"若照减可能变负 —— 宁可少减，也不许把同化度压成负数。
-func set_zone_assim(elem: String, v: float) -> void:
-	if _zone_assim_element != "" and _zone_assim_applied != 0.0:
-		var old_key := "assim_" + _zone_assim_element
-		stats[old_key] = maxf(0.0, float(stats.get(old_key, 0.0)) - _zone_assim_applied)
-	_zone_assim_element = ""
-	_zone_assim_applied = 0.0
-	if elem == "" or v <= 0.0:
+## 由 `fx/terrain_zone.gd` 每 0.35s 扫描写入（每次扫描都写一遍，本函数自带"无变化直接返回"）。
+## 站进区里**不再加同化度** —— 那是旧版口径，用户明确要求改成增益 buff。
+func set_zone_buff(zone_id: String, effects: Dictionary, element: String = "") -> void:
+	if effects.is_empty():
+		if not _zone_buffs.has(zone_id):
+			return
+		_zone_buffs.erase(zone_id)
+		_zone_elem.erase(zone_id)
+	elif _zone_buffs.has(zone_id) and _zone_buffs[zone_id] == effects \
+			and String(_zone_elem.get(zone_id, "")) == element:
 		return
-	var key := "assim_" + elem
-	var before := float(stats.get(key, 0.0))
-	stats[key] = before + v
+	else:
+		_zone_buffs[zone_id] = effects.duplicate(true)
+		_zone_elem[zone_id] = element
+	_apply_zone_buffs()
+
+## 清空所有区域增益槽，**不改 stats**。读档 / 重开时必须调：
+## 此时 stats 已被 `SaveRun.restore()` 整体覆盖，旧槽位里的"已应用量"再按减
+## 就会凭空吃掉玩家自己的属性（与第 9 轮临时同化度同源的坑）。
+func reset_zone_buffs() -> void:
+	_zone_buffs.clear()
+	_zone_elem.clear()
+	_zone_buff_applied.clear()
+
+## 把所有生效区的增量求和后落地：先按"实际生效量"撤销上一轮，再写入新的和。
+func _apply_zone_buffs() -> void:
+	for k in _zone_buff_applied:
+		stats[k] = float(stats.get(k, 0.0)) - float(_zone_buff_applied[k])
+	_zone_buff_applied.clear()
+	var want := {}
+	for zid in _zone_buffs:
+		for k in _zone_buffs[zid]:
+			want[k] = float(want.get(k, 0.0)) + float(_zone_buffs[zid][k])
+	if want.is_empty():
+		return
+	var before := {}
+	for k in want:
+		before[k] = float(stats.get(k, 0.0))
+		stats[k] = float(before[k]) + float(want[k])
 	_sanitize_stats()
-	var after := float(stats.get(key, 0.0))
-	_zone_assim_element = elem
-	_zone_assim_applied = after - before
+	for k in want:
+		_zone_buff_applied[k] = float(stats.get(k, 0.0)) - float(before[k])
 
 func _sanitize_stats() -> void:
 	stats.max_hp = maxf(1.0, float(stats.max_hp))

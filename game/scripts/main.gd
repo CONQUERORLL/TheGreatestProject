@@ -70,8 +70,9 @@ var _pending_evolve_wave := 0             # 进化流程结束后要写入存档
 var boss_box_ui: Control = null
 var _box_choices: Array = []      # 当前盒子的候选法宝 id（测试观测用）
 
-## 场景属性地形区域（第 9 轮 · 需求 4）：每波重建一片圆形地形，见 fx/terrain_zone.gd
-var _terrain_zone: Node2D = null
+## 场景属性地形区域（第 9 轮引入 · 第 16 轮起**跨区块累积、不销毁**，见 fx/terrain_zone.gd）
+var _terrain_zones: Array = []   # 已生成并常驻的各区块地形（顺序 = 生成顺序）
+var _terrain_block := 0          # 最近一片地形所属的区块号（0 = 还没有）
 
 func _ready() -> void:
 	# 支持 -- --seed=123 复现（与 Web 原型 ?seed=123 等价）
@@ -83,6 +84,9 @@ func _ready() -> void:
 	if GameState.continue_pending:
 		GameState.continue_pending = false
 		restored_wave = SaveRun.restore(player)
+		# 读档会把 stats 整体覆盖：清掉区域增益槽位（此时场上还没有地形，槽位本应为空，
+		# 这行是防"带着上一局的已应用量去做差减"那类静默扣属性，见 player.reset_zone_buffs）
+		player.reset_zone_buffs()
 	# 局外天赋（MetaProgress）：新局应用；读档局不重复应用（效果已烙进存档 stats）；
 	# 每日挑战不吃局外天赋（全服同局，天赋会造成个体差异）
 	if restored_wave == 0 and not GameState.daily:
@@ -618,7 +622,7 @@ func _on_wave_started(w: int) -> void:
 	Music.play_track(Music.track_for_wave(w), 0.35)
 	_apply_map_theme(GameState.map_theme)
 	_grant_area_bonus(w)
-	_setup_terrain_zone(w)     # 场景属性地形区域（第 9 轮 · 需求 4）
+	_setup_terrain_zone(w)     # 场景属性地形区域（第 9 轮引入 / 第 16 轮改为常驻增益区）
 	if player != null and is_instance_valid(player):
 		player.on_wave_start()   # 角色特性：战意按"本波击杀"重新累积
 
@@ -642,30 +646,44 @@ func _grant_area_bonus(w: int) -> void:
 	var key := "assim_" + area
 	player.stats[key] = float(player.stats.get(key, 0.0)) + Config.AREA_BONUS
 	player._sanitize_stats()   # 受 §7.2 上限约束
+	# 横幅顺带交代**地面新增的那片区域**（第 16 轮 · 需求 6）：区域现在是"双方都能吃的
+	# 增益"，不写出来玩家只能靠猜 —— 而它恰恰是"要不要在这一区开战"的决策依据。
+	var ztxt := Config.zone_buff_text(area)
+	var zdesc := String(Config.zone_buff(area).get("desc", ""))
 	EventBus.banner_requested.emit(
 		"第 %d 区块 · %s" % [block, Config.map_theme_name(GameState.map_theme)],
-		"区域加成：%s同化度 +%d%%" % [String(Config.ELEMENT_NAME.get(area, area)),
-			int(round(Config.AREA_BONUS * 100.0))], 2.2)
+		"区域加成：%s同化度 +%d%%%s" % [String(Config.ELEMENT_NAME.get(area, area)),
+			int(round(Config.AREA_BONUS * 100.0)),
+			("　地上新增 %s（%s，敌我通用）" % [ztxt, zdesc]) if ztxt != "" else ""], 3.0)
 
-## 场景属性地形区域（第 9 轮 · 需求 4）：每波开始时按 `Config.terrain_zone_for_wave`
-## 重建一片圆形地形。换区（每 4 波）会换属性与位置；同一区块内四波位置不变。
+## 场景属性地形区域（第 9 轮引入 · 第 16 轮按用户需求 6 重做）：
+## 进入**新区块**（每 4 波）时**新增**一片圆形地形；**旧区不销毁** —— 用户原话
+## 「场景轮转后，之前的区域不消失」。同一区块内四波复用同一片（圆心/属性都不变）。
 ##
-## ⚠️ 销毁旧区必须**同步**撤销玩家身上的临时同化度（`zone.clear()`），不能只靠 `_exit_tree()`：
-##    `queue_free()` 的 `_exit_tree` 要等到本帧末才跑，而新区的第一次扫描可能在本帧内
-##    就把加成再写一遍 —— 旧区迟到的撤销会把新区的加成一并抹掉（表现为"站进区里没加成"）。
+## ⚠️ 判据用 `blk <= _terrain_block`（而不是 `==`）：读档 / 回退波次回到更早的区块时，
+##    那片地本来就还在场上，不该重复生成第二片。
 ##
 ## ⚠️ 节点必须插成**第一个子节点**且 `z_index = 0`：它是地面装饰，
 ##    必须压在敌人 / 掉落物 / 玩家之下（铁律 3：新视觉元素必须显式声明 z_index 与预算组）。
 ##    它刻意不进 `fx` 组也不吃特效预算 —— 它是常驻地面，不是一次性特效。
 func _setup_terrain_zone(w: int) -> void:
-	_clear_terrain_zone()
 	if player == null or not is_instance_valid(player):
+		return
+	var blk := Config.block_of(w)
+	if blk <= _terrain_block:
 		return
 	var z: Dictionary = Config.terrain_zone_for_wave(String(player.element), w)
 	if z.is_empty():
 		return
+	# 无尽局会无限加片区 → 超出上限先把**最早**那片撤干净再踢掉（见 Config.TERRAIN_ZONE_MAX）
+	while _terrain_zones.size() >= Config.TERRAIN_ZONE_MAX:
+		var old = _terrain_zones.pop_front()
+		if is_instance_valid(old):
+			old.clear()
+			old.queue_free()
 	var zone: Node2D = TerrainZone.new()
-	zone.name = "TerrainZone"
+	zone.zone_id = "blk%d" % blk
+	zone.name = "TerrainZone_%s" % zone.zone_id
 	zone.z_index = 0
 	zone.player = player
 	add_child(zone)
@@ -673,19 +691,20 @@ func _setup_terrain_zone(w: int) -> void:
 	if not zone.configure(z):
 		zone.queue_free()
 		return
-	_terrain_zone = zone
+	_terrain_block = blk
+	_terrain_zones.append(zone)
 
-## 撤掉当前地形区域：**同步**撤销它给玩家/怪物加的临时加成，然后销毁节点。
-## 消费点必须包含**所有"本波结束 / 即将写档"的路径**（main._on_wave_ended /
-## main._on_boss_killed / main._on_player_died）—— 少一处的后果是那片地的临时同化度
-## 被 `SaveRun.save()` 当成永久值写进档，**且完全不报错**。
-func _clear_terrain_zone() -> void:
-	if _terrain_zone == null or not is_instance_valid(_terrain_zone):
-		_terrain_zone = null
-		return
-	_terrain_zone.clear()
-	_terrain_zone.queue_free()
-	_terrain_zone = null
+## 撤销**所有**区域当前给玩家/敌人加的临时增益（区域节点本身**不销毁** —— 第 16 轮 ·
+## 需求 6：场景轮转后旧区仍在；下一波回到 PLAYING 后各区的 0.35s 扫描会自动重写）。
+##
+## 消费点必须包含**所有「本波结束 / 即将写档 / 记平衡日志」的路径**
+## （main._on_wave_ended / main._on_boss_killed / main._on_player_died）——
+## 少一处的后果是站在区里的属性增益被 `SaveRun.save()` 当成**永久属性**写进档，
+## **且完全不报错**（与第 9 轮那片临时同化度同源的坑）。
+func _suspend_terrain_buffs() -> void:
+	for zone in _terrain_zones:
+		if is_instance_valid(zone):
+			zone.clear()
 
 # ------------------------------------------------------------
 # 地图主题化（Phase 5）
@@ -910,10 +929,11 @@ func _on_enemy_killed(type: String) -> void:
 ## 旧实现在这里 `for l in loot组: l.settle()`，会把整波掉落一次性结清 →
 ## 瞬间升好几级 → 连续弹 N 张升级卡（用户报「为什么会出现这么多次选择」）。
 func _on_wave_ended(w: int) -> void:
-	# 地形区域必须在**任何存档/结算之前**撤掉（第 9 轮 · 需求 4）：
+	# 区域增益必须在**任何存档/结算之前**撤掉（第 16 轮；第 9 轮那片临时同化度同理）：
 	# 它是临时加成，而本波结束后的 `_finish_evolve_flow` 会把 stats 写进存档 ——
-	# 不撤的话这一片地会被**永久烙进存档**，且完全不报错。
-	_clear_terrain_zone()
+	# 不撤的话站在区里拿到的属性会被**永久烙进存档**，且完全不报错。
+	# 注意：撤的是**增益**，不是区域本身 —— 第 16 轮起区域跨波常驻（需求 6）。
+	_suspend_terrain_buffs()
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
 	# 波末结算期压住升级卡：本波掉落不再自动入账，但事件波/奇遇的免费升级
@@ -1023,7 +1043,7 @@ func _on_boss_box_pick(id: String) -> void:
 	_open_boss_box()   # 还有盒子就接着开；开完自动回到 _finish_evolve_flow → 存档
 
 func _on_player_died() -> void:
-	_clear_terrain_zone()   # 同上：别把地形临时加成镀进逐波平衡日志
+	_suspend_terrain_buffs()   # 同上：别把区域临时增益镀进逐波平衡日志
 	Music.play_track("defeat", 0.6)
 	CodexData.set_stat_max("best_score", GameState.score)
 	if SaveRun.current_run_owns_slot:
@@ -1082,8 +1102,8 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 		"手柄 P%d 已%s" % [device + 1, "连接" if connected else "断开"], 1.5)
 
 func _on_boss_killed() -> void:
-	# 地形区域是**临时**加成，BOSS 一死本波就可能立刻结算/存档 → 先撤（第 9 轮 · 需求 4）
-	_clear_terrain_zone()
+	# 区域增益是**临时**加成，BOSS 一死本波就可能立刻结算/存档 → 先撤（第 16 轮；区域本身常驻）
+	_suspend_terrain_buffs()
 	if GameState.endless:
 		# 无尽：积分与波次收尾由 wave_manager 处理（wave_ended → 商店 → 下一波）
 		EventBus.banner_requested.emit("BOSS 击破！",

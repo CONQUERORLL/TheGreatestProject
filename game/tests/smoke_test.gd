@@ -6539,40 +6539,101 @@ func _check_round9_boss_terrain() -> void:
 			<= float(z5.get("radius", 0.0)):
 		_fail("地形区域覆盖了玩家出生点（开局白送一档同化度）")
 		return
-	# ---- 6. 玩家侧临时同化度：进出必须可逆（不可逆 = 静默镀金）----
+	# ---- 6. 玩家侧区域**增益**（第 16 轮 · 需求 6）：不再是同化度；进出必须可逆 ----
 	var p2: Node2D = _main.get_node("Player")
 	var elem := String(z5.get("element", ""))
-	var akey := "assim_" + elem
-	var base := float(p2.stats.get(akey, 0.0))
-	p2.set_zone_assim(elem, Config.TERRAIN_ZONE_BONUS)
-	var mid := float(p2.stats.get(akey, 0.0))
-	if mid <= base:
-		_fail("站进地形区未获得同化度（%.3f → %.3f）" % [base, mid])
+	var zb: Dictionary = Config.zone_buff(elem)
+	if zb.is_empty():
+		_fail("区域元素 %s 在 Config.ZONE_BUFFS 里没有登记增益" % elem)
 		return
-	p2.set_zone_assim("", 0.0)
-	if not is_equal_approx(float(p2.stats.get(akey, 0.0)), base):
-		_fail("离开地形区后同化度未复原（%.3f → %.3f，期望 %.3f）"
-			% [base, float(p2.stats.get(akey, 0.0)), base])
+	var peff: Dictionary = zb.get("player", {})
+	if peff.is_empty():
+		_fail("区域增益缺 player 通道（%s）" % elem)
 		return
-	# 顶到上限时也必须只撤「实际生效量」：按"想要写的量"撤会把玩家的固有同化度吃掉
-	p2.stats[akey] = 2.0
-	p2.set_zone_assim(elem, Config.TERRAIN_ZONE_BONUS)
-	p2.set_zone_assim("", 0.0)
-	if not is_equal_approx(float(p2.stats.get(akey, 0.0)), 2.0):
-		_fail("同化度已到上限时进出地形区吃掉了固有值（%.3f，期望 2.000）"
-			% float(p2.stats.get(akey, 0.0)))
+	var pkey := String(peff.keys()[0])
+	var pbase := float(p2.stats.get(pkey, 0.0))
+	var abase := float(p2.stats.get("assim_" + elem, 0.0))
+	p2.set_zone_buff("smoke_zone", peff)
+	if float(p2.stats.get(pkey, 0.0)) <= pbase:
+		_fail("站进区域未获得增益（%s：%.3f → %.3f）"
+			% [pkey, pbase, float(p2.stats.get(pkey, 0.0))])
 		return
-	p2.stats[akey] = base
-	p2.set_zone_assim("", 0.0)
-	# ---- 7. 怪物侧地形加成进 mob_resist 的加法项，且被 cap 吃掉（"不超过上限"）----
-	if absf(Config.mob_resist(1, 0.0, 0.0, 0.0, 0.75, Config.TERRAIN_ZONE_BONUS)
-			- Config.TERRAIN_ZONE_BONUS) > 1e-6:
-		_fail("地形加成未进入 mob_resist 的加法项")
+	# 用户明确要求「区域属性不要变成增加同化度了」—— 站进区里同化度必须纹丝不动
+	if not is_equal_approx(float(p2.stats.get("assim_" + elem, 0.0)), abase):
+		_fail("区域增益仍在加同化度（%s：%.3f → %.3f）"
+			% [elem, abase, float(p2.stats.get("assim_" + elem, 0.0))])
 		return
-	if not is_equal_approx(
-			Config.mob_resist(20, 0.75, 0.0, 0.0, 0.75, Config.TERRAIN_ZONE_BONUS), 0.75):
-		_fail("地形加成未被 mob_resist 的 cap 约束（噩梦 W20 普通怪仍应 ≤ 0.75）")
+	p2.set_zone_buff("smoke_zone", {})
+	if not is_equal_approx(float(p2.stats.get(pkey, 0.0)), pbase):
+		_fail("离开区域后增益未复原（%s：%.3f → %.3f，期望 %.3f）"
+			% [pkey, pbase, float(p2.stats.get(pkey, 0.0)), pbase])
 		return
+	# 多区重叠：两个区同时生效时必须是**求和**，且撤掉其中一个只减它那一份
+	var eff_b := { pkey: float(peff[pkey]) }   # 同键的第二片地：验证"求和"而不是"后者覆盖"
+	p2.set_zone_buff("smoke_zone", peff)
+	p2.set_zone_buff("smoke_zone2", eff_b)
+	var both := float(p2.stats.get(pkey, 0.0))
+	p2.set_zone_buff("smoke_zone2", {})
+	if not is_equal_approx(both, pbase + 2.0 * float(peff[pkey])) \
+			or not is_equal_approx(float(p2.stats.get(pkey, 0.0)), pbase + float(peff[pkey])):
+		_fail("多区重叠求和不对（base %.3f / 两区 %.3f（应 %.3f）/ 撤一区 %.3f（应 %.3f））"
+			% [pbase, both, pbase + 2.0 * float(peff[pkey]),
+				float(p2.stats.get(pkey, 0.0)), pbase + float(peff[pkey])])
+		return
+	p2.set_zone_buff("smoke_zone", {})
+	# 顶到钳位上限时也必须只撤「实际生效量」：按"想要写的量"撤会把玩家固有属性吃掉
+	# （用暴击率：`_sanitize_stats` 把它钳在 Config.CRIT_CHANCE_CAP，所以实际生效量 = 0）
+	var crit_base := float(p2.stats.get("crit_ch", 0.0))
+	p2.stats["crit_ch"] = Config.CRIT_CHANCE_CAP
+	p2.set_zone_buff("smoke_zone", { "crit_ch": 0.06 })
+	p2.set_zone_buff("smoke_zone", {})
+	if not is_equal_approx(float(p2.stats.get("crit_ch", 0.0)), Config.CRIT_CHANCE_CAP):
+		_fail("属性已到钳位上限时进出区域吃掉了固有值（crit_ch=%.3f，期望 %.3f）"
+			% [float(p2.stats.get("crit_ch", 0.0)), Config.CRIT_CHANCE_CAP])
+		return
+	p2.stats["crit_ch"] = crit_base
+	p2.reset_zone_buffs()
+	# ---- 7. 敌方侧区域增益的 resist 通道进 mob_resist 的加法项，且被 cap 吃掉 ----
+	var eres := float((Config.zone_buff("earth").get("enemy", {}) as Dictionary).get("resist", 0.0))
+	if eres <= 0.0:
+		_fail("土区域缺 enemy.resist 通道（Config.ZONE_BUFFS）")
+		return
+	if absf(Config.mob_resist(1, 0.0, 0.0, 0.0, 0.75, eres) - eres) > 1e-6:
+		_fail("区域抗性加成未进入 mob_resist 的加法项")
+		return
+	if not is_equal_approx(Config.mob_resist(20, 0.75, 0.0, 0.0, 0.75, eres), 0.75):
+		_fail("区域抗性加成未被 mob_resist 的 cap 约束（噩梦 W20 普通怪仍应 ≤ 0.75）")
+		return
+	# ---- 7b. 敌方侧四条通道（伤害/移速/回血/抗性）：进区吃、离区还 ----
+	var ez: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(ez)
+	ez.setup("grunt", 1)
+	var ed0: float = ez.touch_dmg
+	var es0: float = ez.speed
+	var er0: float = ez.zone_resist
+	ez.set_zone_buff("smoke_zone", { "dmg": 0.5, "speed": 0.5, "regen": 1.0, "resist": 0.05 })
+	if ez.touch_dmg <= ed0 or ez.speed <= es0 or ez.zone_resist <= er0:
+		_fail("敌方进区未吃增益（dmg %.2f / spd %.2f / res %.3f）"
+			% [ez.touch_dmg, ez.speed, ez.zone_resist])
+		ez.queue_free()
+		return
+	ez.set_zone_buff("smoke_zone", {})
+	if not (is_equal_approx(ez.touch_dmg, ed0) and is_equal_approx(ez.speed, es0)
+			and is_equal_approx(ez.zone_resist, er0)):
+		_fail("敌方离区未复原（dmg %.2f→%.2f / spd %.2f→%.2f / res %.3f→%.3f）"
+			% [ed0, ez.touch_dmg, es0, ez.speed, er0, ez.zone_resist])
+		ez.queue_free()
+		return
+	# 移速通道必须**除回去**而不是重算基础值：BOSS 狂暴 / 涅槃会原地乘 speed
+	ez.speed *= 1.35
+	ez.set_zone_buff("smoke_zone", { "speed": 0.5 })
+	var sped: bool = ez.speed > es0 * 1.35
+	ez.set_zone_buff("smoke_zone", {})
+	if not sped or not is_equal_approx(ez.speed, es0 * 1.35):
+		_fail("区域移速改写了狂暴/涅槃的原地乘法（%.3f，期望 %.3f）" % [ez.speed, es0 * 1.35])
+		ez.queue_free()
+		return
+	ez.queue_free()
 	# ---- 8. 集成：中间 BOSS 的收尾分流 + 盒子发放点必须**早于** wave_ended ----
 	# ⚠️ 这里**直调**两个处理函数（而不是 emit boss_killed），并临时摘掉 wave_ended 的监听：
 	#    `wave_manager._on_boss_killed` 会立刻 emit wave_ended → main 开商店 + 进化流程 + **写存档**。
@@ -6619,9 +6680,9 @@ func _check_round9_boss_terrain() -> void:
 	for pair in flee_bak:
 		if is_instance_valid(pair[0]):
 			pair[0].flee = float(pair[1])
-	# `_main._on_boss_killed` 会顺手撤掉当前地形区域（"本波结束前必须撤"的路径之一），
-	# 但这一波并没有真的结束 → 按同一波次把它重建回来，别让现场少一片地。
-	_main._setup_terrain_zone(wave_bak)
+	# `_main._on_boss_killed` 会顺手**撤掉区域增益**（"本波结束前必须撤"的路径之一），
+	# 但第 16 轮起区域节点本身跨波常驻、不再销毁 —— 回到 PLAYING 后各区的 0.35s 扫描
+	# 会自行重写增益，所以这里不需要（也不该）重建地形。
 	GameState.endless = endless_bak
 	RunRules.active = bool(rules_ctx.get("active", false))
 	RunRules.values = (rules_ctx.get("values", {}) as Dictionary).duplicate(true)
@@ -6639,7 +6700,7 @@ func _check_round9_boss_terrain() -> void:
 		_fail("中间 BOSS 击破误入通关结算（第 4 波就会 VICTORY）")
 		return
 	print("SMOKE: 第 9 轮 每 %d 波 BOSS（中间/最终分流 · 盒子早于 wave_ended · 血量随波成长 · 限时）"
-		% Config.BLOCK_WAVES + " + 地形区域（纯函数圆 · 加成可逆且不越上限）OK")
+		% Config.BLOCK_WAVES + " + 地形区域（纯函数圆 · 增益可逆不越上限 · 敌我通用 · 不再加同化度）OK")
 
 
 ## BOSS 死亡技能：数据完整性 / 凤凰涅槃拦截 / 死亡技能确实产生弹幕
