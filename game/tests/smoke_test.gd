@@ -6731,6 +6731,89 @@ func _check_round9_boss_terrain() -> void:
 		ez.queue_free()
 		return
 	ez.queue_free()
+	# ---- 7c. ⭐ 真实调用链（第 16 轮补）：`TerrainZone._physics_process` 必须自己拆包 ----
+	# ⚠️ 7 / 7b 段都是**直调** `set_zone_buff` 传手搓字典，**绕过了 `TerrainZone`** —— 于是第 16 轮
+	#    真实对局暴露的 bug 在冒烟里全绿：`terrain_zone.gd` 把整条 `ZONE_BUFFS[元素]`
+	#    （含 `name`/`desc` 两个**字符串**与 `player`/`enemy` 两个**子字典**）当成增益字典往下传，
+	#    `player._zone_buffs` / `enemy._zone_ids` 的求和循环于是对字符串调 `float()` →
+	#    运行期 `Nonexistent 'float' constructor` 刷屏，**增益一条也落不了地**；
+	#    `player.active_buffs()` 又把这同一份脏字典喂给悬浮详情卡（`EntryText.effect_lines`），
+	#    同一根因再报一次。所以这里必须走**真实路径**：真 `TerrainZone` + 真 `configure()` + 真扫描。
+	var tz = preload("res://scripts/fx/terrain_zone.gd").new()
+	tz.zone_id = "smoke_tz"   # 真实局里由 main 按区块号写；configure() 不管这个字段
+	tz.player = p2
+	_main.add_child(tz)
+	# ⚠️ 必须喂**与 `elem` 同源**的那份配置：`terrain_zone_for_wave` 的第一个参数是
+	#    「玩家元素」，`wave_area_element(玩家元素, 波次)` 才推出去区的**区域元素**。
+	#    顺手传 `elem` 会把区域元素再当一次玩家元素去推（推出来是另一个元素），
+	#    于是"该涨的键"和"实际涨的键"根本不是同一个 —— 这种错在真实局里不存在，纯粹是测试自伤。
+	if not tz.configure(z5):
+		_fail("真实 TerrainZone.configure() 对本区块地形返回 false")
+		tz.queue_free()
+		return
+	var ez2: Node2D = preload("res://scenes/enemies/enemy.tscn").instantiate()
+	_main.add_child(ez2)
+	ez2.setup("grunt", 1)
+	var tz_key := String((Config.zone_buff(elem).get("player", {}) as Dictionary).keys()[0])
+	var tz_base := float(p2.stats.get(tz_key, 0.0))
+	# 敌方侧四条通道的"指纹"（伤害/移速/回血/抗性）—— 整条脏字典传下去时四条都不会动
+	var ez2_sig: Array = [ez2.touch_dmg, ez2.speed, ez2.regen, ez2.zone_resist]
+	var tz_pos_bak := p2.global_position
+	var tz_phase_bak: int = GameState.phase
+	# 双方都站到圆心；`_physics_process` 的扫描节流初值是 0，所以一次调用即生效
+	p2.global_position = tz.global_position
+	ez2.global_position = tz.global_position
+	GameState.phase = GameState.Phase.PLAYING
+	tz._physics_process(1.0)
+	GameState.phase = tz_phase_bak
+	p2.global_position = tz_pos_bak
+	# ① 增益真的落地了 —— 拆包漏掉时这里一条都不会涨（正是真实对局里发生的事）
+	if not float(p2.stats.get(tz_key, 0.0)) > tz_base:
+		_fail("真实 TerrainZone 扫描后玩家未获得增益（%s：%.3f → %.3f）"
+			% [tz_key, tz_base, float(p2.stats.get(tz_key, 0.0))])
+		tz.clear()
+		tz.queue_free()
+		ez2.queue_free()
+		return
+	# ② 元数据键绝不能被当成属性写进 stats（`name`/`desc` 是字符串、`player`/`enemy` 是字典）
+	for tzbad in ["name", "desc", "player", "enemy"]:
+		if p2.stats.has(tzbad):
+			_fail("TerrainZone 把 ZONE_BUFFS 的元数据键 %s 当成属性写进了 stats" % tzbad)
+			tz.clear()
+			tz.queue_free()
+			ez2.queue_free()
+			return
+	# ③ 悬浮详情卡的数据源（`active_buffs()`）也必须干净：effects 每一值都得是数值
+	for tzb in p2.active_buffs():
+		var tzeff: Dictionary = tzb.get("effects", {})
+		for tzk in tzeff:
+			var tzty := typeof(tzeff[tzk])
+			if tzty != TYPE_FLOAT and tzty != TYPE_INT:
+				_fail("active_buffs 的 effects 含非数值项 %s（详情卡会对它调 float()）" % tzk)
+				tz.clear()
+				tz.queue_free()
+				ez2.queue_free()
+				return
+	# ④ 敌方侧同一条真实路径：进区必须吃到 enemy 通道，且槽位里同样不能有元数据键
+	var ez2_now: Array = [ez2.touch_dmg, ez2.speed, ez2.regen, ez2.zone_resist]
+	if not ez2._zone_ids.has("smoke_tz") or ez2_now == ez2_sig:
+		_fail("真实 TerrainZone 扫描后敌人一条通道都没吃上（前 %s → 后 %s / 槽位 %s）"
+			% [str(ez2_sig), str(ez2_now), str(ez2._zone_ids.keys())])
+		tz.clear()
+		tz.queue_free()
+		ez2.queue_free()
+		return
+	# 槽位内容必须**恰好**是敌侧那四个通道键；多一个（name/desc/player/enemy）就说明没拆包
+	for tzk2 in (ez2._zone_ids["smoke_tz"] as Dictionary):
+		if not (String(tzk2) in ["dmg", "speed", "regen", "resist"]):
+			_fail("敌方区域槽位混入了非通道键 %s（说明 ZONE_BUFFS 整条被传下去了）" % String(tzk2))
+			tz.clear()
+			tz.queue_free()
+			ez2.queue_free()
+			return
+	tz.clear()
+	tz.queue_free()
+	ez2.queue_free()
 	# ---- 8. 集成：中间 BOSS 的收尾分流 + 盒子发放点必须**早于** wave_ended ----
 	# ⚠️ 这里**直调**两个处理函数（而不是 emit boss_killed），并临时摘掉 wave_ended 的监听：
 	#    `wave_manager._on_boss_killed` 会立刻 emit wave_ended → main 开商店 + 进化流程 + **写存档**。

@@ -61,10 +61,19 @@ func _physics_process(delta: float) -> void:
 	if _t > 0.0:
 		return
 	_t = SCAN_INTERVAL
+	# ⚠️ 必须把 `ZONE_BUFFS[元素]` 拆成 `player` / `enemy` 两份**再**往下传。
+	#    直接传整条会把 `name` / `desc`（字符串）和 `player` / `enemy`（子字典）一起
+	#    塞进 `player._zone_buffs` / `enemy._zone_ids`，两侧的求和循环于是会对字符串和
+	#    字典调 `float()` → 运行期 `Nonexistent 'float' constructor` 刷屏，**增益一条也落不了地**
+	#    （`player.active_buffs()` 又把这份脏字典喂给悬浮详情卡的 `EntryText.effect_lines`，
+	#     同一根因再报一次）。冒烟当时没抓到：它直接调 `set_zone_buff` 传手搓字典，
+	#    绕过了本函数 —— 真实路径的覆盖已补进 `smoke_test._check_round9_boss_terrain` 的 7c 段。
+	var pbuff: Dictionary = buff.get("player", {})
+	var ebuff: Dictionary = buff.get("enemy", {})
 	if player != null and is_instance_valid(player):
 		var p_in: bool = player.global_position.distance_to(global_position) <= radius
 		# 一直在区内也要每轮写一次：写入口自己带"无变化直接返回"，这里不必先判重
-		player.set_zone_buff(zone_id, buff if p_in else {}, element)
+		player.set_zone_buff(zone_id, pbuff if p_in else {}, element)
 	for node in get_tree().get_nodes_in_group("enemies"):
 		# 用 has_method 兼作「它是不是 Enemy」的判据（同 `_refresh_boss_aura` 的理由：
 		# `get_nodes_in_group` 返回 Array[Node]，直接点 .element 静态类型会编译报错）
@@ -74,7 +83,7 @@ func _physics_process(delta: float) -> void:
 		if n2 == null:
 			continue
 		var inside: bool = n2.global_position.distance_to(global_position) <= radius
-		node.call("set_zone_buff", zone_id, buff if inside else {})
+		node.call("set_zone_buff", zone_id, ebuff if inside else {})
 
 ## 同步撤销本区给玩家/怪物加的全部临时增益。由 `main._suspend_terrain_buffs` 在
 ## 「本波结束 / 即将写档」的路径上调用（区域节点本身保留，下一波扫描会重新写入）。
