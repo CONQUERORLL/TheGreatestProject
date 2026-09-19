@@ -198,7 +198,9 @@ func _physics_process(delta: float) -> void:
 			alive += 1
 		if wave_timer <= 0.0 and not ending_started:
 			ending_started = true
-			# 时间到只执行一次：敌人退场，双方弹丸清空，掉落物由波末自动回收。
+			# 时间到只执行一次：敌人退场，双方弹丸清空。
+			# ⚠️ 掉落物**保留原位、不回收**（2026-09-19 用户要求）：留在场上跨波，
+			#    由玩家自己走位拾取 —— 波末一次性结算会造成「瞬间连升好几级」。
 			for e in get_tree().get_nodes_in_group("enemies"):
 				if e.flee <= 0.0:
 					e.start_flee()

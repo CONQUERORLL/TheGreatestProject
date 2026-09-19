@@ -1166,10 +1166,18 @@ func _spawn_artifact(id: String) -> void:
 	l.player = player
 
 func _spawn_loot(kind_name: String, value: int, velocity: Vector2) -> void:
-	# 场上掉落物预算闸（Config.LOOT_MAX，2026-09-19 卡顿修复）：组数量到顶时直接入账，
-	# 不再往场上加节点。收益与「等波末全场回收」等价（波末本就兜底 settle），
-	# 但场上节点数被钉在上限内 —— 事件波/高收获构筑不会再积压几百件把帧率打穿。
+	# 场上掉落物预算闸（Config.LOOT_MAX）：到顶时**并入同类掉落**（累加数值），而不是入账。
+	# ⚠️ 2026-09-19 改：波末不再自动回收后，「超限直接结算」与设计相矛盾
+	#    （掉落物本该留在原地、由玩家走位拾取）。并入同类既保住这条设计，
+	#    又把节点数钉在上限内（旧版积压 563 件曾把帧率打到 10fps）。
+	#    同类也找不到（极端）才直接入账兜底 —— 绝不吞收益。
 	if get_tree().get_nodes_in_group("loot").size() >= Config.LOOT_MAX:
+		for l2 in get_tree().get_nodes_in_group("loot"):
+			if l2.is_queued_for_deletion() or String(l2.kind) != kind_name:
+				continue
+			l2.val = int(l2.val) + value
+			l2.queue_redraw()
+			return
 		match kind_name:
 			"xp":
 				GameState.gain_xp(value)

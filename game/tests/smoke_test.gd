@@ -14,6 +14,10 @@ var _main: Node
 var _last_ended := 0
 var _mats_at_end := -1      # 第 1 波收波结算后的材料数（含自动回收）
 var _xp_at_end := -1        # 第 1 波收波结算后的经验/等级收益
+## 波末「不自动回收」哨兵（2026-09-19）：收波前往场上放一个掉落物，收波后它必须
+## 仍在原处 —— 旧实现在 `main._on_wave_ended` 里对 loot 组逐个 `settle()`，会把它吃掉。
+var _loot_sentinel = null
+var _loot_sentinel_pos := Vector2.ZERO
 var _failed := false        # 失败标记：await 协程内 _fail 后外层不再继续输出 PASS
 var _event_suppress_count := 0   # 奇遇抑制：原 event_card_count
 var _event_suppress_cap := 0     # 奇遇抑制：原 event_card_cap
@@ -285,6 +289,14 @@ func _check_weapons() -> void:
 	while ui.visible:
 		ui._choose(0)
 		await get_tree().process_frame
+	# 波末「不自动回收」哨兵：放在场角，且**不给 player 引用**
+	# （loot 的 `_physics_process` 在 player 为空时直接 return → 既不会被磁吸、
+	#  也不会接触结算，只有「波末全场 settle()」这条旧路径能动它 → 判据确定性）
+	_loot_sentinel = preload("res://scenes/loot/loot.tscn").instantiate()
+	_main.add_child(_loot_sentinel)
+	_loot_sentinel.setup("mat", 7, Vector2(120.0, 120.0), Vector2.ZERO)
+	await get_tree().process_frame
+	_loot_sentinel_pos = _loot_sentinel.global_position
 	# 压缩第 1 波剩余时间，验证 收波清场（掉落保留）→ 商店 → 下一波 流程
 	var wm2: Node = _main.get_node("WaveManager")
 	wm2.wave_timer = 0.5
@@ -316,11 +328,19 @@ func _check_wave() -> void:
 	if GameState.level <= 1 and GameState.xp <= 0:
 		_fail("经验未入账")
 		return
-	# 波末掉落自动回收：进商店后场上不应再有掉落物
-	if not get_tree().get_nodes_in_group("loot").is_empty():
-		_fail("波末掉落未自动回收（剩余 %d）"
-			% get_tree().get_nodes_in_group("loot").size())
+	# 波末**不再**自动回收掉落（2026-09-19 用户要求：留在原地、自己走位拾取）。
+	# 哨兵必须仍在场上且留在原位 —— 旧实现在这里逐个 settle()，哨兵会被结算掉。
+	if _loot_sentinel == null or not is_instance_valid(_loot_sentinel) \
+			or _loot_sentinel.is_queued_for_deletion():
+		_fail("波末把掉落物自动回收了（哨兵已消失）—— 应保留原位由玩家走位拾取")
 		return
+	if _loot_sentinel.global_position.distance_to(_loot_sentinel_pos) > 1.0:
+		_fail("波末掉落物位置被改动（%.0f,%.0f → %.0f,%.0f，应原位保留）"
+			% [_loot_sentinel_pos.x, _loot_sentinel_pos.y,
+				_loot_sentinel.global_position.x, _loot_sentinel.global_position.y])
+		return
+	print("SMOKE: 波末掉落保留原位（哨兵存活 · 场上 %d 件）"
+		% get_tree().get_nodes_in_group("loot").size())
 	if GameState.phase != GameState.Phase.SHOP:
 		_fail("波末未进入商店（phase=%d）" % GameState.phase)
 		return
@@ -341,7 +361,7 @@ func _check_wave() -> void:
 	if _main.get_node("Player").global_position != intro_pos:
 		_fail("INTRO 阶段玩家仍在移动")
 		return
-	# 波末自动回收可能积压升级：直接进入 PLAYING 触发补弹并清空（模拟玩家选卡），
+	# 事件波 / 奇遇的免费升级可能在此积压：直接进入 PLAYING 触发补弹并清空（模拟玩家选卡），
 	# 避免 INTRO 自然结束后升级 UI 弹出冻结 BOSS 测试窗口
 	GameState.set_phase(GameState.Phase.PLAYING)
 	var lu_drain: Control = _main.get_node("UI/LevelUp")
@@ -351,11 +371,9 @@ func _check_wave() -> void:
 		else:
 			GameState.level_queue = 0
 		await get_tree().process_frame
-	var loot_left := get_tree().get_nodes_in_group("loot").size()
-	print("SMOKE: loot_left=%d (auto-collected at wave end)" % loot_left)
-	if loot_left != 0:
-		_fail("波末回收后仍残留掉落（%d）" % loot_left)
-		return
+	# 掉落物**保留**（2026-09-19 起波末不再自动回收）—— 这里只观测，不断言清零
+	print("SMOKE: loot_left=%d (波末不再自动回收，保留原地)"
+		% get_tree().get_nodes_in_group("loot").size())
 	# 数值调整断言：波时 30+3w（§8 二十波制）、初始移速 742（495+50%）
 	# ⚠️ 旧值是 45/50（`45 + 5(w-1)`）—— 20 波制下那条曲线末波要 140s，已废弃。
 	#    这里同时钉住首末两端，只改一端（例如漏改 +3w 的系数）会立刻报红。

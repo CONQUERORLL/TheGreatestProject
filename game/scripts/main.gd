@@ -188,6 +188,7 @@ func _ready() -> void:
 	_build_end_menus()
 	_build_toast()
 	_build_reaction_popup()
+	_build_intro_countdown()
 	# 返回键路由：Android 返回键走 NOTIFICATION_WM_GO_BACK_REQUEST（不是 ui_cancel），
 	# 之前的版本没有任何地方接这个通知，导致移动端按返回键毫无反应。交给 Nav 统一派发。
 	Nav.bind(self, _handle_back)
@@ -212,6 +213,14 @@ func _process(delta: float) -> void:
 			or GameState.phase == GameState.Phase.INTRO
 		if _hint_label.visible != hint_on:
 			_hint_label.visible = hint_on
+	# 开场倒计时读秒（INTRO 期间玩家被冻结不能移动，没有提示会被当成 bug）
+	if _intro_label != null:
+		var intro_on := GameState.phase == GameState.Phase.INTRO
+		if intro_on:
+			_intro_label.text = "准备… %d" % maxi(1,
+				int(ceil(maxf(0.0, wave_manager.intro_t))))
+		if _intro_label.visible != intro_on:
+			_intro_label.visible = intro_on
 	# 相机震动（对应原型 cam.shake，衰减 22/s）
 	shake = maxf(0.0, shake - delta * 22.0)
 	camera.offset = Vector2.ZERO if shake <= 0.0 \
@@ -895,8 +904,11 @@ func _on_enemy_killed(type: String) -> void:
 	Haptics.rumble(0.12, 0.0, 0.06)   # 击杀微震（Haptics 内部节流防叠满）
 
 ## 普通波清场后进入商店（BOSS 波击杀直接结算，不走这里）
-## 波末自动回收场上全部掉落：经验/材料/红心直接结算，
-## 升级选择若在此触发会积压 level_queue，下一波开始时补弹
+##
+## ⚠️ 波末**不再全场回收掉落物**（2026-09-19 用户要求，回到 2026-09-02 定的口径）：
+## 经验/材料/红心**留在原地跨波**，由玩家自己走位拾取。
+## 旧实现在这里 `for l in loot组: l.settle()`，会把整波掉落一次性结清 →
+## 瞬间升好几级 → 连续弹 N 张升级卡（用户报「为什么会出现这么多次选择」）。
 func _on_wave_ended(w: int) -> void:
 	# 地形区域必须在**任何存档/结算之前**撤掉（第 9 轮 · 需求 4）：
 	# 它是临时加成，而本波结束后的 `_finish_evolve_flow` 会把 stats 写进存档 ——
@@ -904,12 +916,10 @@ func _on_wave_ended(w: int) -> void:
 	_clear_terrain_zone()
 	if GameState.endless or GameState.daily:
 		GameState.add_score(Config.wave_clear_score(w))
-	# 波末掉落结算会把经验一次性结清，若当场弹出升级卡，后面的进化选择/法宝盒子/商店
-	# 都会叠在同一屏（多层 UI 叠加反馈）。结算期间压住升级卡（级数积压 level_queue），
+	# 波末结算期压住升级卡：本波掉落不再自动入账，但事件波/奇遇的免费升级
+	# 仍可能在此积压；压住可保证「进化选择 / 法宝盒子 / 商店」不与升级卡同屏。
 	# 由 level_up_ui 在下一波回到 PLAYING 时补弹；flow 进入商店时它会自行解除压住。
 	level_up_ui.set_hold(true)
-	for l in get_tree().get_nodes_in_group("loot"):
-		l.settle()
 	# 武器进化：单分支自动合成，多分支弹选择 UI 让玩家挑方向（回收后、进商店前）。
 	# 流程收尾（`_finish_evolve_flow` → `_enter_shop`）负责开商店 + 落档（需求 4：先奖励后商店）。
 	_start_evolve_flow(w)
@@ -1164,6 +1174,27 @@ func _on_banner(title: String, subtitle: String, duration: float) -> void:
 	_banner_tween.set_parallel(true)
 	_banner_tween.tween_property(banner_title, "modulate:a", 1.0, 0.15).from(0.0)
 	_banner_tween.tween_property(banner_sub, "modulate:a", 1.0, 0.15).from(0.0)
+
+## 开场倒计时（2026-09-19 用户要求）：INTRO 阶段给一个醒目读秒。
+## 动机：INTRO 期间玩家**被冻结不能移动**（波次准备期），没有提示会被当成 bug
+## （用户原话「不然还以为刚开始不能移动是 bug」）。
+## 用独立 Label 而不是复用横幅 —— 横幅还要播报换区 / BOSS / 奇遇，语义会打架。
+var _intro_label: Label = null
+
+func _build_intro_countdown() -> void:
+	_intro_label = Label.new()
+	_intro_label.set_anchors_preset(Control.PRESET_CENTER)
+	_intro_label.offset_left = -200.0
+	_intro_label.offset_top = 96.0
+	_intro_label.offset_right = 200.0
+	_intro_label.offset_bottom = 172.0
+	_intro_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_intro_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_intro_label.add_theme_font_size_override("font_size", 48)
+	_intro_label.add_theme_color_override("font_color", Color("e8b84b"))
+	_intro_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_intro_label.visible = false
+	$UI.add_child(_intro_label)
 
 func _hide_banner() -> void:
 	if _banner_tween:
