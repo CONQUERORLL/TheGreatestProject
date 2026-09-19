@@ -492,6 +492,14 @@ static func get_reaction(status_a: String, status_b: String) -> Dictionary:
 ## ============================================================
 const REACTION_BURST_CAP_MULT := 12.0
 
+## DoT 单跳伤害护栏（2026-09-19）：单跳 ≤「施加该状态时的命中伤害（power）× 该倍率」。
+## 与 `REACTION_BURST_CAP_MULT` 同一思路 —— power 与当前构筑同步，所以不削弱正常手感，
+## 只砍掉乘区被叠到极端时的失控值。
+## 合法上限参照：燃烧 dot_scale 0.18 × 5 层 × 金克木 dot_mult 2.0 = 1.8×，取 2.0 留余量。
+## ⚠️ 只作用于「按 power 结算」的 DoT（燃烧/流血）；中毒走 `dot_max_hp_pct`，按设计
+##    就该随敌人最大生命成长，不套这个闸门。
+const DOT_TICK_CAP_MULT := 2.0
+
 ## 把法宝 patch 应用到反应 effect 上，返回新字典（不改原数据）
 ##   set：整键覆盖（字典值也是整体替换）
 ##   add：数值相加；字典值按子键合并（缺失则新建）；类型不兼容时退化为覆盖

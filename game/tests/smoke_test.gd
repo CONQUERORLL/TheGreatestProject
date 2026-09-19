@@ -3112,11 +3112,37 @@ func _check_reactions() -> void:
 	if e_r.reaction_debuffs.size() != 1 or not is_equal_approx(e_r._damage_taken_mult(), 1.5):
 		_fail("火克金未施加受伤提升 debuff（×%.2f，期望 ×1.50）" % e_r._damage_taken_mult())
 		return
+	# 回归（2026-09-19）：同类 debuff **重复触发不得累乘**。旧实现是 append + 取用时整体
+	# ∏，第 N 次火克金 = 1.5^N、金克木 = 2.0^N，两者叠加进 DoT 通道就是 3^k ——
+	# 实测第 11 波单波状态伤害 4.3e11、占该波 100%。现按 reaction_id 建唯一槽位。
+	e_r.statuses.clear()
+	e_r.apply_status("burn", 1, 0.0, 50.0, 1.0)
+	e_r.apply_status("bleed", 1, 0.0, 40.0, 1.0)
+	if e_r.reaction_debuffs.size() != 1 \
+			or not is_equal_approx(e_r._damage_taken_mult(), 1.5):
+		_fail("重复触发火克金导致 debuff 累乘（槽位 %d、倍率 ×%.2f，期望 1 / ×1.50）"
+			% [e_r.reaction_debuffs.size(), e_r._damage_taken_mult()])
+		return
 	e_r._tick_statuses(3.1)
 	if not e_r.reaction_debuffs.is_empty() \
 			or not is_equal_approx(e_r._damage_taken_mult(), 1.0):
 		_fail("反应 debuff 未按时到期")
 		return
+	# 回归（2026-09-19）：状态的 DoT 提伤（火生土：燃烧 ×1.3）只应「取大一档」，
+	# 既不连乘（1.3^k）也不累加（反复触发爬到封顶）
+	e_r.statuses.clear()
+	e_r.reaction_debuffs.clear()
+	e_r.apply_status("burn", 1, 0.0, 100.0, 1.0)
+	e_r.apply_status("stun", 1, 0.0, 100.0, 1.0)
+	var burn_pow1 := float(e_r.statuses.burn.power)
+	e_r.apply_status("burn", 1, 0.0, 100.0, 1.0)   # 再上燃烧 → 再触发一次火生土
+	if not is_equal_approx(burn_pow1, 130.0) \
+			or not is_equal_approx(float(e_r.statuses.burn.power), 130.0):
+		_fail("火生土 DoT 提伤被反复叠乘/累加（%.2f → %.2f，期望恒为 130.00）"
+			% [burn_pow1, float(e_r.statuses.burn.power)])
+		return
+	e_r.statuses.clear()
+	e_r.reaction_debuffs.clear()
 	# 相克「金克木」：流血(金) + 中毒(木) → 各消耗 1 层 + 持续伤害翻倍 4s
 	reaction_hits.clear()
 	e_r.statuses.clear()

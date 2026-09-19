@@ -69,9 +69,11 @@ var _summon_cd := 0.0      # 腐土孵化者：召唤倒计时
 var _reborn := false       # 焚天凤凰：涅槃重生标记（第一次死亡回血复活，仅一次）
 var spawn_wave := 1        # 生成时波次（召唤物继承）
 var elite := false         # 精英实例标志（由 wave_manager.spawn 注入；掉法宝只认这个）
-var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power }
+var statuses: Dictionary = {}   # 状态 id -> { stacks, remaining, tick_t, power, base_power, power_bonus }
 var status_resist := 0.0        # 状态时长减免（BOSS 0.55）
-var reaction_debuffs: Array = []   # 五行反应 debuff：{dmg_taken_mult, dot_mult, remaining}
+## 五行反应 debuff **槽位**：reaction_id -> {dmg_taken_mult, dot_mult, remaining}
+## ⚠️ 必须是「按反应 id 唯一的槽位」，不能是 append 的数组 —— 见 _add_reaction_debuff。
+var reaction_debuffs: Dictionary = {}
 var _reaction_active: Dictionary = {}   # 本敌正在执行的反应 id（禁止自我递归）
 var _status_sig := 0            # 状态签名（层数/集合变化才重绘）
 var _status_flash_t := 0.0      # 状态触发彩色扩散环剩余时间
@@ -96,6 +98,16 @@ const SEPARATION_PAD_LARGE := 90.0
 const REACTION_AOE_RADIUS := 100.0
 const REACTION_DEBUFF_DURATION := 3.0
 const REACTION_CONVERT_DURATION := 0.5
+
+## 状态 DoT 提伤加成（`power_bonus`）上限：加成**针对 base_power 加算**，
+## 不是原地连乘 —— 否则「火生土」反复触发会得到 1.3^k（实测与 debuff 连乘叠加
+## 把第 11 波状态伤害推到 4.3e11，见 2026-09-19 排查）。
+const STATUS_POWER_BONUS_CAP := 3.0
+
+## 状态时长上限倍数（相对 `Config.STATUS` 的原始 duration）。
+## 「木生火」延长 50%、「火生土」+0.5s 都会反复触发，不封顶就不是「延长」而是
+## 「永不到期」（原本 `remaining *= 1.5` 会让燃烧无限续期，DoT 永不停止）。
+const STATUS_DURATION_CAP_MULT := 2.0
 
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
@@ -263,13 +275,19 @@ func apply_status(id: String, stacks: int = 1, duration_override: float = 0.0,
 		var st: Dictionary = statuses[id]
 		st.stacks = mini(int(cfg.stack_max), int(st.stacks) + add_stacks)
 		st.remaining = maxf(float(st.remaining), dur)
-		st.power = maxf(float(st.power), power)
+		# power 拆两段（2026-09-19 修复）：`base_power` 只由**直接命中**刷新（取大），
+		# 反应带来的提伤记在 `power_bonus`（加算/取大/封顶），`power` 是派生值。
+		# 原先写 `st.power = maxf(st.power, power)` + 反应里 `st.power *= 1.3`，
+		# 两条路混在同一字段上 → 反复触发就是 1.3^k 的连乘。
+		st.base_power = maxf(float(st.get("base_power", st.get("power", 0.0))), power)
+		st.power = float(st.base_power) * (1.0 + float(st.get("power_bonus", 0.0)))
 		if tick > 0.0:
 			st.tick_t = minf(float(st.tick_t), tick)
 	else:
 		statuses[id] = {
 			"stacks": mini(int(cfg.stack_max), add_stacks),
 			"remaining": dur, "tick_t": tick, "power": power,
+			"base_power": power, "power_bonus": 0.0,
 		}
 	queue_redraw()
 	if is_new:
@@ -356,6 +374,14 @@ func _apply_dot(id: String, cfg: Dictionary, st: Dictionary) -> void:
 		tick_dmg = max_hp * pct * float(stacks)
 	else:
 		tick_dmg = float(st.power) * float(cfg.get("dot_scale", 0.0)) * float(stacks)
+		# 单跳护栏（Config.DOT_TICK_CAP_MULT，对齐 REACTION_BURST_CAP_MULT 的做法）：
+		# power 记录的就是「施加该状态那一次命中的伤害」，所以闸门随构筑同步，
+		# 不削弱正常手感，只砍掉乘区被叠到极端时的失控值。
+		# %最大生命类（中毒）**不走这里** —— 它按设计就该随敌人血量成长，
+		# 且其乘区已由「反应 debuff 槽位化（同类不再累乘）」约束住。
+		var dot_cap := float(st.get("power", 0.0)) * Config.DOT_TICK_CAP_MULT
+		if dot_cap > 0.0:
+			tick_dmg = minf(tick_dmg, dot_cap)
 	tick_dmg *= _reaction_dot_mult()
 	if tick_dmg <= 0.0:
 		return
@@ -417,7 +443,7 @@ func trigger_reaction(reaction: Dictionary) -> void:
 	_reaction_active[reaction_id] = true
 	_reaction_depth += 1
 	if String(reaction.get("type", "")) == "overcome":
-		_execute_overcome_effect(effect)
+		_execute_overcome_effect(effect, reaction_id)
 	else:
 		_execute_generate_effect(effect)
 	_reaction_depth -= 1
@@ -439,28 +465,31 @@ func _execute_generate_effect(effect: Dictionary) -> void:
 			continue
 		var cap := int(Config.status_cfg(String(sid)).get("stack_max", 1))
 		st.stacks = mini(cap, int(st.stacks) + int(add[sid]))
+	# 延时（木生火：燃烧时长 ×1.5）——**针对原时长**取大并封顶，不再对当前值连乘
 	var dmul: Dictionary = effect.get("duration_mult", {})
 	for sid2 in dmul:
 		var st2 := _status_entry(String(sid2))
 		if not st2.is_empty():
-			st2.remaining = float(st2.remaining) * float(dmul[sid2])
+			st2.remaining = maxf(float(st2.remaining),
+				_base_duration(String(sid2)) * float(dmul[sid2]))
 	var dadd: Dictionary = effect.get("duration_add", {})
 	for sid3 in dadd:
 		var st3 := _status_entry(String(sid3))
 		if not st3.is_empty():
-			st3.remaining = float(st3.remaining) + float(dadd[sid3])
-	# DoT 提伤（火生土：燃烧伤害 +30%）
+			st3.remaining = minf(float(st3.remaining) + float(dadd[sid3]),
+				_base_duration(String(sid3)) * STATUS_DURATION_CAP_MULT)
+	# DoT 提伤（火生土：燃烧伤害 +30%）——加成针对 base_power **加算**并封顶
 	var pmul: Dictionary = effect.get("dmg_mult", {})
 	for sid4 in pmul:
 		var st4 := _status_entry(String(sid4))
 		if not st4.is_empty():
-			st4.power = float(st4.power) * float(pmul[sid4])
-	# 必暴（土生金：眩晕期间流血 DoT 按暴击倍率结算）
+			_raise_status_power_bonus(st4, float(pmul[sid4]) - 1.0)
+	# 必暴（土生金：眩晕期间流血 DoT 按暴击倍率结算）——同样只抬加成，不连乘
 	var crit: Dictionary = effect.get("crit_guarantee", {})
 	for sid5 in crit:
 		var st5 := _status_entry(String(sid5))
 		if not st5.is_empty() and bool(crit[sid5]):
-			st5.power = float(st5.power) * _reaction_crit_mult()
+			_raise_status_power_bonus(st5, _reaction_crit_mult() - 1.0)
 	# 转属（金生水：流血转冰伤 → 附加短时冰冻易伤）
 	var conv: Dictionary = effect.get("convert_dmg", {})
 	for sid6 in conv:
@@ -476,7 +505,8 @@ func _execute_generate_effect(effect: Dictionary) -> void:
 			float(st7.power), float(spread[sid7]))
 
 ## 相克效果：消耗层数 + 爆发（AOE / 处决 / 破甲 / DoT 翻倍）
-func _execute_overcome_effect(effect: Dictionary) -> void:
+## `reaction_id` 用于给 debuff 建**唯一槽位**（同类覆盖而非累乘，见 _add_reaction_debuff）
+func _execute_overcome_effect(effect: Dictionary, reaction_id: String) -> void:
 	# 爆发基数必须在消耗前结算：消耗会清空层数，之后 power×stacks 归零。
 	# 同时取「施加这些状态时的玩家单次命中伤害」作为爆发上限的参考值
 	# （power 记录的就是施加时那一次命中的伤害）
@@ -513,11 +543,11 @@ func _execute_overcome_effect(effect: Dictionary) -> void:
 		return
 	# 破甲（火克金：护甲无效化 → 受伤提升，持续 armor_break_duration）
 	if effect.has("armor_break"):
-		_add_reaction_debuff(1.0 + float(effect.armor_break), 1.0,
+		_add_reaction_debuff(reaction_id, 1.0 + float(effect.armor_break), 1.0,
 			float(effect.get("armor_break_duration", REACTION_DEBUFF_DURATION)))
 	# DoT 翻倍（金克木：持续伤害提升，持续 dot_duration）
 	if effect.has("dot_mult"):
-		_add_reaction_debuff(1.0, float(effect.dot_mult),
+		_add_reaction_debuff(reaction_id, 1.0, float(effect.dot_mult),
 			float(effect.get("dot_duration", REACTION_DEBUFF_DURATION)))
 
 ## 对半径内其他敌人施加状态（水生木扩散）
@@ -546,33 +576,62 @@ func _reaction_crit_mult() -> float:
 		return float(player.stats.get("crit_mult", Config.PLAYER.crit_mult))
 	return float(Config.PLAYER.crit_mult)
 
-func _add_reaction_debuff(dmg_mult: float, dot_mult: float, duration: float) -> void:
-	if duration <= 0.0:
+## 记录/刷新一条反应 debuff。
+##
+## ⚠️⚠️ 必须按 `reaction_id` **覆盖**（同类只存一份），不能 append 后整体连乘 ——
+## 旧实现是 `reaction_debuffs.append(...)` + 取用时对所有条目做 `∏`，于是
+## 「火克金」打第 N 次 = 1.5^N（受伤倍率）、「金克木」= 2.0^N（DoT 倍率）。
+## 两者叠加进 DoT 通道就是 3^k：实测第 11 波单波状态伤害 4.3e11、占比 100%
+## （k≈24，见 2026-09-19 排查）。设计意图是「受伤 +50% / DoT ×2」这种**定性** debuff，
+## 重复触发只应刷新时长。
+func _add_reaction_debuff(reaction_id: String, dmg_mult: float, dot_mult: float,
+		duration: float) -> void:
+	if duration <= 0.0 or reaction_id == "":
 		return
-	reaction_debuffs.append({
-		"dmg_taken_mult": maxf(1.0, dmg_mult),
-		"dot_mult": maxf(1.0, dot_mult),
-		"remaining": duration,
-	})
+	var prev: Dictionary = reaction_debuffs.get(reaction_id, {})
+	reaction_debuffs[reaction_id] = {
+		"dmg_taken_mult": maxf(1.0, maxf(dmg_mult, float(prev.get("dmg_taken_mult", 1.0)))),
+		"dot_mult": maxf(1.0, maxf(dot_mult, float(prev.get("dot_mult", 1.0)))),
+		"remaining": maxf(duration, float(prev.get("remaining", 0.0))),
+	}
 
 func _tick_reaction_debuffs(delta: float) -> void:
-	for i in range(reaction_debuffs.size() - 1, -1, -1):
-		var d: Dictionary = reaction_debuffs[i]
+	for id in reaction_debuffs.keys():
+		var d: Dictionary = reaction_debuffs[id]
 		d.remaining = float(d.remaining) - delta
 		if float(d.remaining) <= 0.0:
-			reaction_debuffs.remove_at(i)
+			reaction_debuffs.erase(id)
 
+## 反应 debuff 的受伤倍率。各类 debuff **最多各一份**，所以这里是「有界的 ∏」，
+## 不再随触发次数指数增长（旧版是 1.5^k）。
 func _reaction_dmg_taken_mult() -> float:
 	var mult := 1.0
-	for d in reaction_debuffs:
-		mult *= float(d.get("dmg_taken_mult", 1.0))
+	for id in reaction_debuffs:
+		mult *= float(reaction_debuffs[id].get("dmg_taken_mult", 1.0))
 	return mult
 
+## 同上：DoT 倍率（旧版是 2.0^k）
 func _reaction_dot_mult() -> float:
 	var mult := 1.0
-	for d in reaction_debuffs:
-		mult *= float(d.get("dot_mult", 1.0))
+	for id in reaction_debuffs:
+		mult *= float(reaction_debuffs[id].get("dot_mult", 1.0))
 	return mult
+
+## 状态在 Config 里的**原始**时长 —— 反应延时/提伤一律以它为参照（"针对原属性"），
+## 不以当前值为基数累乘。
+func _base_duration(id: String) -> float:
+	return float(Config.status_cfg(id).get("duration", 0.0))
+
+## 抬升某状态的 DoT 提伤加成：**针对 base_power 的定性强化，取大不累加、并封顶**。
+## ⚠️ 不能用 `st.power *= mult` —— 那在连续触发时是 1.3^k（同上，会指数爆炸）；
+##    也不能用累加 —— 那会随触发次数一路爬到封顶值。与 debuff 槽位 / duration_mult
+##    同一口径：重复触发只保持同一档。
+func _raise_status_power_bonus(st: Dictionary, add: float) -> void:
+	if add <= 0.0:
+		return
+	var bonus := minf(maxf(float(st.get("power_bonus", 0.0)), add), STATUS_POWER_BONUS_CAP)
+	st.power_bonus = bonus
+	st.power = float(st.get("base_power", st.get("power", 0.0))) * (1.0 + bonus)
 
 func _ready() -> void:
 	add_to_group("enemies")
