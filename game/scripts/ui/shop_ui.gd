@@ -808,6 +808,9 @@ func _rarity_pool(entries: Array, owned: Dictionary, taken: Dictionary = {}) -> 
 		# 两者互斥不了也不该互斥：一是「别过火」，一是「补空白」，叠乘才是完整意图。
 		w *= Config.diminish_mult(e, player.stats, _wave)
 		w *= Config.shortfall_mult(e, _dim_counts())
+		# 第 17 轮 · 需求 8：按当前武器形态调概率（远程偏攻速 / 爆炸偏伤害降范围与攻速 /
+		# 近战偏伤害降范围）。软倾向，不改硬闸门（那仍是 entry_weapon_relevant 的职责）。
+		w *= Config.weapon_pref_mult(e, player.weapons)
 		if Config.is_assim_entry(e):
 			w *= _assim_weight_mult()   # 连续没刷到 → 越刷越容易出（第 9 轮）
 		var entry_pack: Dictionary = { "item": e, "w": w }

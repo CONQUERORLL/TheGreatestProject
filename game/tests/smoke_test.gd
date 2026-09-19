@@ -2926,8 +2926,84 @@ func _check_shop_diminishing() -> void:
 	if not keys_free.is_empty():
 		_fail("边际递减角标：后期波次免费额度内不应仍标为受抑")
 		return
+	# ---- ⑩ 武器倾向性（第 17 轮 · 需求 8）：远程偏攻速 / 爆炸偏伤害降范围与攻速 /
+	#      近战偏伤害降范围。分类优先级 melee → aoe → ranged，一件武器只归一类。----
+	var ranged_build := [{ "type": "frost_staff", "cd": 0.1 }]     # 无溅射的弹幕 → ranged
+	var aoe_build := [{ "type": "thunder_gong", "cd": 0.1 }]      # splash 95 → aoe
+	var melee_build := [{ "type": "knife", "cd": 0.1 }]
+	for pair in [[ranged_build, "ranged"], [aoe_build, "aoe"], [melee_build, "melee"]]:
+		var cls: Array = Config.weapon_classes(pair[0])
+		if cls.size() != 1 or String(cls[0]) != String(pair[1]):
+			_fail("武器分类不对：%s 应为 %s，得到 %s" % [str(pair[0]), str(pair[1]), str(cls)])
+			return
+	if not Config.weapon_classes([]).is_empty():
+		_fail("空武器阵容应无分类（否则开局就会干预抽奖）")
+		return
+	# 远程：攻速 1.8（提权）、伤害 1.0（正常）
+	if Config.weapon_pref_mult({ "effects": { "as_mult": 0.04 } }, ranged_build) <= 1.5:
+		_fail("远程构筑未给攻速加成提权")
+		return
+	if not is_equal_approx(Config.weapon_pref_mult({ "effects": { "dmg_mult": 0.10 } }, ranged_build), 1.0):
+		_fail("远程构筑的伤害加成应保持正常权重")
+		return
+	# 爆炸：伤害 1.8、范围 0.4、攻速 0.5（复合件按 min 取 0.4）
+	if Config.weapon_pref_mult({ "effects": { "dmg_mult": 0.10 } }, aoe_build) <= 1.5:
+		_fail("爆炸构筑未给伤害加成提权")
+		return
+	if Config.weapon_pref_mult({ "effects": { "aoe_radius_bonus": 0.20 } }, aoe_build) >= 0.9:
+		_fail("爆炸构筑未降低范围加成权重")
+		return
+	if Config.weapon_pref_mult({ "effects": { "as_mult": 0.04 } }, aoe_build) >= 0.9:
+		_fail("爆炸构筑未降低攻速加成权重")
+		return
+	if Config.weapon_pref_mult(
+			{ "effects": { "aoe_radius_bonus": 0.20, "dmg_mult": -0.05 } }, aoe_build) >= 0.9:
+		_fail("复合件（范围+伤害）应按 min 取降权，而不是被伤害那一项抵消")
+		return
+	# 近战：伤害 1.8、斩击范围 0.4
+	if Config.weapon_pref_mult({ "effects": { "dmg_mult": 0.10 } }, melee_build) <= 1.5:
+		_fail("近战构筑未给伤害加成提权")
+		return
+	if Config.weapon_pref_mult({ "effects": { "melee_range_bonus": 0.11 } }, melee_build) >= 0.9:
+		_fail("近战构筑未降低斩击范围权重")
+		return
+	# 混编（近战 + 远程）：伤害取最想要的一档（1.8），不受另一类的 1.0 拖累
+	if Config.weapon_pref_mult({ "effects": { "dmg_mult": 0.10 } },
+			[{ "type": "knife", "cd": 0.1 }, { "type": "frost_staff", "cd": 0.1 }]) <= 1.5:
+		_fail("混编阵容的伤害加成应按「最想要的一档」提权（否则 1.8 被另一类的 1.0 拖平）")
+		return
+	# ---- ⑪ 集成：商店池权重**真的**乘上了倾向倍率（纯函数对 ≠ 有人调用它 ——
+	#      本项目栽过「公式写好了却没人读」的坑，所以消费点必须钉一条）----
+	var w_backup: Array = p.weapons.duplicate(true)
+	var shop: Control = _main.get_node("UI/Shop")
+	p.weapons = [{ "type": "thunder_gong", "cd": 0.1 }]
+	var pool_aoe: Array = shop._rarity_pool(Registry.upgrade_list(), p.upgrades_owned)
+	p.weapons = [{ "type": "frost_staff", "cd": 0.1 }]
+	var pool_ranged: Array = shop._rarity_pool(Registry.upgrade_list(), p.upgrades_owned)
+	p.weapons = w_backup
+	# 「蛮力」（dmg_mult）：爆炸 1.8 > 远程 1.0；「急速」（as_mult）：爆炸 0.5 < 远程 1.8
+	# 两件在两种阵容下都通过相关性闸门，所以可直接比较池内权重。
+	var wd_aoe := _shop_pool_weight(pool_aoe, "dmg")
+	var wd_ranged := _shop_pool_weight(pool_ranged, "dmg")
+	var wa_aoe := _shop_pool_weight(pool_aoe, "as")
+	var wa_ranged := _shop_pool_weight(pool_ranged, "as")
+	if wd_aoe <= 0.0 or wd_ranged <= 0.0 or wa_aoe <= 0.0 or wa_ranged <= 0.0:
+		_fail("倾向性用例前提不成立：蛮力/急速应同时出现在两种阵容的池里")
+		return
+	if wd_aoe <= wd_ranged or wa_aoe >= wa_ranged:
+		_fail("商店池权重未反映武器倾向性（伤害：爆炸 %.3f vs 远程 %.3f；攻速：爆炸 %.3f vs 远程 %.3f）"
+			% [wd_aoe, wd_ranged, wa_aoe, wa_ranged])
+		return
 	p.stats = stats_backup
-	print("SMOKE: shop diminishing + shortfall OK")
+	print("SMOKE: shop diminishing + shortfall + weapon preference OK")
+
+## 商店池（`item` 是**条目字典**，与文件后段那个 `item` 是 id 字符串的池不同）里某 id 的权重
+func _shop_pool_weight(pool: Array, id: String) -> float:
+	for e in pool:
+		var it: Dictionary = e.get("item", {})
+		if String(it.get("id", "")) == id:
+			return float(e.get("w", 0.0))
+	return 0.0
 
 ## HUD 状态图例：无来源隐藏 / 同状态武器取最大命中率 / 道具独立概率合并 / 强化加成行
 func _check_status_legend() -> void:

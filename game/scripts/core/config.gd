@@ -2255,6 +2255,83 @@ func entry_weapon_relevant(cfg: Dictionary, weapons: Array) -> bool:
 					return false
 	return true
 
+## ╭──────────────────────────────────────────────────────────────────╮
+## │ 第 17 轮：商店刷新的「武器倾向性」加权（用户需求 8）              │
+## ╰──────────────────────────────────────────────────────────────────╯
+##
+## 用户原话：「针对武器提高部分道具刷新，降低部分道具刷新：远程武器→攻速加成概率高点，
+##   伤害加成概率正常；爆炸类武器→伤害加成概率高点，范围和攻速加成概率降低；
+##   近战→伤害高点，角度范围和距离概率降低」。
+##
+## 【与 `entry_weapon_relevant` 的分工】那个是**硬闸门**（对当前武器毫无意义的条目直接
+##   剔出池，如纯枪构筑不出近战范围）；本表是**软倾向**（都有意义，但按武器形态调概率）。
+##   两者叠乘使用：先过闸门，再按本表加权。
+##
+## 【分类优先级】melee → aoe → ranged，一件武器只归一类。
+##   爆炸类（`splash > 0` 的远程）刻意**不再**吃远程那一档 —— 用户要的正是「爆炸类降攻速」，
+##   若同时算远程（攻速 ×1.8）两个方向会互相抵消，等于没做。
+##
+## 【合成规则：取 min】与 `diminish_mult` 同一口径 —— 条目里只要有一项落在被降权的维度上，
+##   整件就被压低（用户说的是"降低范围类道具的刷新"，不是"只降低纯范围道具"）。
+##   取 max 会让「范围 + 伤害」这种复合件靠伤害那一项把降权完全抵消掉。
+##
+## 【"角度范围/距离"落到哪个键】近战的斩击范围是 `melee_range_bonus`
+##   （`reach = range × (1 + bonus)`，`swing_arc` 是武器固有值、没有加成通道）；
+##   远程的射程是 `bullet_range_bonus` / `throw_range_bonus`。
+##   ⚠️ 只给 melee 档写 `melee_range_bonus`：另外两个射程键在**近战构筑**里本来就被
+##      `entry_weapon_relevant` 挡掉（没有弹幕/投掷武器），写了也是死条目。
+const WEAPON_PREF := {
+	"ranged": { "as_mult": 1.8, "dmg_mult": 1.0 },
+	"aoe":    { "dmg_mult": 1.8, "aoe_radius_bonus": 0.4, "as_mult": 0.5 },
+	"melee":  { "dmg_mult": 1.8, "melee_range_bonus": 0.4 },
+}
+
+## 当前武器阵容的形态标签（"melee"/"aoe"/"ranged"）。一件武器只归一类，见常量注释。
+## 需读 Registry，故为实例方法（Config 是 autoload）。
+func weapon_classes(weapons: Array) -> Array:
+	var out := {}
+	for w in weapons:
+		var wid := ""
+		if typeof(w) == TYPE_DICTIONARY:
+			wid = String(w.get("type", ""))
+		else:
+			wid = String(w)
+		var wcfg: Dictionary = Registry.weapons.get(wid, {})
+		if wcfg.is_empty():
+			continue
+		if String(wcfg.get("attack_type", "")) == "melee":
+			out["melee"] = true
+		elif float(wcfg.get("splash", 0.0)) > 0.0:
+			out["aoe"] = true
+		else:
+			out["ranged"] = true
+	return out.keys()
+
+## 条目按「当前武器形态」的倾向性倍率（1.0 = 不加不减）。只读，无副作用。
+## 无武器 / 无可识别武器 → 1.0（开局还没武器时不干预抽奖）。
+func weapon_pref_mult(cfg: Dictionary, weapons: Array) -> float:
+	var classes := weapon_classes(weapons)
+	if classes.is_empty():
+		return 1.0
+	var eff: Variant = cfg.get("effects", null)
+	if typeof(eff) != TYPE_DICTIONARY:
+		return 1.0
+	# ⚠️ 累积初值不能是 1.0：`minf(1.0, 1.8)` 会把**提权**直接削平，等于只实现了一半
+	#    （降权生效、提权失效，且不报错）。用"首项直接赋值、其后取 min"。
+	var m := -1.0
+	for k in eff:
+		var key := String(k)
+		var best := 0.0
+		var found := false
+		for c in classes:
+			var table: Dictionary = WEAPON_PREF.get(String(c), {})
+			if table.has(key):
+				found = true
+				best = maxf(best, float(table[key]))   # 混编阵容：先取"最想要"的那一档
+		if found:
+			m = best if m < 0.0 else minf(m, best)   # 条目里有任一项被降权 → 整件压低
+	return m if m >= 0.0 else 1.0
+
 # ============================================================
 # 角色印记（SIGIL）—— 角色的元素 / 风格在武器表现上的专属痕迹
 #
