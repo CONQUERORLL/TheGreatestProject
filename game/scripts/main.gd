@@ -208,6 +208,10 @@ func _ready() -> void:
 ## shop_ui.gd 里被改了十几处，信号漏接一处就会残留；每帧一次 bool 比较成本可忽略。
 var _hint_label: Label = null
 
+## ⚠️ 确定性物理帧计数：由 `wave_manager._physics_process` 在 `run_time += delta` 旁边递增
+## （与游戏时间严格同源，见 `GameState.phys_frames` 的字段注释）。
+## 这里**不再自行递增** —— 两份计数会双倍推进，反而破坏确定性。
+
 func _process(delta: float) -> void:
 	# 操作提示显隐：随阶段同步（只在真的变了时写，避免每帧触发重绘）
 	if _hint_label == null:

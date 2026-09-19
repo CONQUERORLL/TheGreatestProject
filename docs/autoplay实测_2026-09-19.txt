@@ -1,0 +1,21 @@
+seed=11   death_wave=4   lv=14  kills=237 
+seed=20   death_wave=3   lv=7   kills=62  
+seed=28   death_wave=2   lv=6   kills=58  
+seed=33   death_wave=3   lv=11  kills=147 
+seed=41   death_wave=4   lv=18  kills=219 
+seed=55   death_wave=3   lv=10  kills=141 
+seed=77   death_wave=4   lv=13  kills=208 
+seed=101  death_wave=4   lv=13  kills=235 
+seed=123  death_wave=3   lv=11  kills=167 
+seed=777  death_wave=4   lv=12  kills=119 
+
+==== 汇总（n=10）====
+死亡波次: mean=3.40 median=3.5 min=2 max=4
+最终等级: mean=11.5 min=6 max=18
+总击杀  : mean=159 min=58 max=237
+
+逐波平均吃伤（到达该波的局数）:
+  W1  n=10 avg=46.5
+  W2  n=10 avg=61.4
+  W3  n=9  avg=78.8
+  W4  n=5  avg=160.9

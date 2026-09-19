@@ -13,7 +13,10 @@ static var _enemies: Array = []
 static var _enemy_cells: Dictionary = {}
 
 static func _ensure_index() -> void:
-	var frame := Engine.get_physics_frames()
+	# ⚠️ 用 `GameState.phys_frames` 而非 `Engine.get_physics_frames()`：后者含启动期
+	#    消耗的帧且每次运行都不同，会让「本帧是否已重建」的判据在两次运行中错位 →
+	#    分离/命中看到的位置差一帧 → 同 seed 战局不可复现（autoplay 踩过）。
+	var frame := GameState.phys_frames
 	if frame == _cache_frame:
 		return
 	_cache_frame = frame

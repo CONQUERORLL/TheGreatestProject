@@ -122,9 +122,20 @@ const STATUS_POWER_BONUS_CAP := 3.0
 ## 「永不到期」（原本 `remaining *= 1.5` 会让燃烧无限续期，DoT 永不停止）。
 const STATUS_DURATION_CAP_MULT := 2.0
 
+## ⚠️⚠️ 确定性序号（替代 `get_instance_id()` 做战斗仲裁）。
+## `get_instance_id()` 是 Godot 的全局对象计数器，**每次运行起始值都不同**
+## （实测同 seed 两次跑出来的 ID 完全不一样：33216/73954 vs 96512/37249），
+## 而它被用在「敌间分离」的隔帧错峰与每对去重上（见 `_separate`）——
+## 结果就是**同一个 seed 每次跑出不同战局**，A/B 对照（autoplay）因此失效。
+## 这里用「出怪序号」：随出怪顺序递增，而在固定 seed 下出怪顺序是确定的。
+static var _det_counter := 0
+var det_uid := 0
+
 func setup(type_name: String, wave: int = 1) -> void:
 	type = type_name
 	spawn_wave = wave
+	_det_counter += 1
+	det_uid = _det_counter
 	cfg = Registry.enemies[type_name]
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	var boss_flag := type_name.begins_with("boss") or bool(cfg.get("is_boss", false)) \
@@ -819,15 +830,19 @@ func _physics_process(delta: float) -> void:
 		var push: float = (radius + float(Config.PLAYER.radius) + 10.0) - contact_d
 		if push > 0.0:
 			global_position -= contact_dir * push
-	# 敌间分离：隔帧错峰（按实例 ID 奇偶分半），大规模敌群下查询开销减半；
-	# 索引位置容许一帧偏差（≤3px / 128px 网格），省去逐敌逐帧的中间索引更新
-	if (Engine.get_physics_frames() + (get_instance_id() % 2)) % 2 == 0:
-		# 空间索引只查询邻近敌人，并按实例 ID 每对只处理一次。
+	# 敌间分离：隔帧错峰（按**确定性序号**奇偶分半），大规模敌群下查询开销减半；
+	# 索引位置容许一帧偏差（≤3px / 128px 网格），省去逐敌逐帧的中间索引更新。
+	# ⚠️ 用 `det_uid` 而非 `get_instance_id()`：后者每次运行都不同，会让战局不可复现。
+	# ⚠️ 用 `GameState.phys_frames`（确定性）而非 `Engine.get_physics_frames()`（含启动期
+	#    帧、每次运行不同）；`det_uid` 同理替代 `get_instance_id()`。两者都是判据，
+	#    任一用引擎绝对值都会让同 seed 战局不可复现。
+	if (GameState.phys_frames + (det_uid % 2)) % 2 == 0:
+		# 空间索引只查询邻近敌人，并按确定性序号每对只处理一次。
 		var pad := SEPARATION_PAD_LARGE if radius > 40.0 else SEPARATION_PAD_NORMAL
-		var my_id := get_instance_id()
+		var my_id := det_uid
 		for other in Combat.enemies_near(global_position, radius + pad):
 			if other == self or other.flee > 0.0 \
-					or other.is_queued_for_deletion() or my_id >= other.get_instance_id():
+					or other.is_queued_for_deletion() or my_id >= other.det_uid:
 				continue
 			var separation: Vector2 = other.global_position - global_position
 			var separation_d := separation.length()

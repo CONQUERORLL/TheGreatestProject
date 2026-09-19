@@ -164,6 +164,9 @@ func _physics_process(delta: float) -> void:
 	if GameState.phase != GameState.Phase.PLAYING:
 		return
 	GameState.run_time += delta
+	# ⚠️ 确定性物理帧计数必须与 `run_time` **同源同步递增**（战斗判据用它，
+	#    不能用 `Engine.get_physics_frames()` —— 那个含启动期帧、每次运行都不同）。
+	GameState.phys_frames += 1
 	var is_boss_wave := Config.is_boss_wave(wave)
 	var diff: Dictionary = Registry.get_difficulty(GameState.difficulty_id)
 	if not is_boss_wave:

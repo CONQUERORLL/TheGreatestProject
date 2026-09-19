@@ -28,6 +28,14 @@ var loadout_item := ""           # 开局道具（"" = 无）
 var touch_move := Vector2.ZERO   # 移动端虚拟摇杆输入（模拟量，TouchControls 写入）
 var mouse_move := Vector2.ZERO   # 桌面鼠标点触移动输入（模拟量，MouseMove 写入）
 
+## ⚠️⚠️ 确定性物理帧计数（**不要用 `Engine.get_physics_frames()` 做战斗判据**）。
+## 引擎的绝对帧号包含**启动期消耗的物理帧**，而那段帧数**每次运行都不同**
+## （实测同 seed 两次跑到同一游戏状态时，绝对帧号差了 2 帧：1365 vs 1363）。
+## 任何拿它做「本帧缓存是否有效」「隔帧错峰」的判据都会让战局不可复现 ——
+## autoplay 的 A/B 对照因此失效过。这个计数器由 `main._physics_process` 递增，
+## 从 `reset_run()` 起算，固定 seed 下完全确定。
+var phys_frames := 0
+
 var endless := false   # 无尽炼狱模式（每 10 波 BOSS，波次无上限，积分排行）
 var score := 0         # 无尽模式积分（击杀 / BOSS 击破 / 清波奖励）
 var daily := false     # 每日挑战（当日日期做种子，全服同局：同角色/难度/商店/BOSS）
@@ -101,6 +109,7 @@ func reset_run() -> void:
 	level_queue = 0
 	touch_move = Vector2.ZERO
 	mouse_move = Vector2.ZERO
+	phys_frames = 0   # 确定性物理帧计数（见字段注释）
 	score = 0   # endless 为本局开局选定/存档恢复的配置，不在重置之列
 	# 奇遇：每局上限随机 3~5 次，已见卡清空（与每日挑战/无尽无关，本局独立）
 	event_card_count = 0

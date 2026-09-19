@@ -46,6 +46,11 @@ var _shop_key := -1
 var _skill_cd := 0.0
 var _poll_t := 0.0
 var _start_ms := 0
+## 诊断开关（默认关；只为定位「同 seed 不可重复」的根因，不影响正常跑测）
+var _diag_nomove := false      # 站桩不走位
+var _diag_noskill := false     # 不放技能
+var _diag_noai := false        # 不消费任何 UI（升级/商店），只观察纯战斗
+var _diag_trace := false       # 打印每次关键决策的 (帧号, run_time, 选择)
 
 func _ready() -> void:
 	_start_ms = Time.get_ticks_msec()
@@ -58,6 +63,14 @@ func _ready() -> void:
 			out_path = arg.trim_prefix("--out=").replace("\\", "/")
 		elif arg.begins_with("--maxtime="):
 			max_sim_seconds = float(arg.trim_prefix("--maxtime="))
+		elif arg == "--nomove":
+			_diag_nomove = true
+		elif arg == "--noskill":
+			_diag_noskill = true
+		elif arg == "--noai":
+			_diag_noai = true
+		elif arg == "--trace":
+			_diag_trace = true
 	if out_path == "":
 		out_path = "user://autoplay_%s_%d.json" % [tag, run_seed]
 
@@ -98,32 +111,41 @@ func _configure_run() -> void:
 	GameState.slot_id = 1
 	GameRng.seed_from(run_seed)       # main._ready 里也会再解析一次 --seed，幂等
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	# ⚠️⚠️ 这里刻意**不做事**：所有驱动都放 `_physics_process`（固定 60Hz）。
+	#    `_process` 是**渲染帧**回调，`--fixed-fps 60` 只固定物理帧，`_process` 的实际
+	#    调用次数仍随真实运行速度漂移（headless 下尤其明显）。曾把 UI 消费/采样放在
+	#    这里，导致**同一个 seed 连跑三次得到三个不同结果**（W1 就分叉）——
+	#    A/B 对照因此失效。UI 消费时机直接决定波次推进节奏，必须钉在物理帧上。
+	pass
+
+func _physics_process(delta: float) -> void:
 	if _finished:
 		return
+	if main == null or not is_instance_valid(main):
+		return
+	# 采样按物理帧累计（0.2 游戏秒），不再依赖墙钟
 	_poll_t -= delta
 	if _poll_t <= 0.0:
 		_poll_t = 0.2
 		_harvest_waves()
-	if main == null or not is_instance_valid(main):
-		return
-	_handle_ui()
+	if not _diag_noai:
+		_handle_ui()
+	if not _diag_nomove:
+		_drive_movement()
+	else:
+		GameState.touch_move = Vector2.ZERO
+	_skill_cd -= delta
+	if _skill_cd <= 0.0 and not _diag_noskill:
+		_skill_cd = 1.5
+		if GameState.phase == GameState.Phase.PLAYING and player != null \
+				and is_instance_valid(player):
+			player.cast_skill()
 	# 兜底：通关不了 / 卡在某个界面时，靠模拟时长与墙钟双双兜住
 	if GameState.run_time > max_sim_seconds:
 		_finish("timeout")
 	elif Time.get_ticks_msec() - _start_ms > wall_limit_ms:
 		_finish("watchdog")
-
-func _physics_process(delta: float) -> void:
-	if _finished or main == null or not is_instance_valid(main):
-		return
-	_drive_movement()
-	_skill_cd -= delta
-	if _skill_cd <= 0.0:
-		_skill_cd = 1.5
-		if GameState.phase == GameState.Phase.PLAYING and player != null \
-				and is_instance_valid(player):
-			player.cast_skill()
 
 # ------------------------------------------------------------
 # 移动：躲最近怪 + 靠墙回中 + 有掉落时去捡（一个中等水平真人的走位）
@@ -251,6 +273,10 @@ func _pick_level_up(ui) -> void:
 		if s > best_score:
 			best_score = s
 			best = i
+	if _diag_trace:
+		print("[trace] LEVELUP f=%d rt=%.4f lv=%d picked=%d/%d id=%s"
+			% [Engine.get_physics_frames(), GameState.run_time, GameState.level,
+				best, choices.size(), String((choices[best] as Dictionary).get("id", "?"))])
 	ui._choose(best)
 
 ## 武器进化方向：取第一个注册表里存在的分支
@@ -275,6 +301,10 @@ func _do_shop(shop) -> void:
 		return
 	_shop_key = key
 	var goods: Array = shop.goods
+	if _diag_trace:
+		print("[trace] SHOP f=%d rt=%.4f wave=%d mats=%d goods=%d hp=%.1f"
+			% [Engine.get_physics_frames(), GameState.run_time, key,
+				GameState.materials, goods.size(), float(player.hp)])
 	for i in goods.size():
 		var g = goods[i]
 		if typeof(g) != TYPE_DICTIONARY or bool(g.get("sold", false)):
