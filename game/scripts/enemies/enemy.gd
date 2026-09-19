@@ -130,7 +130,11 @@ func setup(type_name: String, wave: int = 1) -> void:
 		#    → 必然打不死 →「时间结束没有击杀则不掉落」变成常态、法宝盒子永远拿不到。
 		#    教训：**新加的公式必须确认它有消费点**；只断言纯函数返回值 = 没断言「有人读」。
 		hp_s = Config.boss_hp_scale(wave)
-		dmg_s = 1.0 + 0.13 * float(wave - 1)
+		# 第 15 轮（2026-09-19）**回调**：0.13 → 0.18（用户原话「BOSS 伤害过低」）。
+		# 第 14 轮随「削弱所有怪物伤害」一并砍到 0.13，但 BOSS 是**接触 + 技能弹幕
+		# 共用 `touch_dmg`** 的一条链（见 `_fire_fan` / `_fire_nova`），砍它等于把
+		# BOSS 的弹幕也一起削了 —— 这正是「BOSS 打人没什么感觉」的来源。
+		dmg_s = 1.0 + 0.18 * float(wave - 1)
 	else:
 		hp_s = Config.wave_hp_scale(wave)
 		dmg_s = Config.wave_dmg_scale(wave)

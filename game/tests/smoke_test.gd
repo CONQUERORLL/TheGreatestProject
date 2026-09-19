@@ -2596,8 +2596,9 @@ func _check_run_rules() -> void:
 		_fail("waves 未 clamp 到下限 5")
 		return
 	# 4) 合成难度条目：字段完整 + 与规则值一致 + 无浮点尾差
-	# 最终值 = 基准值 × 规则值（与 4b 同口径）。⚠️ 第 14 轮起 normal 的 dmg_mult = 0.9，
-	# 不再是"四维全 1.0 的恒等基准"，所以这里**不能**写死 1.3 —— 按基准继承校验。
+	# 最终值 = 基准值 × 规则值（与 4b 同口径）。⚠️ 第 14 轮起 normal 曾把 dmg_mult 砍到 0.9
+	# （第 15 轮又回调到 1.0），**基准难度不保证是"四维全 1.0 的恒等基准"**，
+	# 所以这里**不能**写死 1.3 —— 一律按基准继承校验。
 	RunRules.base_difficulty_id = "normal"
 	RunRules.set_value("enemy_hp", 1.8)
 	RunRules.set_value("enemy_dmg", 1.3)

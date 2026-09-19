@@ -1178,8 +1178,12 @@ func _register_builtin() -> void:
 		#    `RunRules.BUILTIN_DIFF_IDS` / 存档 / 每日挑战的 difficulty_id 全按 id 写，
 		#    改 id 会全线崩（§9.1）。
 		# S4 起「难度」的首要含义是**元素出场节奏**（§9.2 闸门），数值只是第二重。
+		# ⚠️ 第 15 轮（2026-09-19）`normal.dmg_mult` 0.9 → 1.0 **回调**
+		#    （用户原话「BOSS 和后期怪物伤害过低」）。第 14 轮把它从 1.0 砍到 0.9，
+		#    但那一轮治「简单模式太难」的主力其实是 `WAVE_DMG_CURVE` 砍 25~30%
+		#    （W4 1.60→1.15）—— 那一段仍在，早期并不因这次回调变陡。
 		"normal": { "id": "normal", "name": "简单", "desc": "教学 · 危险元素最晚出现",
-			"hp_mult": 1.0, "dmg_mult": 0.9, "spawn_mult": 1.0, "elite_chance": 0.0,
+			"hp_mult": 1.0, "dmg_mult": 1.0, "spawn_mult": 1.0, "elite_chance": 0.0,
 			"resist_mult": 0.45 },
 		"hard": { "id": "hard", "name": "困难", "desc": "敌人更硬更痛，刷怪更密，混入精英怪",
 			"hp_mult": 1.5, "dmg_mult": 1.3, "spawn_mult": 1.25, "elite_chance": 0.10,
